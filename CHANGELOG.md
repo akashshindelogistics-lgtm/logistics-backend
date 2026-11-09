@@ -4,6 +4,14 @@ All notable changes to this project are documented here. From v0.1.1 on, this
 file is maintained automatically by [release-please](https://github.com/googleapis/release-please)
 from the conventional-commit history.
 
+## [0.19.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.18.0...v0.19.0) (2026-11-09)
+
+
+### Features
+
+* **chat:** keep chat off until a server sets CHAT_ENABLED=true ([50eee1f](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/50eee1fc636600daa5bf55f0c5e4f33338257c4b))
+* **chat:** run operations from a chat, with a confirmation card for every change ([fb19fd6](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/fb19fd6af391d58cf25b0b5d61c2fa70860fa6e8))
+
 ## [0.18.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.17.0...v0.18.0) (2026-11-09)
 
 
