@@ -66,6 +66,8 @@ Notable values in `.env`:
 - `API_IMAGE` — pin to a released version, e.g.
   `ghcr.io/<owner>/logistics-api:0.1.0`.
 - `ANTHROPIC_API_KEY` — optional (AI dispatch summaries).
+- `EVENT_WORKERS_ENABLED` is set to `true` in `docker-compose.yml`. It runs
+  notification sending and delay alerts; see `docs/async-events.md`.
 - `ANTHROPIC_WORKSPACE_ID` — only if the key above is identity-linked rather
   than workspace-scoped; otherwise the summary call fails with
   `workspace_id_required`.

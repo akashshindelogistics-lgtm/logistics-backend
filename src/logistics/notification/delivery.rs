@@ -48,7 +48,7 @@ async fn send_sms(to: &str, body: &str) -> Result<(), DeliveryError> {
     let (account_sid, auth_token, from) =
         twilio_credentials().ok_or(DeliveryError::NotConfigured)?;
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let resp = client
         .post(format!(
             "https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
@@ -79,7 +79,7 @@ fn resend_credentials() -> Option<(String, String)> {
 async fn send_email(to: &str, subject: &str, body: &str) -> Result<(), DeliveryError> {
     let (api_key, from) = resend_credentials().ok_or(DeliveryError::NotConfigured)?;
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let resp = client
         .post("https://api.resend.com/emails")
         .bearer_auth(&api_key)

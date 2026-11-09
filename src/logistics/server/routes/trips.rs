@@ -2,7 +2,6 @@
 //! read routes also present each standalone dispatch as a one-stop trip.
 
 use super::common::*;
-use super::dispatches::notify_dispatch_created;
 use crate::logistics::customer::customer::Customer;
 use crate::logistics::dispatch::dispatch::{DispatchLineItemInput, VehicleSource};
 use crate::logistics::dispatch::trip::Trip;
@@ -154,24 +153,11 @@ pub async fn create_trip(
     };
 
     match result {
-        Ok(trip) => {
-            // Best-effort per-stop notifications; a hired trip's go out when
-            // its truck is assigned.
-            if trip.vehicle_source == VehicleSource::Own {
-                for stop in &trip.stops {
-                    if let Some((customer, _)) =
-                        resolved.iter().find(|(c, _)| c.id == stop.customer_id)
-                    {
-                        notify_dispatch_created(org_id, stop, customer).await;
-                    }
-                }
-            }
-            HttpResponse::Ok().json(ApiResponse {
-                success: true,
-                message: format!("Trip created with {} stops", trip.stops.len()),
-                data: Some(trip),
-            })
-        }
+        Ok(trip) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: format!("Trip created with {} stops", trip.stops.len()),
+            data: Some(trip),
+        }),
         Err(err) => HttpResponse::BadRequest().json(ApiResponse::<String> {
             success: false,
             message: format!("Trip failed: {}", err),

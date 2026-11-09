@@ -1367,6 +1367,18 @@
 ** TODO Phase 5: driver assistant in the Android app, scoped to the driver's own dispatches and trips
 ** TODO Phase 6: documents - PDF compliance uploads, org knowledge base (org_doc chunks), in-app help over product docs
 ** TODO Phase 7 (conditional): embeddings + hybrid retrieval, only if phase 1's evaluation shows paraphrase misses that matter
+* DONE Pub/sub and consumers so slow operations run asynchronously
+  Requests no longer wait on Claude, SMS or email. New src/logistics/events:
+  Events + EventDeliveries tables in MySQL, claimed with FOR UPDATE SKIP LOCKED,
+  retried with backoff, then DEAD. Workers run on dedicated OS threads and are off
+  unless EVENT_WORKERS_ENABLED=true. Plan and rationale: [[file:docs/async-events.md]]
+** DONE Phase 1: timeouts on every outbound HTTP call (logistics/http.rs)
+** DONE Phase 2: transactions around dispatch creation, trips, status changes and hire assignment
+** DONE Phase 3: event queue, worker pool, retention
+** DONE Phase 4: notifications and delay alerts moved onto consumers; dedupe key stops double delay alerts
+** TODO assistant/reindex as a background job, with a logistics-frontend PR for its count
+** TODO Build proof-of-delivery photo checks and SMS tracking links as consumers
+** TODO SSE consumer for live dashboard updates
 * TODO [#A] Clean test data out of the live database and stop it mixing again - local Playwright and demos write to the same logistics database as the deployment. Do this before email or agents go live
    Plan: [[file:docs/database-cleanup.md]]
 ** DONE Fix org deletion leaving Dispatches, OrgCredentials and files behind; cleanup_db tool; point Playwright and demos at a logistics_e2e database

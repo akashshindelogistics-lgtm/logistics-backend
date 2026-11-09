@@ -36,6 +36,10 @@ Prerequisites: Rust, Node 22, MySQL, an authenticated `ngrok`, and
 `~/.config/logistics-ngrok/api.env` (mode 600) with `HOST=127.0.0.1`,
 `PORT=8090`, `DATABASE_URL`, `JWT_SECRET` and an absolute `UPLOAD_DIR`.
 
+Background sending (notifications and delay alerts) stays off here until
+`EVENT_WORKERS_ENABLED=true` is added to that env file; see
+`docs/async-events.md`. Finish `docs/database-cleanup.md` first.
+
 ```sh
 deploy/ngrok/install.sh
 ```
