@@ -4,6 +4,13 @@ All notable changes to this project are documented here. From v0.1.1 on, this
 file is maintained automatically by [release-please](https://github.com/googleapis/release-please)
 from the conventional-commit history.
 
+## [0.17.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.16.0...v0.17.0) (2026-11-09)
+
+
+### Features
+
+* **notifications:** send email through Gmail SMTP ([3302d84](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/3302d8425f187e5b2faaa4e7cd00507af1ebc20b))
+
 ## [0.16.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.15.0...v0.16.0) (2026-11-09)
 
 
