@@ -1,0 +1,7 @@
+[Unit]
+Description=Dump the live logistics database to ~/backups
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/logistics-ngrok/api.env
+ExecStart=%h/logistics-ngrok/autodeploy/repos/logistics-backend/deploy/ngrok/backup.sh
