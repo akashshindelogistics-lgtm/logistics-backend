@@ -1,0 +1,10 @@
+[Unit]
+Description=Deploy master of logistics-backend and logistics-frontend
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/logistics-ngrok/autodeploy/repos/logistics-backend/deploy/ngrok/deploy.sh
+# A release build from cold takes minutes on a laptop.
+TimeoutStartSec=45min
+Nice=10

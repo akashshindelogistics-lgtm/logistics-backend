@@ -1,3 +1,4 @@
+pub mod consumer;
 pub mod delay_alerts;
 pub mod delivery;
 pub mod notification;

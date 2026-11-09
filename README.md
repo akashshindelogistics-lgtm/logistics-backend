@@ -86,7 +86,8 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   sequence; each stop is a normal dispatch with its own lifecycle, linked
   under a trip whose status is derived from its stops. Optionally
   auto-order the stops by proximity (nearest-neighbour route optimization)
-  instead of visiting them in the order they were entered.
+  instead of visiting them in the order they were entered. Standalone
+  dispatches appear in the same list as one-stop trips.
 - **Freight billing** — raise one invoice per dispatch with an amount and a
   due date; the dashboard tracks each invoice as paid / pending / overdue
   and rolls a customer's unpaid invoices up into an outstanding balance.
@@ -95,8 +96,9 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   inventory, and dispatch volume over the last 14 days.
 - **Dispatch notifications** — when a dispatch is created or delivered, a
   notification is recorded for the customer (email or SMS, whichever is on
-  file) and the driver (SMS), and delivered via Twilio (SMS) / Resend
-  (email) when those are configured. The Dispatches page shows the log per
+  file) and the driver (SMS), and sent in the background with retries via
+  Twilio (SMS) / Gmail SMTP or Resend (email) when those are configured — see
+  [`docs/async-events.md`](docs/async-events.md). The Dispatches page shows the log per
   order. A background scan also alerts the customer if a dispatch is still
   in transit well past when it should have arrived — see
   [`docs/delay-alerts.md`](docs/delay-alerts.md).
@@ -191,8 +193,16 @@ export ANTHROPIC_WORKSPACE_ID="wrkspc_..."
 export TWILIO_ACCOUNT_SID="AC..."
 export TWILIO_AUTH_TOKEN="..."
 export TWILIO_FROM_NUMBER="+15551234567"
+# Email: a Gmail address + App Password (or any SMTP server), or else Resend.
+export SMTP_USERNAME="you@gmail.com"
+export SMTP_PASSWORD="your-16-char-app-password"
 export RESEND_API_KEY="re_..."
 export RESEND_FROM_EMAIL="dispatch@yourdomain.com"
+
+# Optional: run the background consumers (notification sending, delay alerts).
+# Off by default, so a dev server can't message real customers.
+# See docs/async-events.md.
+export EVENT_WORKERS_ENABLED="true"
 
 # Optional: where uploaded files (e.g. proof-of-delivery photos) are stored
 # on disk — see docs/file-uploads.md. Defaults to ./uploads.
@@ -300,8 +310,8 @@ All routes are served under the `/api` prefix.
 | GET/POST | `/api/customers`, `/api/orgs/{id}/customers` | List the org's customers / add one (optionally with an initial `latitude`/`longitude`) |
 | PUT/DELETE | `/api/customers/{id}/location`, `/api/customers/{id}` | Update a customer's location / delete the customer |
 | POST | `/api/orgs/{id}/dispatch` | Dispatch stock from an org to one of its customers (`vehicle_source: HIRED` + `vendor_id` to hire the truck) |
-| POST/GET | `/api/orgs/{id}/trips` | Plan a multi-stop trip (one vehicle, several customers; can also be hired) / list the org's trips |
-| GET | `/api/trips/{id}` | One multi-stop trip and its ordered stops |
+| POST/GET | `/api/orgs/{id}/trips` | Plan a multi-stop trip (one vehicle, several customers; can also be hired) / list the org's trips, including standalone dispatches as one-stop trips |
+| GET | `/api/trips/{id}` | One trip and its ordered stops; also takes a standalone dispatch's id for its one-stop trip |
 | GET | `/api/dispatches` | List dispatch orders |
 | PUT | `/api/dispatches/{id}/status` | Advance a dispatch's lifecycle status |
 | GET | `/api/dispatches/{id}/summary` | AI-generated summary of a dispatch |

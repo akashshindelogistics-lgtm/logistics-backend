@@ -16,7 +16,7 @@ async fn call_claude(prompt: String) -> Result<String, String> {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())?;
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let mut request = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", &api_key)

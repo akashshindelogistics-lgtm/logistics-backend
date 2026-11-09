@@ -1,0 +1,13 @@
+[Unit]
+Description=Logistics dashboard (ngrok deployment)
+
+[Service]
+WorkingDirectory=%h/logistics-ngrok/autodeploy/repos/logistics-frontend
+Environment=API_PROXY_TARGET=http://127.0.0.1:8090
+Environment=__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=.ngrok-free.dev
+ExecStart=%h/logistics-ngrok/autodeploy/repos/logistics-frontend/node_modules/.bin/vite preview --outDir %h/logistics-ngrok/autodeploy/current-frontend --port 4173 --strictPort --host 127.0.0.1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

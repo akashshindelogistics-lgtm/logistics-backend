@@ -172,7 +172,7 @@ pub async fn generate_daily_digest(org_id: Uuid) -> Result<String, String> {
 
     let prompt = build_digest_prompt(&stale_dispatches, &expiring_documents, &low_stock);
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let mut request = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", &api_key)
