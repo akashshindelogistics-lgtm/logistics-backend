@@ -1,5 +1,7 @@
 # Deployment
 
+For the auto-deploying ngrok instance, see [`ngrok/README.md`](ngrok/README.md).
+
 Free-tier setup: the **Rust API + MySQL** on an Oracle Cloud "Always Free"
 VM, the **Swagger UI** on this repo's GitHub Pages, and the **dashboard** on
 [logistics-frontend](https://github.com/akashshindelogistics-lgtm/logistics-frontend)'s GitHub Pages, all driven from GitHub Actions.
