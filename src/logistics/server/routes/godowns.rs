@@ -344,6 +344,9 @@ pub async fn update_godown_location(
     payload: web::Json<LocationPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&WAREHOUSE_ROLES) {
+        return resp;
+    }
     let mut godown = match load_owned_godown(path.into_inner(), auth.org_id) {
         Ok(g) => g,
         Err(resp) => return resp,

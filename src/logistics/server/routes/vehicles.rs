@@ -94,6 +94,9 @@ pub async fn add_vehicle(
     payload: web::Json<CreateVehiclePayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let org_id = path.into_inner();
     if org_id != auth.org_id {
         return HttpResponse::Forbidden().json(ApiResponse::<String> {
@@ -179,6 +182,9 @@ pub async fn edit_vehicle(
     payload: web::Json<UpdateVehiclePayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let reg = path.into_inner();
     if let Err(resp) = check_owned_vehicle(&reg, auth.org_id) {
         return resp;
@@ -221,9 +227,15 @@ pub async fn edit_vehicle(
 pub async fn update_vehicle_location(
     path: web::Path<String>,
     payload: web::Json<LocationPayload>,
-    _auth: AuthenticatedOrg,
+    auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let reg_number = path.into_inner();
+    if let Err(resp) = check_owned_vehicle(&reg_number, auth.org_id) {
+        return resp;
+    }
     let mut vehicle = Vehicle::new(&reg_number, 0, Unit::MetricTon);
 
     match vehicle.update_location(payload.latitude, payload.longitude, payload.address.clone()) {
@@ -323,6 +335,9 @@ pub async fn rotate_vehicle_tracker_key(
     path: web::Path<String>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let reg = path.into_inner();
     if let Err(resp) = check_owned_vehicle(&reg, auth.org_id) {
         return resp;
@@ -374,8 +389,14 @@ pub async fn rotate_vehicle_tracker_key(
     )
 )]
 #[delete("/vehicles/{reg}")]
-pub async fn delete_vehicle(path: web::Path<String>, _auth: AuthenticatedOrg) -> impl Responder {
+pub async fn delete_vehicle(path: web::Path<String>, auth: AuthenticatedOrg) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let reg_number = path.into_inner();
+    if let Err(resp) = check_owned_vehicle(&reg_number, auth.org_id) {
+        return resp;
+    }
     let vehicle = Vehicle::new(&reg_number, 0, Unit::MetricTon);
 
     match vehicle.remove_vehicle() {

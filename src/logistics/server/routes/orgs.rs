@@ -155,6 +155,9 @@ pub async fn update_org(
     payload: web::Json<UpdateOrgPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&ADMIN_ONLY) {
+        return resp;
+    }
     let org_id = path.into_inner();
     if org_id != auth.org_id {
         return HttpResponse::Forbidden().json(ApiResponse::<String> {
@@ -205,6 +208,9 @@ pub async fn update_org_location(
     payload: web::Json<LocationPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&ADMIN_ONLY) {
+        return resp;
+    }
     let org_id = path.into_inner();
     if org_id != auth.org_id {
         return HttpResponse::Forbidden().json(ApiResponse::<String> {

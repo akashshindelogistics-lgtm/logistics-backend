@@ -130,15 +130,16 @@ async fn test_add_vehicle_to_nonexistent_org_returns_error() {
 async fn test_update_vehicle_location_endpoint() {
     let _db = TestDb::create();
     let app = test::init_service(App::new().configure(config_routes)).await;
-    let org_id = Uuid::new_v4();
+    let (org, auth) = setup_org(&app, "Vehicle Location Org").await;
+    register_vehicle(&app, org.id, &auth, "LOC-VH-1").await;
     let payload = LocationPayload {
         latitude: 19.0760,
         longitude: 72.8777,
         address: Some("Mumbai, Maharashtra".to_string()),
     };
     let req = test::TestRequest::put()
-        .uri("/api/vehicles/NONEXISTENT-REG-001/location")
-        .insert_header(("Authorization", make_auth_header(org_id, "Test")))
+        .uri("/api/vehicles/LOC-VH-1/location")
+        .insert_header(("Authorization", auth))
         .set_json(&payload)
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -169,16 +170,212 @@ async fn test_update_vehicle_location_invalid_payload() {
 async fn test_delete_vehicle_endpoint() {
     let _db = TestDb::create();
     let app = test::init_service(App::new().configure(config_routes)).await;
-    let org_id = Uuid::new_v4();
+    let (org, auth) = setup_org(&app, "Delete Vehicle Org").await;
+    register_vehicle(&app, org.id, &auth, "DEL-VH-1").await;
+
     let req = test::TestRequest::delete()
-        .uri("/api/vehicles/NONEXISTENT-REG-002")
-        .insert_header(("Authorization", make_auth_header(org_id, "Test")))
+        .uri("/api/vehicles/DEL-VH-1")
+        .insert_header(("Authorization", auth))
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status().as_u16(), 200);
     let body: ApiResponse<String> = test::read_body_json(resp).await;
     assert!(body.success);
     assert_eq!(body.message, "Vehicle deleted successfully");
+    assert_eq!(Vehicle::org_of("DEL-VH-1").unwrap(), None);
+}
+
+#[actix_web::test]
+async fn test_delete_unknown_vehicle_returns_404() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (_org, auth) = setup_org(&app, "Delete Vehicle 404 Org").await;
+
+    let req = test::TestRequest::delete()
+        .uri("/api/vehicles/NO-SUCH-VH")
+        .insert_header(("Authorization", auth))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 404);
+}
+
+#[actix_web::test]
+async fn test_another_org_cannot_delete_or_move_a_vehicle() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth) = setup_org(&app, "Vehicle Owner").await;
+    let (_other, attacker) = setup_org(&app, "Vehicle Attacker").await;
+    register_vehicle(&app, org.id, &auth, "VICTIM-VH-1").await;
+
+    let req = test::TestRequest::put()
+        .uri("/api/vehicles/VICTIM-VH-1/location")
+        .insert_header(("Authorization", attacker.clone()))
+        .set_json(&LocationPayload {
+            latitude: 1.0,
+            longitude: 2.0,
+            address: None,
+        })
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
+
+    let req = test::TestRequest::delete()
+        .uri("/api/vehicles/VICTIM-VH-1")
+        .insert_header(("Authorization", attacker))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
+
+    assert_eq!(Vehicle::org_of("VICTIM-VH-1").unwrap(), Some(org.id));
+    let stored = Vehicle::list_by_org(org.id).unwrap();
+    assert!(stored[0].location.is_none(), "location must be untouched");
+}
+
+/// Every write route that was once open to any role. The role gate runs before
+/// any lookup, so placeholder ids are enough.
+#[actix_web::test]
+async fn test_write_routes_reject_the_wrong_role() {
+    use actix_web::http::Method;
+    use serde_json::json;
+
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, admin) = setup_org(&app, "Role Gate Org").await;
+    let warehouse = add_user_and_login(
+        &app,
+        org.id,
+        &admin,
+        "w@example.com",
+        OrgRole::WarehouseStaff,
+    )
+    .await;
+    let dispatcher =
+        add_user_and_login(&app, org.id, &admin, "d@example.com", OrgRole::Dispatcher).await;
+
+    let id = Uuid::new_v4();
+    let org_id = org.id;
+    let location = json!({"latitude": 1.0, "longitude": 2.0});
+    let vehicle = json!({"registration_number": "X", "capacity": 1, "unit": "Box"});
+    let driver = json!({"name": "A", "license_number": "L", "phone": "1", "is_active": true});
+    let customer = json!({"name": "A", "address": "B"});
+    let document = json!({"doc_type": "PUC", "document_number": "1", "expires_on": "2030-01-01"});
+    let maintenance = json!({"description": "Oil"});
+    let named = json!({"name": "A", "address": "B"});
+    let none = json!({});
+
+    let dispatch_only = [
+        (
+            Method::POST,
+            format!("/api/orgs/{org_id}/vehicles"),
+            &vehicle,
+        ),
+        (Method::PUT, "/api/vehicles/X".to_string(), &vehicle),
+        (
+            Method::PUT,
+            "/api/vehicles/X/location".to_string(),
+            &location,
+        ),
+        (
+            Method::POST,
+            "/api/vehicles/X/tracker-key/rotate".to_string(),
+            &none,
+        ),
+        (Method::DELETE, "/api/vehicles/X".to_string(), &none),
+        (
+            Method::POST,
+            format!("/api/orgs/{org_id}/customers"),
+            &customer,
+        ),
+        (
+            Method::PUT,
+            format!("/api/customers/{id}/location"),
+            &location,
+        ),
+        (Method::DELETE, format!("/api/customers/{id}"), &none),
+        (Method::POST, format!("/api/orgs/{org_id}/drivers"), &driver),
+        (Method::PUT, format!("/api/drivers/{id}"), &driver),
+        (Method::DELETE, format!("/api/drivers/{id}"), &none),
+        (Method::PUT, "/api/vehicles/X/driver".to_string(), &none),
+        (
+            Method::POST,
+            "/api/vehicles/X/maintenance".to_string(),
+            &maintenance,
+        ),
+        (
+            Method::PUT,
+            format!("/api/vehicle-maintenance/{id}"),
+            &maintenance,
+        ),
+        (
+            Method::PUT,
+            format!("/api/vehicle-maintenance/{id}/mileage"),
+            &json!({"current_mileage_km": 1}),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/vehicle-maintenance/{id}"),
+            &none,
+        ),
+        (
+            Method::POST,
+            "/api/vehicles/X/documents".to_string(),
+            &document,
+        ),
+        (
+            Method::PUT,
+            format!("/api/vehicle-documents/{id}"),
+            &document,
+        ),
+        (
+            Method::DELETE,
+            format!("/api/vehicle-documents/{id}"),
+            &none,
+        ),
+    ];
+    let admin_only = [
+        (Method::PUT, format!("/api/orgs/{org_id}"), &named),
+        (
+            Method::PUT,
+            format!("/api/orgs/{org_id}/location"),
+            &location,
+        ),
+    ];
+    let warehouse_only = [(
+        Method::PUT,
+        format!("/api/godowns/{id}/location"),
+        &location,
+    )];
+
+    let cases = dispatch_only
+        .iter()
+        .map(|c| (c, &warehouse))
+        .chain(admin_only.iter().map(|c| (c, &warehouse)))
+        .chain(admin_only.iter().map(|c| (c, &dispatcher)))
+        .chain(warehouse_only.iter().map(|c| (c, &dispatcher)));
+
+    for ((method, uri, body), token) in cases {
+        let req = test::TestRequest::default()
+            .method(method.clone())
+            .uri(uri)
+            .insert_header(("Authorization", token.clone()))
+            .set_json(body)
+            .to_request();
+        let status = test::call_service(&app, req).await.status().as_u16();
+        assert_eq!(status, 403, "{method} {uri}");
+    }
+}
+
+#[actix_web::test]
+async fn test_dispatcher_can_still_manage_vehicles() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, admin) = setup_org(&app, "Dispatcher Vehicle Org").await;
+    let dispatcher =
+        add_user_and_login(&app, org.id, &admin, "d@example.com", OrgRole::Dispatcher).await;
+
+    register_vehicle(&app, org.id, &dispatcher, "DISP-OK-1").await;
+    let req = test::TestRequest::delete()
+        .uri("/api/vehicles/DISP-OK-1")
+        .insert_header(("Authorization", dispatcher))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
 }
 
 #[actix_web::test]

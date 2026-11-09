@@ -152,6 +152,9 @@ pub async fn add_vehicle_maintenance(
     payload: web::Json<VehicleMaintenancePayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let reg = path.into_inner();
     if let Err(resp) = ensure_owned_vehicle(&reg, auth.org_id) {
         return resp;
@@ -196,6 +199,9 @@ pub async fn update_vehicle_maintenance(
     payload: web::Json<VehicleMaintenancePayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let mut item = match load_owned_vehicle_maintenance(path.into_inner(), auth.org_id) {
         Ok(i) => i,
         Err(resp) => return resp,
@@ -237,6 +243,9 @@ pub async fn record_vehicle_maintenance_mileage(
     payload: web::Json<RecordMileagePayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let mut item = match load_owned_vehicle_maintenance(path.into_inner(), auth.org_id) {
         Ok(i) => i,
         Err(resp) => return resp,
@@ -273,6 +282,9 @@ pub async fn delete_vehicle_maintenance(
     path: web::Path<Uuid>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let item = match load_owned_vehicle_maintenance(path.into_inner(), auth.org_id) {
         Ok(i) => i,
         Err(resp) => return resp,

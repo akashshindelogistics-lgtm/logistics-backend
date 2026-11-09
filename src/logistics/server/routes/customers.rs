@@ -118,6 +118,9 @@ pub async fn add_customer(
     payload: web::Json<CreateCustomerPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let org_id = path.into_inner();
     if org_id != auth.org_id {
         return HttpResponse::Forbidden().json(ApiResponse::<String> {
@@ -188,6 +191,9 @@ pub async fn update_customer_location(
     payload: web::Json<LocationPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let mut customer = match load_owned_customer(path.into_inner(), auth.org_id) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -222,6 +228,9 @@ pub async fn update_customer_location(
 )]
 #[delete("/customers/{id}")]
 pub async fn delete_customer(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let customer = match load_owned_customer(path.into_inner(), auth.org_id) {
         Ok(c) => c,
         Err(resp) => return resp,

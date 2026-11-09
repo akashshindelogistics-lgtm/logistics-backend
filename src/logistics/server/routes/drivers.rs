@@ -120,6 +120,9 @@ pub async fn add_driver(
     payload: web::Json<CreateDriverPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let org_id = path.into_inner();
     if org_id != auth.org_id {
         return HttpResponse::Forbidden().json(ApiResponse::<String> {
@@ -167,6 +170,9 @@ pub async fn update_driver(
     payload: web::Json<UpdateDriverPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let mut driver = match load_owned_driver(path.into_inner(), auth.org_id) {
         Ok(d) => d,
         Err(resp) => return resp,
@@ -205,6 +211,9 @@ pub async fn update_driver(
 )]
 #[delete("/drivers/{id}")]
 pub async fn delete_driver(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let driver = match load_owned_driver(path.into_inner(), auth.org_id) {
         Ok(d) => d,
         Err(resp) => return resp,
@@ -243,6 +252,9 @@ pub async fn assign_vehicle_driver(
     payload: web::Json<AssignDriverPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let reg_number = path.into_inner();
 
     let mut vehicle = match Vehicle::list_by_org(auth.org_id) {

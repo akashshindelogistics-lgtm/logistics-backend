@@ -171,6 +171,9 @@ pub async fn add_vehicle_document(
     payload: web::Json<VehicleDocumentPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let reg = path.into_inner();
     if let Err(resp) = ensure_owned_vehicle(&reg, auth.org_id) {
         return resp;
@@ -215,6 +218,9 @@ pub async fn update_vehicle_document(
     payload: web::Json<VehicleDocumentPayload>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let mut doc = match load_owned_vehicle_document(path.into_inner(), auth.org_id) {
         Ok(d) => d,
         Err(resp) => return resp,
@@ -254,6 +260,9 @@ pub async fn delete_vehicle_document(
     path: web::Path<Uuid>,
     auth: AuthenticatedOrg,
 ) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
     let doc = match load_owned_vehicle_document(path.into_inner(), auth.org_id) {
         Ok(d) => d,
         Err(resp) => return resp,
