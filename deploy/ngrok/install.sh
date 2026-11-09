@@ -21,6 +21,6 @@ systemctl --user daemon-reload
 # Without linger, user services die at logout and don't start at boot.
 loginctl enable-linger "$USER"
 systemctl --user enable logi-api.service logi-web.service logi-ngrok.service
-systemctl --user enable --now logi-deploy.timer
+systemctl --user enable --now logi-deploy.timer logi-backup.timer
 systemctl --user start --no-block logi-deploy.service
 echo "First deploy started: journalctl --user -fu logi-deploy"
