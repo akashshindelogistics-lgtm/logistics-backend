@@ -2,9 +2,41 @@ use super::notification::{
     Notification, NotificationChannel, NotificationEvent, NotificationStatus,
 };
 use crate::logistics::customer::customer::Customer;
+use crate::logistics::db::connection::DbConnection;
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::test_support::TestDb;
+use mysql::TxOpts;
 use uuid::Uuid;
+
+fn in_tx<T>(run: impl FnOnce(&mut mysql::Transaction<'_>) -> T) -> T {
+    let mut conn = DbConnection::from_env().get_connection().expect("conn");
+    Notification::prepare_tables(&mut conn).expect("tables");
+    let mut tx = conn.start_transaction(TxOpts::default()).expect("tx");
+    let out = run(&mut tx);
+    tx.commit().expect("commit");
+    out
+}
+
+fn record_created(
+    org_id: Uuid,
+    dispatch_id: Uuid,
+    customer: &Customer,
+    driver_phone: Option<&str>,
+) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
+    let rows = in_tx(|tx| {
+        Notification::enqueue_dispatch_created(tx, org_id, dispatch_id, customer, driver_phone)
+    })?;
+    Notification::index_best_effort(&rows);
+    Ok(rows)
+}
+
+fn record_delivered(
+    org_id: Uuid,
+    dispatch_id: Uuid,
+    customer: &Customer,
+) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
+    in_tx(|tx| Notification::enqueue_dispatch_delivered(tx, org_id, dispatch_id, customer))
+}
 
 fn org() -> Organization {
     Organization::create_organization("Notify Co", "1 St").expect("org")
@@ -24,14 +56,8 @@ async fn dispatch_created_records_customer_and_driver_and_prefers_email() {
         .expect("contact");
     let dispatch_id = Uuid::new_v4();
 
-    let recorded = Notification::record_dispatch_created(
-        org.id,
-        dispatch_id,
-        &customer,
-        Some("+91 98888 22222"),
-    )
-    .await
-    .expect("record");
+    let recorded =
+        record_created(org.id, dispatch_id, &customer, Some("+91 98888 22222")).expect("record");
 
     assert_eq!(recorded.len(), 2);
     let cust = recorded
@@ -71,9 +97,7 @@ async fn falls_back_to_sms_then_skips_when_no_contact() {
     phone_only
         .set_contact(Some("+91 70000 00000".into()), None)
         .expect("contact");
-    let n = Notification::record_dispatch_created(org.id, Uuid::new_v4(), &phone_only, None)
-        .await
-        .expect("rec");
+    let n = record_created(org.id, Uuid::new_v4(), &phone_only, None).expect("rec");
     let cust = n.iter().find(|n| n.recipient_kind == "customer").unwrap();
     assert_eq!(cust.channel, NotificationChannel::Sms);
     assert_eq!(cust.recipient, "+91 70000 00000");
@@ -84,9 +108,7 @@ async fn falls_back_to_sms_then_skips_when_no_contact() {
 
     // No contact at all -> customer row SKIPPED.
     let no_contact = Customer::create_customer(org.id, "No Contact", "2 Rd").expect("c2");
-    let n2 = Notification::record_dispatch_created(org.id, Uuid::new_v4(), &no_contact, None)
-        .await
-        .expect("rec2");
+    let n2 = record_created(org.id, Uuid::new_v4(), &no_contact, None).expect("rec2");
     assert!(n2.iter().all(|n| n.status == NotificationStatus::Skipped));
 }
 
@@ -100,9 +122,7 @@ async fn dispatch_delivered_notifies_only_the_customer() {
         .expect("contact");
     let dispatch_id = Uuid::new_v4();
 
-    let recorded = Notification::record_dispatch_delivered(org.id, dispatch_id, &customer)
-        .await
-        .expect("rec");
+    let recorded = record_delivered(org.id, dispatch_id, &customer).expect("rec");
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].recipient_kind, "customer");
     assert_eq!(recorded[0].event, NotificationEvent::DispatchDelivered);
@@ -119,15 +139,9 @@ async fn list_by_org_is_scoped_and_newest_first() {
         .expect("contact");
     let cb = Customer::create_customer(b.id, "CB", "2").expect("cb");
 
-    Notification::record_dispatch_created(a.id, Uuid::new_v4(), &ca, None)
-        .await
-        .expect("a1");
-    Notification::record_dispatch_delivered(a.id, Uuid::new_v4(), &ca)
-        .await
-        .expect("a2");
-    Notification::record_dispatch_created(b.id, Uuid::new_v4(), &cb, None)
-        .await
-        .expect("b1");
+    record_created(a.id, Uuid::new_v4(), &ca, None).expect("a1");
+    record_delivered(a.id, Uuid::new_v4(), &ca).expect("a2");
+    record_created(b.id, Uuid::new_v4(), &cb, None).expect("b1");
 
     let a_list = Notification::list_by_org(a.id, 100).expect("list a");
     assert_eq!(a_list.len(), 3); // 2 created (cust+driver) + 1 delivered
@@ -152,9 +166,7 @@ async fn deleting_the_org_cascades_to_its_notifications() {
     let org = org();
     let c = Customer::create_customer(org.id, "Gone", "0").expect("c");
     let d = Uuid::new_v4();
-    Notification::record_dispatch_created(org.id, d, &c, None)
-        .await
-        .expect("rec");
+    record_created(org.id, d, &c, None).expect("rec");
 
     org.remove_organization().expect("remove org");
     assert!(
@@ -165,93 +177,7 @@ async fn deleting_the_org_cascades_to_its_notifications() {
 }
 
 #[actix_web::test]
-async fn deliver_queued_best_effort_leaves_notifications_queued_without_provider_credentials() {
-    // SAFETY: no other test sets or reads these variables concurrently with
-    // this one — see notification::delivery's tests for the full rationale.
-    unsafe {
-        std::env::remove_var("TWILIO_ACCOUNT_SID");
-        std::env::remove_var("TWILIO_AUTH_TOKEN");
-        std::env::remove_var("TWILIO_FROM_NUMBER");
-        std::env::remove_var("RESEND_API_KEY");
-        std::env::remove_var("RESEND_FROM_EMAIL");
-    }
-
-    let _db = TestDb::create();
-    let org = org();
-    let mut customer =
-        Customer::create_customer(org.id, "Asha Rao", "9 Market Rd").expect("customer");
-    customer
-        .set_contact(
-            Some("+91 90000 11111".into()),
-            Some("asha@example.com".into()),
-        )
-        .expect("contact");
-    let dispatch_id = Uuid::new_v4();
-
-    let recorded = Notification::record_dispatch_created(
-        org.id,
-        dispatch_id,
-        &customer,
-        Some("+91 98888 22222"),
-    )
-    .await
-    .expect("record");
-    assert!(
-        recorded
-            .iter()
-            .all(|n| n.status == NotificationStatus::Queued)
-    );
-
-    Notification::deliver_queued_best_effort(&recorded).await;
-
-    // Nothing is configured, so nothing was attempted — every row stays
-    // QUEUED, ready to send once a provider is set up, not FAILED.
-    let listed = Notification::list_by_dispatch(dispatch_id).expect("list");
-    assert!(
-        listed
-            .iter()
-            .all(|n| n.status == NotificationStatus::Queued),
-        "{listed:?}"
-    );
-}
-
-#[actix_web::test]
-async fn deliver_queued_best_effort_does_not_touch_a_skipped_notification() {
-    // SAFETY: see above.
-    unsafe {
-        std::env::remove_var("TWILIO_ACCOUNT_SID");
-        std::env::remove_var("TWILIO_AUTH_TOKEN");
-        std::env::remove_var("TWILIO_FROM_NUMBER");
-    }
-
-    let _db = TestDb::create();
-    let org = org();
-    let no_contact = Customer::create_customer(org.id, "No Contact", "2 Rd").expect("customer");
-    let dispatch_id = Uuid::new_v4();
-
-    let recorded = Notification::record_dispatch_created(org.id, dispatch_id, &no_contact, None)
-        .await
-        .expect("record");
-    assert!(
-        recorded
-            .iter()
-            .all(|n| n.status == NotificationStatus::Skipped)
-    );
-
-    Notification::deliver_queued_best_effort(&recorded).await;
-
-    let listed = Notification::list_by_dispatch(dispatch_id).expect("list");
-    assert!(
-        listed
-            .iter()
-            .all(|n| n.status == NotificationStatus::Skipped),
-        "{listed:?}"
-    );
-}
-
-#[actix_web::test]
-async fn record_dispatch_created_and_delivered_fall_back_to_the_fixed_template_without_an_api_key()
-{
+async fn notifications_are_recorded_with_the_fixed_template() {
     // SAFETY: this module is the only test file that reads ANTHROPIC_API_KEY
     // concurrently in this way — see ai/status.rs's equivalent test for the
     // full rationale.
@@ -269,14 +195,8 @@ async fn record_dispatch_created_and_delivered_fall_back_to_the_fixed_template_w
     let dispatch_id = Uuid::new_v4();
     let short_id = &dispatch_id.to_string()[..8];
 
-    let created = Notification::record_dispatch_created(
-        org.id,
-        dispatch_id,
-        &customer,
-        Some("+91 98888 22222"),
-    )
-    .await
-    .expect("record created");
+    let created = record_created(org.id, dispatch_id, &customer, Some("+91 98888 22222"))
+        .expect("record created");
     let cust = created
         .iter()
         .find(|n| n.recipient_kind == "customer")
@@ -294,9 +214,7 @@ async fn record_dispatch_created_and_delivered_fall_back_to_the_fixed_template_w
         format!("New trip assigned: dispatch {short_id} to Asha Rao.")
     );
 
-    let delivered = Notification::record_dispatch_delivered(org.id, dispatch_id, &customer)
-        .await
-        .expect("record delivered");
+    let delivered = record_delivered(org.id, dispatch_id, &customer).expect("record delivered");
     assert_eq!(
         delivered[0].body,
         format!("Hi Asha Rao, your order (ref {short_id}) has been delivered. Thank you!")
@@ -316,9 +234,7 @@ async fn recording_a_notification_indexes_it_for_the_assistant() {
         .expect("contact");
     let dispatch_id = Uuid::new_v4();
 
-    Notification::record_dispatch_created(org.id, dispatch_id, &customer, None)
-        .await
-        .expect("record");
+    record_created(org.id, dispatch_id, &customer, None).expect("record");
 
     let results = chunk::search_by_org(org.id, "Priya Sharma dispatched", 8).expect("search");
     assert!(

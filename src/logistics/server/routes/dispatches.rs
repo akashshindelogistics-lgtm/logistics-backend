@@ -6,11 +6,7 @@ use crate::logistics::customer::customer::Customer;
 use crate::logistics::dispatch::dispatch::{
     DispatchLineItemInput, DispatchOrder, DispatchStatus, ProofOfDeliveryInput, VehicleSource,
 };
-use crate::logistics::driver::driver::Driver;
-use crate::logistics::notification::notification::Notification;
 use crate::logistics::orgs::orgs::Organization;
-use crate::logistics::vehicle::vehicle::Vehicle;
-use crate::logistics::vendor::hire::VehicleHire;
 use actix_web::{HttpResponse, Responder, get, post, put, web};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -210,13 +206,6 @@ pub async fn dispatch_stock(
 
     match result {
         Ok(order) => {
-            // Best-effort: tell the customer and the assigned driver. A
-            // recording failure must not fail the dispatch itself. A hired
-            // dispatch has no truck or driver yet; its notifications go out
-            // when the vendor's truck is assigned.
-            if order.vehicle_source == VehicleSource::Own {
-                notify_dispatch_created(org_id, &order, &customer).await;
-            }
             let message = if order.status == DispatchStatus::AwaitingVehicle {
                 "Stock reserved; awaiting the hired vehicle"
             } else {
@@ -234,48 +223,6 @@ pub async fn dispatch_stock(
             data: None,
         }),
     }
-}
-
-/// Record (and try to send) the dispatch-created notifications for one
-/// dispatch: to its customer, and to whoever drives its truck.
-pub(super) async fn notify_dispatch_created(
-    org_id: Uuid,
-    order: &DispatchOrder,
-    customer: &Customer,
-) {
-    let driver_phone = driver_phone_for_dispatch(order, org_id);
-    if let Ok(notifs) =
-        Notification::record_dispatch_created(org_id, order.id, customer, driver_phone.as_deref())
-            .await
-    {
-        Notification::deliver_queued_best_effort(&notifs).await;
-    }
-}
-
-/// The phone of whoever drives this dispatch's truck: the hired driver on a
-/// hired dispatch, otherwise the active driver assigned to the own vehicle.
-fn driver_phone_for_dispatch(order: &DispatchOrder, org_id: Uuid) -> Option<String> {
-    match order.vehicle_source {
-        VehicleSource::Hired => {
-            VehicleHire::get_by_id(order.hire_id?)
-                .ok()
-                .flatten()?
-                .driver_phone
-        }
-        VehicleSource::Own => {
-            driver_phone_for_vehicle(order.vehicle_registration_number.as_deref()?, org_id)
-        }
-    }
-}
-
-/// The phone number of the active driver assigned to `reg`, if any.
-fn driver_phone_for_vehicle(reg: &str, org_id: Uuid) -> Option<String> {
-    let vehicle = Vehicle::list_by_org(org_id)
-        .ok()?
-        .into_iter()
-        .find(|v| v.registration_number == reg)?;
-    let driver_id = vehicle.assigned_driver_id?;
-    Driver::get_by_id(driver_id).ok().flatten().map(|d| d.phone)
 }
 
 #[utoipa::path(
@@ -316,21 +263,11 @@ pub async fn update_dispatch_status(
         });
 
     match dispatch.transition_to(payload.status, proof, payload.return_to_godown_id) {
-        Ok(()) => {
-            if dispatch.status == DispatchStatus::Delivered
-                && let Ok(Some(customer)) = Customer::get_by_id(dispatch.customer_id)
-                && let Ok(notifs) =
-                    Notification::record_dispatch_delivered(auth.org_id, dispatch.id, &customer)
-                        .await
-            {
-                Notification::deliver_queued_best_effort(&notifs).await;
-            }
-            HttpResponse::Ok().json(ApiResponse {
-                success: true,
-                message: format!("Dispatch status updated to {}", dispatch.status),
-                data: Some(dispatch),
-            })
-        }
+        Ok(()) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: format!("Dispatch status updated to {}", dispatch.status),
+            data: Some(dispatch),
+        }),
         Err(err) => HttpResponse::BadRequest().json(ApiResponse::<String> {
             success: false,
             message: format!("Status update failed: {}", err),

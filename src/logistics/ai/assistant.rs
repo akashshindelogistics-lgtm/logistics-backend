@@ -129,7 +129,7 @@ pub async fn answer_question(org_id: Uuid, question: &str) -> Result<AssistantAn
     let ops_snapshot = build_ops_snapshot_text(&report);
     let prompt = build_answer_prompt(question, &chunks, &ops_snapshot);
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let mut request = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", &api_key)

@@ -1379,3 +1379,26 @@
 ** TODO Phase 5: billing agent - raise on delivery, send reminders; payment recording stays human
 ** TODO Phase 6: inbound email or WhatsApp, then order intake, customer comms, vendor and hire agents
 ** TODO Phase 7: payment gateway, only then consider automatic payment recording
+* TODO [#B] Send email notifications from akashshinde.logistics@gmail.com - dispatch created / delivered / running late emails to customers were recorded but stayed QUEUED, because no email provider was configured and Resend can't send from a @gmail.com address
+   Plan/context: [[file:docs/notifications.md]] ("Sending email from a Gmail account").
+** DONE Gmail SMTP backend - SMTP_USERNAME/SMTP_PASSWORD (optional SMTP_FROM, SMTP_HOST, SMTP_PORT), used ahead of Resend; send_test_email bin to check credentials
+** TODO Create an App Password on the Gmail account, add the variables to the deployment's environment, send a test email, deploy this version and restart the API
+* DONE Pub/sub and consumers so slow operations run asynchronously
+  Requests no longer wait on Claude, SMS or email. New src/logistics/events:
+  Events + EventDeliveries tables in MySQL, claimed with FOR UPDATE SKIP LOCKED,
+  retried with backoff, then DEAD. Workers run on dedicated OS threads and are off
+  unless EVENT_WORKERS_ENABLED=true. Plan and rationale: [[file:docs/async-events.md]]
+** DONE Phase 1: timeouts on every outbound HTTP call (logistics/http.rs)
+** DONE Phase 2: transactions around dispatch creation, trips, status changes and hire assignment
+** DONE Phase 3: event queue, worker pool, retention
+** DONE Phase 4: notifications and delay alerts moved onto consumers; dedupe key stops double delay alerts
+** TODO assistant/reindex as a background job, with a logistics-frontend PR for its count
+** TODO Build proof-of-delivery photo checks and SMS tracking links as consumers
+** TODO SSE consumer for live dashboard updates
+* TODO [#A] Clean test data out of the live database and stop it mixing again - local Playwright and demos write to the same logistics database as the deployment. Do this before email or agents go live
+   Plan: [[file:docs/database-cleanup.md]]
+** DONE Fix org deletion leaving Dispatches, OrgCredentials and files behind; cleanup_db tool; point Playwright and demos at a logistics_e2e database
+** DONE Choose what to keep: only Mauli Brickvision AAC (owner, 2026-11-04). Keep the old database 30 days. The Oracle VM holds no data
+** TODO Rehearse the cleanup on a scratch copy of the live database
+** TODO Move the deployment to logistics_live with its own MySQL user
+** TODO Afterwards: remove listed upload files, add the missing foreign keys, daily dumps, drop the old database after 30 days
