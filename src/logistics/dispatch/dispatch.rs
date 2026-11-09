@@ -1,4 +1,6 @@
+use crate::logistics::customer::customer::Customer;
 use crate::logistics::db::connection::DbConnection;
+use crate::logistics::notification::notification::Notification;
 use mysql::prelude::*;
 use mysql::*;
 use serde::{Deserialize, Serialize};
@@ -553,6 +555,17 @@ impl DispatchOrder {
         let mut conn = db_connection.get_connection()?;
         ensure_tables(&mut conn)?;
 
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        self.save_in(&mut tx)?;
+        tx.commit()?;
+
+        crate::logistics::ai::chunk::reindex_dispatch_best_effort(self);
+        Ok(())
+    }
+
+    /// [`Self::save`] as part of the caller's transaction. The tables must
+    /// already exist, and the caller reindexes after committing.
+    pub(crate) fn save_in(&mut self, conn: &mut Transaction<'_>) -> Result<(), Box<dyn Error>> {
         conn.exec_drop(
             "INSERT INTO Dispatches (id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id)
              VALUES (:id, :org_id, :customer_id, :vehicle_registration_number, :status, :dispatched_at, :trip_id, :stop_sequence, :vehicle_source, :hire_id)",
@@ -598,8 +611,6 @@ impl DispatchOrder {
             status: self.status,
             changed_at: self.dispatched_at,
         });
-
-        crate::logistics::ai::chunk::reindex_dispatch_best_effort(self);
 
         Ok(())
     }
@@ -661,7 +672,27 @@ impl DispatchOrder {
             None
         };
 
+        // Looked up first: the transaction below holds locks, so it stays
+        // short. A customer that can't be found just isn't notified.
+        let notify_customer = if next == DispatchStatus::Delivered {
+            Customer::get_by_id(self.customer_id).ok().flatten()
+        } else {
+            None
+        };
+
+        // Table creation commits implicitly, so it has to come before the
+        // transaction.
+        Notification::prepare_tables(&mut conn)?;
+        if self.hire_id.is_some() {
+            crate::logistics::vendor::hire::VehicleHire::ensure_table(&mut conn)?;
+        }
+
         let changed_at = now_unix();
+
+        // All or nothing: a crash can't leave stock credited without the
+        // status change, or a delivery without its notification.
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        let conn = &mut tx;
 
         conn.exec_drop(
             "UPDATE Dispatches SET status = :status WHERE id = :id",
@@ -672,7 +703,7 @@ impl DispatchOrder {
         )?;
 
         if let Some(godown_id) = credit_godown {
-            self.credit_line_items_back(&mut conn, godown_id)?;
+            self.credit_line_items_back(conn, godown_id)?;
         }
 
         conn.exec_drop(
@@ -685,6 +716,7 @@ impl DispatchOrder {
             },
         )?;
 
+        let mut recorded_proof = None;
         if let Some(proof) = proof_of_delivery {
             conn.exec_drop(
                 "INSERT INTO DispatchProofOfDelivery (dispatch_id, receiver_name, signature_or_photo_url, delivered_at)
@@ -696,26 +728,49 @@ impl DispatchOrder {
                     "delivered_at" => changed_at,
                 },
             )?;
-            self.proof_of_delivery = Some(ProofOfDelivery {
+            recorded_proof = Some(ProofOfDelivery {
                 receiver_name: proof.receiver_name,
                 signature_or_photo_url: proof.signature_or_photo_url,
                 delivered_at: changed_at,
             });
         }
 
+        if next.is_terminal()
+            && let Some(hire_id) = self.hire_id
+        {
+            crate::logistics::vendor::hire::VehicleHire::close_if_finished(conn, hire_id)?;
+        }
+
+        let notifs = match &notify_customer {
+            Some(customer) => {
+                Notification::enqueue_dispatch_delivered(conn, self.org_id, self.id, customer)?
+            }
+            None => Vec::new(),
+        };
+
+        tx.commit()?;
+
+        // `self` only changes once the write has really happened.
+        if recorded_proof.is_some() {
+            self.proof_of_delivery = recorded_proof;
+        }
         self.status = next;
         self.status_history.push(DispatchStatusEvent {
             status: next,
             changed_at,
         });
 
-        if next.is_terminal()
-            && let Some(hire_id) = self.hire_id
-        {
-            crate::logistics::vendor::hire::VehicleHire::close_if_finished(&mut conn, hire_id)?;
-        }
-
         crate::logistics::ai::chunk::reindex_dispatch_best_effort(self);
+        if let Some(godown_id) = credit_godown {
+            for item in &self.line_items {
+                crate::logistics::ai::chunk::reindex_stock_by_description_best_effort(
+                    godown_id,
+                    &item.stock_description,
+                );
+            }
+        }
+        Notification::index_best_effort(&notifs);
+        crate::logistics::events::worker::wake();
 
         Ok(())
     }
@@ -782,7 +837,7 @@ impl DispatchOrder {
     /// snapshotted `volume_in_size`) if the godown doesn't hold it yet.
     fn credit_line_items_back(
         &self,
-        conn: &mut mysql::PooledConn,
+        conn: &mut Transaction<'_>,
         godown_id: Uuid,
     ) -> Result<(), Box<dyn Error>> {
         for item in &self.line_items {
@@ -816,10 +871,6 @@ impl DispatchOrder {
                     },
                 )?;
             }
-            crate::logistics::ai::chunk::reindex_stock_by_description_best_effort(
-                godown_id,
-                &item.stock_description,
-            );
         }
         Ok(())
     }

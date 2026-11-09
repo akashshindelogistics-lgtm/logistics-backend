@@ -96,8 +96,9 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   inventory, and dispatch volume over the last 14 days.
 - **Dispatch notifications** — when a dispatch is created or delivered, a
   notification is recorded for the customer (email or SMS, whichever is on
-  file) and the driver (SMS), and delivered via Twilio (SMS) / Resend
-  (email) when those are configured. The Dispatches page shows the log per
+  file) and the driver (SMS), and sent in the background with retries via
+  Twilio (SMS) / Resend (email) when those are configured — see
+  [`docs/async-events.md`](docs/async-events.md). The Dispatches page shows the log per
   order. A background scan also alerts the customer if a dispatch is still
   in transit well past when it should have arrived — see
   [`docs/delay-alerts.md`](docs/delay-alerts.md).
@@ -194,6 +195,11 @@ export TWILIO_AUTH_TOKEN="..."
 export TWILIO_FROM_NUMBER="+15551234567"
 export RESEND_API_KEY="re_..."
 export RESEND_FROM_EMAIL="dispatch@yourdomain.com"
+
+# Optional: run the background consumers (notification sending, delay alerts).
+# Off by default, so a dev server can't message real customers.
+# See docs/async-events.md.
+export EVENT_WORKERS_ENABLED="true"
 
 # Optional: where uploaded files (e.g. proof-of-delivery photos) are stored
 # on disk — see docs/file-uploads.md. Defaults to ./uploads.
