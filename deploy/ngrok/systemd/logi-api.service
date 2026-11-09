@@ -1,0 +1,13 @@
+[Unit]
+Description=Logistics API (ngrok deployment)
+
+[Service]
+EnvironmentFile=%h/.config/logistics-ngrok/api.env
+WorkingDirectory=%h/logistics-ngrok/autodeploy/repos/logistics-backend
+ExecStart=%h/logistics-ngrok/autodeploy/current-backend/logistics-system
+# Also covers boot, when MySQL may not be accepting connections yet.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

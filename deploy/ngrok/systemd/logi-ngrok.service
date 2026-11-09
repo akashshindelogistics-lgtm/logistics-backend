@@ -1,0 +1,10 @@
+[Unit]
+Description=ngrok tunnel to the logistics dashboard
+
+[Service]
+ExecStart=/usr/local/bin/ngrok http 4173 --log stdout
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
