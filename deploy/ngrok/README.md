@@ -58,5 +58,23 @@ rm ~/logistics-ngrok/autodeploy/state/backend.failed
 systemctl --user stop logi-deploy.timer     # pause auto-deploy
 ```
 
+## Backups
+
+`logi-backup.timer` runs `backup.sh` every night at 02:15 (or at the next boot if
+the machine was off). It dumps the database named in `api.env` to
+`~/backups/<database>-<date>.sql.gz` and keeps 14 days.
+
+```sh
+systemctl --user start logi-backup          # dump now
+journalctl --user -u logi-backup            # did last night's run work?
+
+# Restore into an empty database
+gunzip < ~/backups/logistics_live-2026-11-10.sql.gz | mysql -u root -p logistics_live
+```
+
+The dumps sit on the same disk as the database, so they cover a bad change or a
+mistaken delete, not a dead disk. Copy them off the machine for that. Uploaded
+files (`UPLOAD_DIR`) are not included.
+
 [logistics-backend]: https://github.com/akashshindelogistics-lgtm/logistics-backend
 [logistics-frontend]: https://github.com/akashshindelogistics-lgtm/logistics-frontend

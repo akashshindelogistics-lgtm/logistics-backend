@@ -1399,6 +1399,7 @@
    Plan: [[file:docs/database-cleanup.md]]
 ** DONE Fix org deletion leaving Dispatches, OrgCredentials and files behind; cleanup_db tool; point Playwright and demos at a logistics_e2e database
 ** DONE Choose what to keep: only Mauli Brickvision AAC (owner, 2026-11-04). Keep the old database 30 days. The Oracle VM holds no data
-** TODO Rehearse the cleanup on a scratch copy of the live database
-** TODO Move the deployment to logistics_live with its own MySQL user
-** TODO Afterwards: remove listed upload files, add the missing foreign keys, daily dumps, drop the old database after 30 days
+** DONE Rehearse the cleanup on a scratch copy of the live database
+** DONE Move the deployment to logistics_live with its own MySQL user (2026-11-10). Going back: restore ~/.config/logistics-ngrok/api.env.pre-cleanup and restart logi-api
+** DONE Afterwards: remove listed upload files, add the missing foreign keys (on logistics_live by hand, not in code), daily dumps (logi-backup.timer)
+** TODO Drop the old logistics database and ~/backups/uploads-removed-*.tar.gz after 2026-12-10; encrypt or delete ~/backups/logistics-pre-cleanup-*.sql

@@ -121,15 +121,31 @@ since the switch would have to be re-entered, so decide within the first day.
 
 ### 4. Tidy up afterwards
 
+Done on 2026-11-10 for the ngrok deployment, except where marked.
+
 - Delete only the files on the list `cleanup_db` wrote. **Never empty the uploads folder:**
   it also holds the published Android app (`driver-app/`), which has no database row.
-- After 30 days of no problems (from the move), drop the old `logistics` database and let it be
-  recreated empty as the development default. Until then it still holds real customer
-  data, and a plain `cargo run` still writes to it.
-- Keep one encrypted dump for as long as you need, then delete it.
-- Add the missing foreign keys now that no orphan rows are left.
-- Add a daily dump for this deployment. `deploy/README.md` only describes one for the
-  Oracle VM.
+  *Done for the 30 listed files that were in the live uploads folder; a copy is in
+  `~/backups/uploads-removed-2026-11-10.tar.gz` until the old database goes. The other
+  41 listed paths are in development checkouts, and were left alone. So were 48 files
+  in the live folder that no database row points to, in either database.*
+- **Still to do:** after 30 days of no problems (from the move, so about 2026-12-10),
+  drop the old `logistics` database and let it be recreated empty as the development
+  default. Until then it still holds real customer data, and a plain `cargo run`
+  still writes to it.
+- **Still to do:** keep one encrypted dump for as long as you need, then delete it.
+  `~/backups/logistics-pre-cleanup-*.sql` is not encrypted.
+- Add the missing foreign keys now that no orphan rows are left. *Done on
+  `logistics_live` by hand, as below. The code doesn't create them, so a new database
+  doesn't have them and relies on `remove_organization` alone.*
+  ```sql
+  ALTER TABLE OrgCredentials ADD CONSTRAINT fk_org_credentials_org
+      FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE;
+  ALTER TABLE Dispatches ADD CONSTRAINT fk_dispatch_org
+      FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE;
+  ```
+- Add a daily dump for this deployment. *Done: `logi-backup.timer`, see
+  `deploy/ngrok/README.md`.*
 
 ## Not covered
 
