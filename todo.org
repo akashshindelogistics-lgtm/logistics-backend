@@ -1367,3 +1367,29 @@
 ** TODO Phase 5: driver assistant in the Android app, scoped to the driver's own dispatches and trips
 ** TODO Phase 6: documents - PDF compliance uploads, org knowledge base (org_doc chunks), in-app help over product docs
 ** TODO Phase 7 (conditional): embeddings + hybrid retrieval, only if phase 1's evaluation shows paraphrase misses that matter
+** TODO Operation map: connect RAG to the chat and agent runtimes, then roll out retrieve-draft-confirm by domain
+   Full map, workflow definitions and rules: "Operation map" in
+   [[file:docs/rag-integration.md]]. RAG only reads, so of the 91 operations
+   (37 reads, 54 writes) writes keep deterministic code and a gate.
+   Workflows: A grounded Q&A, B agentic retrieval, C retrieval only, D
+   retrieve-draft-confirm, E event-triggered, F audience-scoped, G documents.
+   | Domain (routes)                      | Reads       | Writes                          |
+   |--------------------------------------+-------------+---------------------------------|
+   | Dispatches, trips (6)                | A, B        | D; state machine still decides  |
+   | Delay handling                       | A           | E                               |
+   | Godowns, stock, transfers (11)       | B, live     | D for transfers                 |
+   | Billing (6)                          | A, B, role  | D to raise; people record pay   |
+   | Vendors, hires (8)                   | A, B        | D; people approve spend         |
+   | Vehicles, docs, maintenance (18)     | A, B        | D, G                            |
+   | Drivers, driver app (12)             | F           | None from RAG                   |
+   | Customers (4)                        | A, B        | D, C for duplicates             |
+   | Notifications (2)                    | A           | E for generated copy            |
+   | Reports, AI routes (7)               | Live + A    | Reindex stays in code           |
+   | Uploads (2)                          | G           | Stays in code                   |
+   | Auth, users, org admin, health (15)  | No RAG      | No AI                           |
+   Order: draw-down fix, prove chat on the real model and land PRs #109 and
+   #111, add a search_facts read tool to chat, then D by domain (customers,
+   dispatch drafts, stock, vendors, billing last), then E, F and G.
+   Before automating dispatch: draw_down_plans (orgs/orgs.rs) runs one UPDATE
+   per holding with no transaction or quantity check, so it can deduct partly
+   or oversell.

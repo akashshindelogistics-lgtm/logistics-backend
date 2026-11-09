@@ -123,6 +123,72 @@ and digest do) or a plain query is better.
   extraction into `VehicleDocument`, a single call, not retrieval.
 - Reorder suggestions: structured velocity maths.
 
+## Operation map (2026-11-09)
+
+How each of the 91 API operations on `master` (37 reads, 54 writes) relates to
+RAG. **RAG only reads.** It can supply context for a decision, but it can't
+safely change state, so writes keep their deterministic code and a gate. The
+aim is that every suitable operation can be reached through AI, with retrieval
+adding context where it helps.
+
+### Workflow types
+
+| | Workflow | Use it for |
+| --- | --- | --- |
+| A | Grounded Q&A: keyword search plus a live snapshot | Questions about history and notes (exists) |
+| B | Agentic retrieval: the model chooses between search and exact lookups | Mixed questions, follow-ups, id lookups |
+| C | Retrieval only, with no model call | Form suggestions, similar past orders |
+| D | Retrieve, draft, then a person confirms | Most business writes |
+| E | Event-triggered: an event pulls history and drafts something | Delay alerts, chasing payments |
+| F | Audience-scoped retrieval | Drivers, later customers |
+| G | Document extraction and retrieval | RC and insurance PDFs, SOPs |
+
+Graph RAG and a vector database aren't needed: MySQL joins already model these
+relationships, and an org has thousands of chunks at most.
+
+### Map by domain
+
+| Domain (routes) | Reads | Writes | What retrieval adds |
+| --- | --- | --- | --- |
+| Dispatches, trips (6) | A, B: "what happened with X" | D: draft from the customer's past orders; the state machine still decides | Usual vehicle, delivery notes, past return reasons |
+| Delay handling (within dispatches and notifications) | A | E: alert text with the customer's history | Past late or returned deliveries |
+| Godowns, stock, transfers (11) | B: live numbers, not chunks | D: propose transfers | Similar past transfers; reorder maths stays in code |
+| Billing (6) | A, B, limited by role | D for raising invoices; a person records payments | Payment history; arithmetic stays in code |
+| Vendors, hires (8) | A, B | D: hire proposal; a person approves spend | Past rates and vendor notes |
+| Vehicles, documents, maintenance (18) | A, B | D, G: scan to draft a record | Document text, service history |
+| Drivers, driver app (12) | F: own trips only | None from RAG; driver actions and GPS stay as they are | Site instructions |
+| Customers (4) | A, B | D, with duplicate detection (C) | Similar existing customers |
+| Notifications (2) | A | E: only where copy is generated | Earlier messages |
+| Reports, AI routes (7) | Live OpsReport plus narration; retrieval only explains "why" | Reindex stays in code | Related incidents |
+| Uploads (2) | G | Stays in code | Extracted text |
+| Auth, users, org admin, health (15) | No RAG | **No AI**, apart from harmless org reads | None |
+
+GPS pings and stock arithmetic never pass through a model.
+
+### Rules for any write
+
+1. **Decide on live data.** Chunks are updated best-effort and can be stale, so
+   re-read the database before proposing a write.
+2. **Treat retrieved text as untrusted.** Customer names and notes can carry
+   prompt injection, so the checks stay in code, as with the confirmation cards
+   in draft PR #111.
+3. **Take org and role from the session,** never from the model. Today every
+   role can read everything, so limiting billing answers would be a new rule.
+4. **Fix stock draw-down before automating dispatch.** `draw_down_plans` in
+   `orgs/orgs.rs` runs one `UPDATE` per holding with no transaction or quantity
+   check. A failure midway leaves stock partly deducted, and concurrent
+   dispatches can oversell.
+
+### Where this connects
+
+Workflows B and D need the chat and agent runtimes in draft PRs #111 and #109.
+`chat/runtime.rs` on that branch doesn't call retrieval, so a `search_facts`
+read tool is the missing link between the two. After the prerequisites and the
+phase 1 evaluation below, the suggested rollout is: prove chat on the real
+model and land the PRs, add `search_facts`, then roll out D by domain
+(customers, dispatch drafts, stock, vendors, billing last), comparing in
+`SHADOW` mode before loosening any autonomy. E, F and G follow.
+
 ## Architecture choices
 
 ### Retrieval
