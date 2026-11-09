@@ -1017,15 +1017,23 @@ async fn a_second_card_holds_the_model_until_both_are_answered() {
     assert_eq!(customers(&caller).await.len(), 2);
 }
 
+#[test]
+fn chat_is_off_unless_the_server_asks_for_it() {
+    for off in [None, Some(""), Some("false"), Some("1")] {
+        assert!(!runtime::enabled(off), "{off:?}");
+    }
+    assert!(runtime::enabled(Some(" true ")));
+}
+
 /// Needs a funded `ANTHROPIC_API_KEY`:
-/// `cargo test live_chat_run -- --ignored --nocapture`
+/// `CHAT_ENABLED=true cargo test live_chat_run -- --ignored --nocapture`
 #[actix_web::test]
 #[ignore]
 async fn live_chat_run() {
     let _db = TestDb::create();
     let org = org("Live Chat Co");
     let caller = admin(&org);
-    let config = runtime::model_config().expect("ANTHROPIC_API_KEY");
+    let config = runtime::model_config().expect("CHAT_ENABLED=true and ANTHROPIC_API_KEY");
     let id = store::create_conversation(&caller.owner).unwrap().id;
 
     runtime::send_message(

@@ -11,7 +11,8 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 const LIST_LIMIT: u32 = 100;
-const NOT_SET_UP: &str = "Chat isn't set up on this server yet: it needs ANTHROPIC_API_KEY.";
+const NOT_SET_UP: &str =
+    "Chat is turned off on this server: it needs CHAT_ENABLED=true and ANTHROPIC_API_KEY.";
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct ChatMessagePayload {
@@ -218,7 +219,7 @@ pub async fn delete_chat_conversation(
         (status = 200, description = "The conversation after the model has answered. `notice` says if it couldn't", body = ChatThreadResponse),
         (status = 400, description = "Empty or too long", body = EmptyResponse),
         (status = 404, description = "Not found, or someone else's", body = EmptyResponse),
-        (status = 503, description = "No API key on this server", body = EmptyResponse),
+        (status = 503, description = "Chat is off on this server: no `CHAT_ENABLED=true`, or no API key", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse)
     )
 )]

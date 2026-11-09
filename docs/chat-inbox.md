@@ -85,7 +85,8 @@ is making that decision here.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | | Without it, sending a message answers 503 and the page says so |
+| `CHAT_ENABLED` | off | `true` turns chat on. Off, sending a message answers 503 and nothing goes to the model. Cards made earlier can still be confirmed or cancelled |
+| `ANTHROPIC_API_KEY` | | Also needed: without it, sending a message answers 503 too |
 | `CHAT_MODEL` | `AGENT_MODEL`, then `claude-opus-5-5` | |
 | `CHAT_EFFORT` | `low` | |
 | `CHAT_DAILY_TOKEN_LIMIT` | `2000000` | Per org, counting cached tokens as used. A rough guard, not a budget |
@@ -107,11 +108,12 @@ Tables: `ChatConversations`, `ChatMessages`, `ChatProposals`, removed with the o
 
 - **Run it on the real model.** Tests script the model's words, so nothing yet shows
   how well it understands people. The API key has had no credits since 2026-11-03.
-  `cargo test live_chat_run -- --ignored --nocapture` is the first check.
+  `CHAT_ENABLED=true cargo test live_chat_run -- --ignored --nocapture` is the first check.
 - **Clean the live database first** (`docs/database-cleanup.md`). Chat reads whatever
-  is there, including test rows.
+  is there, including test rows. *Done for the ngrok deployment on 2026-11-10.*
 - **Data goes to Anthropic.** Read results, including customer names and phone numbers,
   are sent to the API. The older assistant sends some of this too, but this is much more.
+  That's why chat stays off until a server sets `CHAT_ENABLED=true`.
 - **Roles have gaps that chat inherits.** Per `docs/roles.md`, customer, vehicle,
   document and maintenance writes aren't role-gated on the server. Chat applies the same
   rules as the dashboard, so warehouse staff can add a customer from either.

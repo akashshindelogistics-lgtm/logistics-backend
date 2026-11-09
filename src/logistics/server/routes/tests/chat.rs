@@ -112,6 +112,21 @@ async fn test_chat_needs_a_token() {
     assert_eq!(response.map(|r| r.status().as_u16()).unwrap_or(401), 401);
 }
 
+/// Tests run without `CHAT_ENABLED`, like a server that hasn't opted in.
+#[actix_web::test]
+async fn test_a_message_is_refused_and_not_stored_while_chat_is_off() {
+    let _db = TestDb::create();
+    let org = Organization::create_organization("Chat Off Co", "1 Road").unwrap();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let auth = make_auth_header(org.id, &org.name);
+    let conversation = store::create_conversation(&owner_of(org.id)).unwrap();
+    let uri = format!("/api/chat/conversations/{}/messages", conversation.id);
+    let send = test::TestRequest::post().set_json(json!({"text": "List my customers"}));
+
+    assert_eq!(status_of!(app, send, auth, &uri), 503);
+    assert!(store::list_messages(conversation.id).unwrap().is_empty());
+}
+
 #[actix_web::test]
 async fn test_cancelling_a_card_answers_it_once() {
     let _db = TestDb::create();

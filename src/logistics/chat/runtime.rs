@@ -159,10 +159,19 @@ fn daily_token_limit() -> i64 {
         .unwrap_or(DEFAULT_DAILY_TOKEN_LIMIT)
 }
 
-/// The model settings for chat. `None` without an API key. `CHAT_MODEL` and
-/// `CHAT_EFFORT` override `AGENT_MODEL` and the effort, which starts low because
-/// someone is waiting.
+/// Chat is off unless a server asks for it, because what it reads, customer
+/// names and phone numbers included, goes to the model provider.
+pub(crate) fn enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.trim() == "true")
+}
+
+/// The model settings for chat. `None` unless `CHAT_ENABLED=true`, and without
+/// an API key. `CHAT_MODEL` and `CHAT_EFFORT` override `AGENT_MODEL` and the
+/// effort, which starts low because someone is waiting.
 pub fn model_config() -> Option<ModelConfig> {
+    if !enabled(std::env::var("CHAT_ENABLED").ok().as_deref()) {
+        return None;
+    }
     let non_blank = |key: &str| std::env::var(key).ok().filter(|s| !s.trim().is_empty());
     let mut config = ModelConfig::from_env()?;
     if let Some(model) = non_blank("CHAT_MODEL") {
