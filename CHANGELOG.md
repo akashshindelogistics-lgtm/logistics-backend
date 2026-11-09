@@ -4,6 +4,13 @@ All notable changes to this project are documented here. From v0.1.1 on, this
 file is maintained automatically by [release-please](https://github.com/googleapis/release-please)
 from the conventional-commit history.
 
+## [0.18.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.17.0...v0.18.0) (2026-11-09)
+
+
+### Features
+
+* **agents:** agent runtime, autonomy modes and a dispatch desk agent ([9c07189](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/9c0718957193a7b8dbe278e5ff7f86e31b3c5816))
+
 ## [0.17.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.16.0...v0.17.0) (2026-11-09)
 
 
