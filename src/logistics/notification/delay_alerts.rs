@@ -1,28 +1,28 @@
 //! Background delay-alert scan: finds every dispatch still `IN_TRANSIT` past
 //! its promised delivery window
 //! ([`DispatchOrder::is_running_late`](crate::logistics::dispatch::dispatch::DispatchOrder::is_running_late))
-//! and sends the customer a "your order is running behind schedule"
-//! notification through the existing Twilio/email delivery pipeline —
-//! exactly the same mechanism [`crate::logistics::notification::notification`]
-//! already uses for the dispatch-created / dispatch-delivered events, just a
-//! new trigger condition. See `docs/delay-alerts.md`.
+//! and records a "your order is running behind schedule" notification,
+//! publishing the same kind of event the dispatch-created and delivered
+//! notifications use. The background consumer does the sending. See
+//! `docs/delay-alerts.md` and `docs/async-events.md`.
 //!
-//! [`scan_and_alert`] is meant to be called on a timer (see `main.rs`), not
-//! per request — there is no user-facing route for it. It's idempotent: a
-//! dispatch that already carries a
-//! [`NotificationEvent::DispatchRunningLate`] notification is never alerted
-//! on again, so calling it as often as you like (or concurrently) never
-//! double-sends.
+//! [`scan_and_alert`] runs on a timer (see `events::worker`), not per request.
+//! It's idempotent: the event's unique dedupe key means concurrent scans can't
+//! both alert on one dispatch, and a dispatch that already carries a
+//! [`NotificationEvent::DispatchRunningLate`] notification is skipped.
 
 use crate::logistics::customer::customer::Customer;
+use crate::logistics::db::connection::DbConnection;
 use crate::logistics::dispatch::dispatch::DispatchOrder;
+use crate::logistics::events::worker;
 use crate::logistics::notification::notification::{Notification, NotificationEvent};
+use mysql::TxOpts;
 use std::error::Error;
 
 /// Scan every `IN_TRANSIT` dispatch across every organization, and for each
-/// one that's running late and hasn't already been alerted on, record and
-/// attempt to send a [`NotificationEvent::DispatchRunningLate`] notification
-/// to its customer. Returns how many new alerts were sent.
+/// one that's running late and hasn't already been alerted on, queue a
+/// [`NotificationEvent::DispatchRunningLate`] notification to its customer.
+/// Returns how many new alerts were queued.
 ///
 /// An error on one dispatch (e.g. its customer has since been deleted) is
 /// logged and skipped rather than aborting the whole scan — one bad row must
@@ -45,7 +45,7 @@ pub async fn scan_and_alert() -> Result<usize, Box<dyn Error>> {
 }
 
 /// Alert on one dispatch, unless it's already been alerted on or its
-/// customer can no longer be found. Returns whether a new alert was sent.
+/// customer can no longer be found. Returns whether a new alert was queued.
 async fn alert_one(dispatch: &DispatchOrder) -> Result<bool, Box<dyn Error>> {
     let already_alerted = Notification::list_by_dispatch(dispatch.id)?
         .iter()
@@ -59,21 +59,29 @@ async fn alert_one(dispatch: &DispatchOrder) -> Result<bool, Box<dyn Error>> {
     };
     let hours_late = dispatch.hours_late().unwrap_or(0);
 
-    let notifs = Notification::record_dispatch_running_late(
+    let mut conn = DbConnection::from_env().get_connection()?;
+    Notification::prepare_tables(&mut conn)?;
+    let mut tx = conn.start_transaction(TxOpts::default())?;
+    let Some(notifs) = Notification::enqueue_dispatch_running_late(
+        &mut tx,
         dispatch.org_id,
         dispatch.id,
         &customer,
         hours_late,
-    )
-    .await?;
-    Notification::deliver_queued_best_effort(&notifs).await;
+    )?
+    else {
+        return Ok(false);
+    };
+    tx.commit()?;
+
+    Notification::index_best_effort(&notifs);
+    worker::wake();
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::logistics::db::connection::DbConnection;
     use crate::logistics::dispatch::dispatch::{
         DispatchLineItemInput, DispatchStatus, ProofOfDeliveryInput,
     };
@@ -198,6 +206,26 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn concurrent_scans_are_stopped_by_the_dedupe_key() {
+        let _db = TestDb::create();
+        let (org, customer, order) = in_transit_dispatch_hours_ago(100);
+        let enqueue = || {
+            let mut conn = DbConnection::from_env().get_connection().unwrap();
+            Notification::prepare_tables(&mut conn).unwrap();
+            let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
+            let rows = Notification::enqueue_dispatch_running_late(
+                &mut tx, org.id, order.id, &customer, 28,
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            rows
+        };
+        // Both scans passed the "already alerted?" check; only one may win.
+        assert!(enqueue().is_some());
+        assert!(enqueue().is_none());
+    }
+
+    #[actix_web::test]
     async fn scan_and_alert_skips_a_dispatch_still_within_its_promised_window() {
         let _db = TestDb::create();
         let (_, _, order) = in_transit_dispatch_hours_ago(10); // well under 72h
@@ -206,7 +234,8 @@ mod tests {
         assert!(
             Notification::list_by_dispatch(order.id)
                 .expect("list")
-                .is_empty()
+                .iter()
+                .all(|n| n.event != NotificationEvent::DispatchRunningLate)
         );
     }
 

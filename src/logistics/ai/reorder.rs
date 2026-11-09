@@ -158,7 +158,7 @@ pub async fn generate_reorder_narration(org_id: Uuid) -> Result<String, String> 
 
     let prompt = build_reorder_prompt(&suggestions);
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let mut request = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", &api_key)

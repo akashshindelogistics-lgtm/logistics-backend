@@ -17,8 +17,8 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use std::time::Duration;
 
-/// Sending happens inline in the dispatch request, so a hung mail server must
-/// not hold that request open for long.
+/// A hung mail server must not hold a background worker for long; a timeout
+/// fails the attempt and the event queue retries it.
 const SMTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Why a delivery attempt didn't end in a sent message.
@@ -57,7 +57,7 @@ async fn send_sms(to: &str, body: &str) -> Result<(), DeliveryError> {
     let (account_sid, auth_token, from) =
         twilio_credentials().ok_or(DeliveryError::NotConfigured)?;
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let resp = client
         .post(format!(
             "https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
@@ -192,7 +192,7 @@ async fn send_via_smtp(
 async fn send_via_resend(to: &str, subject: &str, body: &str) -> Result<(), DeliveryError> {
     let (api_key, from) = resend_credentials().ok_or(DeliveryError::NotConfigured)?;
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let resp = client
         .post("https://api.resend.com/emails")
         .bearer_auth(&api_key)

@@ -49,6 +49,8 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
       UPLOAD_DIR: /app/uploads
+      # Runs notification sending and delay alerts. See docs/async-events.md.
+      EVENT_WORKERS_ENABLED: "true"
     volumes:
       - uploads-data:/app/uploads
     expose:

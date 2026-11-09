@@ -11,8 +11,10 @@
 //! A hired truck never enters the `Vehicle` table: its number is free text on
 //! the hire and is copied onto the dispatches.
 
+use crate::logistics::customer::customer::Customer;
 use crate::logistics::db::connection::DbConnection;
 use crate::logistics::dispatch::dispatch::DispatchOrder;
+use crate::logistics::notification::notification::Notification;
 use crate::logistics::vehicle::vehicle::Unit;
 use mysql::prelude::*;
 use mysql::*;
@@ -242,7 +244,7 @@ impl VehicleHire {
     /// Record a `REQUESTED` hire. Called by the org's dispatch / trip
     /// creation with the id it already stamped onto the dispatches.
     pub(crate) fn insert_requested(
-        conn: &mut mysql::PooledConn,
+        conn: &mut Transaction<'_>,
         id: Uuid,
         org_id: Uuid,
         vendor_id: Uuid,
@@ -250,7 +252,6 @@ impl VehicleHire {
         trip_id: Option<Uuid>,
         required_volume: i64,
     ) -> Result<(), Box<dyn Error>> {
-        Self::ensure_table(conn)?;
         conn.exec_drop(
             "INSERT INTO VehicleHires (id, org_id, vendor_id, dispatch_id, trip_id, required_volume, status, requested_at)
              VALUES (:id, :org_id, :vendor_id, :dispatch_id, :trip_id, :required_volume, 'REQUESTED', :requested_at)",
@@ -397,9 +398,24 @@ impl VehicleHire {
         let mut conn = DbConnection::from_env().get_connection()?;
         crate::logistics::dispatch::dispatch::ensure_tables(&mut conn)?;
         crate::logistics::dispatch::trip::Trip::ensure_table(&mut conn)?;
+        Notification::prepare_tables(&mut conn)?;
         let now = now_unix();
 
-        let released_ids: Vec<String> = {
+        // Looked up before the transaction: `get_by_id` runs table setup on
+        // its own connection, which could wait on this transaction's locks.
+        let customer_ids: Vec<String> = conn.exec(
+            "SELECT DISTINCT customer_id FROM Dispatches WHERE hire_id = :hire_id",
+            params! { "hire_id" => self.id.to_string() },
+        )?;
+        let customers: std::collections::HashMap<String, Customer> = customer_ids
+            .into_iter()
+            .filter_map(|id| {
+                let customer = Customer::get_by_id(parse_uuid(&id)).ok().flatten()?;
+                Some((id, customer))
+            })
+            .collect();
+
+        let (released_ids, notifs) = {
             let mut tx = conn.start_transaction(TxOpts::default())?;
             // Re-check under the transaction so two dispatchers can't both
             // assign the same hire.
@@ -430,8 +446,9 @@ impl VehicleHire {
                 ));
             }
 
-            let ids: Vec<String> = tx.exec(
-                "SELECT id FROM Dispatches WHERE hire_id = :hire_id AND status = 'AWAITING_VEHICLE'",
+            let waiting: Vec<(String, String)> = tx.exec(
+                "SELECT id, customer_id FROM Dispatches
+                 WHERE hire_id = :hire_id AND status = 'AWAITING_VEHICLE'",
                 params! { "hire_id" => self.id.to_string() },
             )?;
             tx.exec_drop(
@@ -439,12 +456,24 @@ impl VehicleHire {
                  WHERE hire_id = :hire_id AND status = 'AWAITING_VEHICLE'",
                 params! { "reg" => &reg, "hire_id" => self.id.to_string() },
             )?;
-            for id in &ids {
+            // The dispatches are now real: tell each customer and the hired
+            // driver, as an own-fleet dispatch does at creation.
+            let mut notifs = Vec::new();
+            for (id, customer_id) in &waiting {
                 tx.exec_drop(
                     "INSERT INTO DispatchStatusHistory (dispatch_id, status, changed_at)
                      VALUES (:dispatch_id, 'PENDING', :changed_at)",
                     params! { "dispatch_id" => id, "changed_at" => now },
                 )?;
+                if let Some(customer) = customers.get(customer_id) {
+                    notifs.extend(Notification::enqueue_dispatch_created(
+                        &mut tx,
+                        self.org_id,
+                        parse_uuid(id),
+                        customer,
+                        Some(driver_phone.as_str()),
+                    )?);
+                }
             }
             if let Some(trip_id) = self.trip_id {
                 tx.exec_drop(
@@ -453,8 +482,11 @@ impl VehicleHire {
                 )?;
             }
             tx.commit()?;
-            ids
+            let ids: Vec<String> = waiting.into_iter().map(|(id, _)| id).collect();
+            (ids, notifs)
         };
+        Notification::index_best_effort(&notifs);
+        crate::logistics::events::worker::wake();
 
         self.status = HireStatus::Confirmed;
         self.registration_number = Some(reg);
@@ -577,10 +609,9 @@ impl VehicleHire {
     /// while any dispatch on the hire is still running, or if the hire is
     /// already closed.
     pub(crate) fn close_if_finished(
-        conn: &mut mysql::PooledConn,
+        conn: &mut Transaction<'_>,
         hire_id: Uuid,
     ) -> Result<(), Box<dyn Error>> {
-        Self::ensure_table(conn)?;
         let running: Option<i64> = conn.exec_first(
             "SELECT 1 FROM Dispatches
              WHERE hire_id = :hire_id AND status NOT IN ('DELIVERED', 'RETURNED', 'CANCELLED')

@@ -26,14 +26,15 @@ Every notification lands in the `Notifications` table with a status:
 
 | status | meaning |
 | --- | --- |
-| `QUEUED` | ready to send, but no provider is configured for its channel yet |
+| `QUEUED` | waiting for a background worker, or no provider is configured for its channel yet |
 | `SKIPPED` | no contact on file for this party, nothing to send |
 | `SENT` | delivery succeeded |
-| `FAILED` | delivery was attempted and the provider reported an error |
+| `FAILED` | the provider kept reporting errors until every retry was used up |
 
-Recording and delivery happen in the same request: right after a `QUEUED`
-row is inserted, `Notification::deliver_queued_best_effort` calls
-[`crate::logistics::notification::delivery`] to actually send it — Twilio for
+Recording happens in the request, in the same transaction as the dispatch
+change. Sending happens afterwards in a background consumer, with retries (see
+[async-events.md](async-events.md)). The consumer calls
+[`crate::logistics::notification::delivery`] to send each row — Twilio for
 SMS, and for email either SMTP (Gmail by default) or
 [Resend](https://resend.com). All are optional and read their credentials from
 the environment:
@@ -47,9 +48,10 @@ the environment:
 A channel with no credentials configured behaves exactly as before this
 feature existed: the row is left `QUEUED` rather than marked `FAILED` —
 nothing was actually attempted, and it's ready to send the moment the
-provider is configured. Delivery is best-effort either way: a failure only
-updates that notification's own status, it never fails the dispatch
-create/deliver request it's attached to.
+provider is configured. A provider failure never affects the dispatch request:
+the consumer retries it, and only marks the row `FAILED` when retries run out.
+Workers must be enabled with `EVENT_WORKERS_ENABLED=true`, otherwise rows stay
+`QUEUED`.
 
 ## Sending email from a Gmail account
 
@@ -85,8 +87,11 @@ Things to know:
   and customer replies land in its inbox. Nothing in this system reads them.
 - Changing the account's password revokes its App Passwords, and sends then fail
   until a new one is set.
-- `QUEUED` rows recorded before a provider was configured are not sent
-  afterwards, so turning email on doesn't send customers stale messages.
+- With workers running, a row whose channel has no provider completes its event
+  and stays `QUEUED`, so it is not sent when email is turned on later.
+- With workers off (`EVENT_WORKERS_ENABLED` unset), events wait in the queue.
+  Turning workers on with SMTP configured sends everything still waiting,
+  however old. Clear those events first if customers shouldn't get them.
 
 ## Channel choice
 
@@ -126,10 +131,11 @@ Both are reads — any authenticated member of the org can see them.
 - Rust model (`notification/tests.rs`): created records customer + driver and
   prefers email; SMS fallback then `SKIPPED` with no contact; delivered
   notifies only the customer; `list_by_org` is scoped and newest-first;
-  cascade delete with the org; `deliver_queued_best_effort` leaves `QUEUED`
-  rows `QUEUED` without provider credentials and never touches a `SKIPPED`
-  row; created/delivered fall back to the exact fixed template text without
-  `ANTHROPIC_API_KEY`. Plus `Customer::set_contact` normalisation.
+  cascade delete with the org; rows start with the exact fixed template text.
+  Plus `Customer::set_contact` normalisation.
+- Rust consumer (`notification/consumer.rs`): sends every `QUEUED` row, retries
+  only what failed, leaves rows `QUEUED` without a provider, never sends a
+  `SKIPPED` row, and marks undelivered rows `FAILED` when retries run out.
 - Rust delivery (`notification/delivery.rs`): `deliver` returns
   `NotConfigured` for SMS/email without credentials (including a partial
   Twilio credential set); SMTP authenticates and sends a full message against
