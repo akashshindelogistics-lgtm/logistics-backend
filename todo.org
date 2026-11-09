@@ -1367,3 +1367,22 @@
 ** TODO Phase 5: driver assistant in the Android app, scoped to the driver's own dispatches and trips
 ** TODO Phase 6: documents - PDF compliance uploads, org knowledge base (org_doc chunks), in-app help over product docs
 ** TODO Phase 7 (conditional): embeddings + hybrid retrieval, only if phase 1's evaluation shows paraphrase misses that matter
+* TODO [#C] MCP server for AI agents - expose logistics data as org-scoped tools at /mcp, alongside (not instead of) the REST API
+  Low priority for now: don't pick up without being asked.
+  Decision: the dashboard and Android app stay on REST. They call known
+  endpoints and rely on HTTP status handling, multipart uploads, binary
+  downloads, Swagger and the lightweight /track/{tracker_key} GPS route; MCP
+  would add a second protocol with no user-visible gain. MCP is for callers
+  driven by a model (Claude Desktop, Claude Code). The in-app assistant runs in
+  the same process, so it calls the service functions directly and no MCP
+  client needs building unless we consume third-party MCP servers.
+  Auth note: role and org checks live inside the route handlers, so a tool
+  calling the model layer directly would skip them. The org must always come
+  from the token, never from a tool argument.
+  Overlaps with the RAG item's Phase 4 (lookup tools): share the same service
+  functions.
+** TODO Phase 1: extract a service function (roles, org scope) for each endpoint a tool will use, incrementally rather than all of routes.rs
+** TODO Phase 2: stateless Streamable HTTP /mcp on the existing Actix server with the same JWT validation; check whether the rmcp SDK fits Actix, else a small hand-written JSON-RPC handler; prove it with 2-3 tools from Claude Code
+** TODO Phase 3: about 8 read-only tools - dispatches, stock levels, vehicles, expiring documents, maintenance due, reports, search - reusing the ToSchema types for input schemas
+** TODO Phase 4: external client auth - scoped, revocable tokens for our own use; OAuth 2.1 only if customers will connect their own agents
+** TODO Phase 5 (conditional): write tools one at a time (dispatch, transfers) with role checks, audit log, explicit human confirmation and prompt-injection review
