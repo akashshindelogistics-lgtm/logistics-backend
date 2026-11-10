@@ -6,7 +6,22 @@ resources:
   - mysql.yaml
   - api.yaml
   - frontend.yaml
+  - monitoring/prometheus.yaml
+  - monitoring/grafana.yaml
 configMapGenerator:
   - name: frontend-nginx
     files:
       - default.conf=nginx.conf
+  - name: prometheus-config
+    files:
+      - monitoring/prometheus.yml
+  - name: grafana-datasources
+    files:
+      - monitoring/datasources.yaml
+  - name: grafana-dashboard-provider
+    files:
+      - monitoring/dashboards.yaml
+  - name: grafana-dashboards
+    files:
+      - monitoring/operations.json
+      - monitoring/system.json

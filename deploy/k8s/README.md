@@ -17,6 +17,7 @@ disk there, including uncommitted changes.
 | Dashboard | http://localhost:8088 |
 | API (direct) | http://localhost:8089/api/health |
 | Swagger UI | http://localhost:8089/swagger-ui/ |
+| Grafana | http://localhost:8088/grafana/ |
 
 The dashboard reaches the API through `/api` on its own origin (nginx proxies
 it). Both ports are bound to 127.0.0.1 only.
@@ -27,6 +28,34 @@ kubectl context as it was:
 ```
 kubectl --context kind-logistics -n logistics get pods
 ```
+
+## Monitoring
+
+Prometheus and Grafana run in the same namespace; files are in `monitoring/`.
+Grafana opens without a login and has two dashboards in the Logistics folder:
+
+- **Logistics — Operations** reads the app's MySQL tables directly: active and
+  in-transit dispatches, deliveries and time to deliver, status changes, low
+  stock, unpaid and overdue invoices, expiring vehicle documents, overdue
+  maintenance, open hires, failed notifications and vehicles that stopped
+  reporting location. Filter by organisation at the top.
+- **Logistics — API & infrastructure** uses Prometheus: request rate, errors
+  and latency per route from the API's `GET /metrics`, delay-alert scan
+  failures, MySQL health from `mysqld-exporter`, and CPU and memory per pod
+  from the kubelet.
+
+Prometheus keeps 15 days on its own volume. It has no outside port; to query
+it directly:
+
+```
+kubectl --context kind-logistics -n logistics port-forward svc/prometheus 9090
+```
+
+Dashboards are provisioned from the JSON files and can't be saved from the UI.
+To change one, edit it in Grafana, export the JSON over the file, and run `up`.
+
+The notification panels show "table doesn't exist" until the app sends its
+first notification; that is when it creates the `Notifications` table.
 
 ## Secrets
 

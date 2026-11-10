@@ -55,11 +55,13 @@ up() {
   kc -n "$NAMESPACE" rollout status statefulset/mysql --timeout=300s
   kc -n "$NAMESPACE" rollout status deployment/logistics-api --timeout=300s
   kc -n "$NAMESPACE" rollout status deployment/logistics-frontend --timeout=120s
+  kc -n "$NAMESPACE" rollout status deployment/prometheus deployment/grafana --timeout=180s
   cat <<URLS
 
 Dashboard:  http://localhost:8088
 API:        http://localhost:8089/api/health
 Swagger UI: http://localhost:8089/swagger-ui/
+Grafana:    http://localhost:8088/grafana/
 URLS
 }
 

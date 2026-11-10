@@ -2,7 +2,9 @@ use actix_cors::Cors;
 use actix_web::{App, HttpServer};
 use logistics_system::logistics::auth::auth::ensure_jwt_secret_configured;
 use logistics_system::logistics::notification::delay_alerts;
+use logistics_system::logistics::server::metrics;
 use logistics_system::logistics::server::routes::config_routes;
+use std::sync::atomic::Ordering;
 
 /// How often the delay-alert background scan wakes up and checks every
 /// `IN_TRANSIT` dispatch across every org for one running behind schedule.
@@ -22,7 +24,10 @@ async fn main() -> std::io::Result<()> {
         loop {
             tokio::time::sleep(DELAY_ALERT_SCAN_INTERVAL).await;
             if let Err(err) = delay_alerts::scan_and_alert().await {
+                metrics::DELAY_ALERT_SCANS_FAILED.fetch_add(1, Ordering::Relaxed);
                 eprintln!("delay-alert scan failed: {err}");
+            } else {
+                metrics::DELAY_ALERT_SCANS_OK.fetch_add(1, Ordering::Relaxed);
             }
         }
     });

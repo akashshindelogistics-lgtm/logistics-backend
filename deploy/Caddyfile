@@ -6,6 +6,9 @@
 	encode zstd gzip
 	tls {$ACME_EMAIL}
 
+	# Prometheus scrape endpoint; not for the internet.
+	respond /metrics 404
+
 	reverse_proxy api:8080
 
 	log {

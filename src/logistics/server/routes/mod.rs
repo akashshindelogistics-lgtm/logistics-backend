@@ -7,6 +7,7 @@
 //! re-exported from here, so `routes::config_routes`, `routes::ApiDoc` and
 //! `routes::<Type>` paths are unchanged.
 
+use super::metrics::{self, metrics_endpoint};
 use crate::logistics::ai::assistant::{AssistantAnswer, AssistantSource};
 use crate::logistics::auth::auth::OrgSummary;
 use crate::logistics::billing::invoice::{CustomerBillingSummary, Invoice, PaymentStatus};
@@ -35,6 +36,7 @@ use crate::logistics::vehicle::maintenance::{MaintenanceStatus, VehicleMaintenan
 use crate::logistics::vehicle::vehicle::{Location, Unit, Vehicle, VehicleType};
 use crate::logistics::vendor::hire::{HireStatus, VehicleHire, VendorPayment};
 use crate::logistics::vendor::vendor::VehicleVendor;
+use actix_web::dev::Service;
 use actix_web::web;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
@@ -275,8 +277,24 @@ pub fn config_routes(cfg: &mut web::ServiceConfig) {
     // Where the driver app's releases are kept. Tests register their own
     // after configure(), which replaces this one.
     cfg.app_data(web::Data::new(DriverAppDir::from_env()));
+    cfg.service(metrics_endpoint);
     cfg.service(
         web::scope("/api")
+            .wrap_fn(|req, srv| {
+                let start = std::time::Instant::now();
+                let method = req.method().to_string();
+                let fut = srv.call(req);
+                async move {
+                    let res = fut.await?;
+                    metrics::observe(
+                        &method,
+                        res.request().match_pattern(),
+                        res.status().as_u16(),
+                        start.elapsed(),
+                    );
+                    Ok(res)
+                }
+            })
             .service(health_check)
             .service(auth_orgs)
             .service(auth_login)

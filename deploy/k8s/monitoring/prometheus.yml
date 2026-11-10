@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: logistics-api
+    static_configs:
+      - targets: [logistics-api:8080]
+  - job_name: mysql
+    static_configs:
+      - targets: [mysqld-exporter:9104]
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+  # Per-container CPU and memory, read from each kubelet through the API server.
+  - job_name: cadvisor
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+    metric_relabel_configs:
+      - source_labels: [namespace]
+        regex: logistics
+        action: keep
