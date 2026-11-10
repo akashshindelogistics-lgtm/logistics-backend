@@ -1,0 +1,21 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+  # Business numbers come straight from the app's tables.
+  # shortcut: uses the app's own read-write DB user; add a SELECT-only user
+  # before pointing this at a shared or production database.
+  - name: Logistics MySQL
+    uid: logistics-mysql
+    type: mysql
+    url: mysql:3306
+    user: logistics
+    jsonData:
+      database: logistics
+      maxOpenConns: 5
+    secureJsonData:
+      password: ${MYSQL_PASSWORD}

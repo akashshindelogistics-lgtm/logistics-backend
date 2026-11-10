@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: api-uploads
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logistics-api
+spec:
+  type: NodePort
+  selector:
+    app: logistics-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logistics-api
+spec:
+  # One replica on a ReadWriteOnce uploads volume, and the delay-alert scanner
+  # runs in-process, so a second copy would send duplicate alerts.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: logistics-api
+  template:
+    metadata:
+      labels:
+        app: logistics-api
+    spec:
+      securityContext:
+        fsGroup: 10001 # the image's non-root `app` user must write to uploads
+      initContainers:
+        - name: wait-for-mysql
+          image: mysql:8.0
+          command:
+            - sh
+            - -c
+            - until mysqladmin ping -h mysql --silent; do sleep 2; done
+      containers:
+        - name: api
+          image: logistics-api:local
+          imagePullPolicy: Never # loaded with `kind load`, not in a registry
+          ports:
+            - containerPort: 8080
+          env:
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "8080"
+            - name: UPLOAD_DIR
+              value: /app/uploads
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: logistics-secrets
+                  key: mysql-password
+            # Must stay after MYSQL_PASSWORD, which it expands.
+            - name: DATABASE_URL
+              value: mysql://logistics:$(MYSQL_PASSWORD)@mysql:3306/logistics
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: logistics-secrets
+                  key: jwt-secret
+            # Optional: the AI features need it, nothing else does.
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: logistics-secrets
+                  key: anthropic-api-key
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: api-uploads

@@ -335,6 +335,7 @@ All routes are served under the `/api` prefix.
 | GET | `/api/customers/{id}/billing` | A customer's payment standing (outstanding, overdue) |
 | GET | `/api/orgs/{id}/reports` | Operational report: fleet utilization, delivery performance, godown inventory, 14-day dispatch volume |
 | GET | `/api/health` | Health check |
+| GET | `/metrics` | Prometheus metrics: requests, latency and status per route (not under `/api`; blocked by the Caddy proxy) |
 
 The published Swagger UI (see CI/CD below) has "Try it out" enabled and the
 server enables permissive CORS, so it can call the deployed API directly.

@@ -5,11 +5,13 @@ use super::queue::{self, Claimed, Event};
 use crate::logistics::db::connection::DbConnection;
 use crate::logistics::notification::consumer::NotificationConsumer;
 use crate::logistics::notification::delay_alerts;
+use crate::logistics::server::metrics;
 use futures_util::FutureExt;
 use futures_util::future::LocalBoxFuture;
 use std::error::Error;
 use std::panic::AssertUnwindSafe;
 use std::sync::OnceLock;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -177,7 +179,10 @@ async fn scan_forever() {
     loop {
         tokio::time::sleep(DELAY_SCAN_INTERVAL).await;
         if let Err(err) = delay_alerts::scan_and_alert().await {
+            metrics::DELAY_ALERT_SCANS_FAILED.fetch_add(1, Ordering::Relaxed);
             eprintln!("delay-alert scan failed: {err}");
+        } else {
+            metrics::DELAY_ALERT_SCANS_OK.fetch_add(1, Ordering::Relaxed);
         }
         let purged = DbConnection::from_env().get_connection().and_then(|mut c| {
             queue::ensure_tables(&mut c)?;
