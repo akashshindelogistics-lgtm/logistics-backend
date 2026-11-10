@@ -25,3 +25,6 @@ configMapGenerator:
     files:
       - monitoring/operations.json
       - monitoring/system.json
+  - name: grafana-alerting
+    files:
+      - monitoring/alerts.yaml

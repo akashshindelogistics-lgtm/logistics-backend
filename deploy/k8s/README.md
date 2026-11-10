@@ -57,6 +57,20 @@ To change one, edit it in Grafana, export the JSON over the file, and run `up`.
 The notification panels show "table doesn't exist" until the app sends its
 first notification; that is when it creates the `Notifications` table.
 
+### Alerts
+
+`monitoring/alerts.yaml` provisions alert rules into the Logistics folder
+(Alerting > Alert rules in Grafana). They can't be edited from the UI.
+
+| Group | Checked | Rules |
+| --- | --- | --- |
+| infrastructure | every minute | scrape target down, MySQL down, API 5xx ratio above 5%, API p95 latency above 2s, delay-alert scan failing, pod memory above 90% of its limit, MySQL slow queries |
+| operations | every 5 minutes, one alert per organisation | dispatches in transit over 48h, hired vehicle not assigned for 6h, vehicles on in-transit dispatches not reporting location, stock at or below reorder threshold, vehicle documents expired, maintenance overdue, invoices overdue, notifications failing |
+
+No contact point is set up, so alerts only show in Grafana. To be told, add
+one (email needs SMTP settings; Slack or a webhook needs only a URL) under
+Alerting > Contact points and point the default notification policy at it.
+
 ## Secrets
 
 `up` generates the MySQL passwords and `JWT_SECRET` into the

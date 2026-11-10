@@ -70,6 +70,8 @@ spec:
               mountPath: /etc/grafana/provisioning/dashboards
             - name: dashboards
               mountPath: /var/lib/grafana/dashboards
+            - name: alerting
+              mountPath: /etc/grafana/provisioning/alerting
       volumes:
         - name: datasources
           configMap:
@@ -80,3 +82,6 @@ spec:
         - name: dashboards
           configMap:
             name: grafana-dashboards
+        - name: alerting
+          configMap:
+            name: grafana-alerting
