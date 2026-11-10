@@ -42,9 +42,11 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
+mod agents;
 mod ai;
 mod auth;
 mod billing;
+mod chat;
 mod common;
 mod customers;
 mod dispatches;
@@ -64,9 +66,11 @@ mod vehicle_documents;
 mod vehicles;
 mod vendors;
 
+pub use agents::*;
 pub use ai::*;
 pub use auth::*;
 pub use billing::*;
+pub use chat::*;
 pub use common::*;
 pub use customers::*;
 pub use dispatches::*;
@@ -197,6 +201,20 @@ impl Modify for SecurityAddon {
         get_ops_report_summary,
         list_dispatch_notifications,
         list_org_notifications,
+        get_agent_settings,
+        update_agent_settings,
+        run_agents_now,
+        list_chat_conversations,
+        create_chat_conversation,
+        get_chat_conversation,
+        delete_chat_conversation,
+        send_chat_message,
+        confirm_chat_proposal,
+        cancel_chat_proposal,
+        list_agent_runs,
+        list_agent_actions,
+        approve_agent_action,
+        reject_agent_action,
         create_trip,
         list_org_trips,
         get_trip,
@@ -246,6 +264,20 @@ impl Modify for SecurityAddon {
             UploadedFileResponse, UploadedFileRef,
             AssistantAskPayload, AssistantAnswer, AssistantSource, AssistantAnswerResponse,
             AssistantReindexResult, AssistantReindexResponse,
+            AgentSettings, AgentSettingsResponse, AgentRunResponse, AgentRunListResponse,
+            AgentActionResponse, AgentActionListResponse,
+            crate::logistics::agent::store::AutonomyMode,
+            crate::logistics::agent::store::Risk,
+            crate::logistics::agent::store::ActionStatus,
+            ChatMessagePayload, ChatConversationResponse, ChatConversationListResponse, ChatThreadResponse,
+            crate::logistics::chat::store::ChatConversation,
+            crate::logistics::chat::store::ChatProposal,
+            crate::logistics::chat::store::ProposalField,
+            crate::logistics::chat::store::ProposalStatus,
+            crate::logistics::chat::runtime::ChatItem,
+            crate::logistics::chat::runtime::ChatThread,
+            crate::logistics::agent::store::AgentRun,
+            crate::logistics::agent::store::AgentAction,
             LocationResponse, OrgSummaryListResponse, EmptyResponse,
         )
     ),
@@ -268,12 +300,23 @@ impl Modify for SecurityAddon {
         (name = "Notifications", description = "Customer and driver notifications recorded for each dispatch"),
         (name = "Trips", description = "Multi-stop trips: one vehicle serving several customer orders in sequence"),
         (name = "Uploads", description = "File storage for uploaded images, e.g. proof-of-delivery photos and signatures"),
+        (name = "Chat", description = "The chat inbox: run operations by asking, with a confirmation card for every change"),
+        (name = "Agents", description = "Autonomy settings, the audit trail of agent runs and actions, and the approval inbox"),
         (name = "AI Assistant", description = "Retrieval-grounded natural-language Q&A over an organization's own data"),
     )
 )]
 pub struct ApiDoc;
 
 pub fn config_routes(cfg: &mut web::ServiceConfig) {
+    config_api_routes(cfg);
+    cfg.service(
+        SwaggerUi::new("/swagger-ui/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi()),
+    );
+}
+
+/// Everything under `/api`, without the Swagger UI. Chat runs requests through
+/// this in-process, where building the whole spec each time would be wasted.
+pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
     // Where the driver app's releases are kept. Tests register their own
     // after configure(), which replaces this one.
     cfg.app_data(web::Data::new(DriverAppDir::from_env()));
@@ -381,13 +424,26 @@ pub fn config_routes(cfg: &mut web::ServiceConfig) {
             .service(get_ops_report_summary)
             .service(list_dispatch_notifications)
             .service(list_org_notifications)
+            .service(get_agent_settings)
+            .service(update_agent_settings)
+            .service(run_agents_now)
+            .service(list_chat_conversations)
+            .service(create_chat_conversation)
+            .service(get_chat_conversation)
+            .service(delete_chat_conversation)
+            .service(send_chat_message)
+            .service(confirm_chat_proposal)
+            .service(cancel_chat_proposal)
+            .service(list_agent_runs)
+            .service(list_agent_actions)
+            .service(approve_agent_action)
+            .service(reject_agent_action)
             .service(create_trip)
             .service(list_org_trips)
             .service(get_trip)
             .service(upload_file)
             .service(get_uploaded_file),
-    )
-    .service(SwaggerUi::new("/swagger-ui/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi()));
+    );
 }
 
 #[cfg(test)]

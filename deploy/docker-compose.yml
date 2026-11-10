@@ -38,12 +38,28 @@ services:
       ANTHROPIC_WORKSPACE_ID: ${ANTHROPIC_WORKSPACE_ID:-}
       # Optional — without these, notifications are recorded but stay QUEUED
       # (docs/notifications.md). Blank counts as unset.
+      AGENTS_ENABLED: ${AGENTS_ENABLED:-}
+      AGENT_INTERVAL_MINUTES: ${AGENT_INTERVAL_MINUTES:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      AGENT_EFFORT: ${AGENT_EFFORT:-}
+      AGENT_DAILY_TOKEN_LIMIT: ${AGENT_DAILY_TOKEN_LIMIT:-}
+      CHAT_ENABLED: ${CHAT_ENABLED:-}
+      CHAT_MODEL: ${CHAT_MODEL:-}
+      CHAT_EFFORT: ${CHAT_EFFORT:-}
+      CHAT_DAILY_TOKEN_LIMIT: ${CHAT_DAILY_TOKEN_LIMIT:-}
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
       UPLOAD_DIR: /app/uploads
+      # Runs notification sending and delay alerts. See docs/async-events.md.
+      EVENT_WORKERS_ENABLED: "true"
     volumes:
       - uploads-data:/app/uploads
     expose:

@@ -7,6 +7,7 @@ use crate::logistics::dispatch::route::{haversine_distance_km, nearest_neighbor_
 use crate::logistics::dispatch::trip::Trip;
 use crate::logistics::driver::driver::Driver;
 use crate::logistics::godown::godown::Godown;
+use crate::logistics::notification::notification::Notification;
 use crate::logistics::stock::stock::Stock;
 use crate::logistics::vehicle::vehicle::{Location, Vehicle};
 use crate::logistics::vendor::hire::VehicleHire;
@@ -245,7 +246,19 @@ impl Organization {
             }
             None => Some(self.select_free_vehicle(&mut conn, required_volume, customer)?),
         };
-        let order_line_items = Self::draw_down_plans(&mut conn, plans)?;
+
+        // Table creation commits implicitly, so it has to come before the
+        // transaction. The driver lookup is a read on its own connection.
+        Self::prepare_dispatch_tables(&mut conn, hire_vendor.is_some())?;
+        let driver_phone = vehicle_reg
+            .as_deref()
+            .and_then(|reg| Notification::driver_phone_for_vehicle(reg, self.id));
+
+        // All or nothing: a crash can't leave stock drawn down without a
+        // dispatch, or a dispatch without its notifications.
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        let mut drawn = Vec::new();
+        let order_line_items = Self::draw_down_plans(&mut tx, plans, &mut drawn)?;
 
         let hire_id = hire_vendor.map(|_| Uuid::new_v4());
         let mut dispatch_order = DispatchOrder {
@@ -271,10 +284,10 @@ impl Organization {
             trip_id: None,
             stop_sequence: None,
         };
-        dispatch_order.save()?;
+        dispatch_order.save_in(&mut tx)?;
         if let (Some(hire_id), Some(vendor_id)) = (hire_id, hire_vendor) {
             VehicleHire::insert_requested(
-                &mut conn,
+                &mut tx,
                 hire_id,
                 self.id,
                 vendor_id,
@@ -283,7 +296,57 @@ impl Organization {
                 required_volume,
             )?;
         }
+        // A hired dispatch has no truck or driver yet; its notifications go
+        // out when the vendor's truck is assigned.
+        let notifs = if hire_vendor.is_none() {
+            Notification::enqueue_dispatch_created(
+                &mut tx,
+                self.id,
+                dispatch_order.id,
+                customer,
+                driver_phone.as_deref(),
+            )?
+        } else {
+            Vec::new()
+        };
+        tx.commit()?;
+
+        Self::after_dispatch_commit(&drawn, std::slice::from_ref(&dispatch_order), &notifs);
         Ok(dispatch_order)
+    }
+
+    /// Create every table a dispatch writes to, ahead of its transaction.
+    fn prepare_dispatch_tables(
+        conn: &mut mysql::PooledConn,
+        hired: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        crate::logistics::dispatch::dispatch::ensure_tables(conn)?;
+        Trip::ensure_table(conn)?;
+        Notification::prepare_tables(conn)?;
+        if hired {
+            VehicleHire::ensure_table(conn)?;
+        }
+        Ok(())
+    }
+
+    /// Follow-up that needs the committed data: search indexing (which uses
+    /// its own connection) and waking a worker.
+    fn after_dispatch_commit(
+        drawn: &[(Uuid, String)],
+        orders: &[DispatchOrder],
+        notifs: &[Notification],
+    ) {
+        for (godown_id, description) in drawn {
+            crate::logistics::ai::chunk::reindex_stock_by_description_best_effort(
+                *godown_id,
+                description,
+            );
+        }
+        for order in orders {
+            crate::logistics::ai::chunk::reindex_dispatch_best_effort(order);
+        }
+        Notification::index_best_effort(notifs);
+        crate::logistics::events::worker::wake();
     }
 
     /// A hire must go to one of this org's own, active vendors.
@@ -427,8 +490,14 @@ impl Organization {
 
         let now = now_secs();
         let trip_id = Uuid::new_v4();
-        Trip::ensure_table(&mut conn)?;
-        conn.exec_drop(
+        Self::prepare_dispatch_tables(&mut conn, hire_vendor.is_some())?;
+        let driver_phone = vehicle_reg
+            .as_deref()
+            .and_then(|reg| Notification::driver_phone_for_vehicle(reg, self.id));
+
+        // All or nothing: every stop goes out, or none does.
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        tx.exec_drop(
             "INSERT INTO Trips (id, org_id, vehicle_registration_number, created_at, vehicle_source, hire_id)
              VALUES (:id, :org_id, :veh, :created_at, :source, :hire_id)",
             params! {
@@ -442,8 +511,10 @@ impl Organization {
         )?;
 
         let mut trip_stops = Vec::with_capacity(stop_plans.len());
+        let mut drawn = Vec::new();
+        let mut notifs = Vec::new();
         for (i, (customer, plans)) in stop_plans.into_iter().enumerate() {
-            let order_line_items = Self::draw_down_plans(&mut conn, plans)?;
+            let order_line_items = Self::draw_down_plans(&mut tx, plans, &mut drawn)?;
             let mut order = DispatchOrder {
                 id: Uuid::new_v4(),
                 org_id: self.id,
@@ -463,13 +534,23 @@ impl Organization {
                 trip_id: Some(trip_id),
                 stop_sequence: Some(i as i64 + 1),
             };
-            order.save()?;
+            order.save_in(&mut tx)?;
+            // A hired trip's notifications go out when its truck is assigned.
+            if hire_vendor.is_none() {
+                notifs.extend(Notification::enqueue_dispatch_created(
+                    &mut tx,
+                    self.id,
+                    order.id,
+                    customer,
+                    driver_phone.as_deref(),
+                )?);
+            }
             trip_stops.push(order);
         }
 
         if let (Some(hire_id), Some(vendor_id)) = (hire_id, hire_vendor) {
             VehicleHire::insert_requested(
-                &mut conn,
+                &mut tx,
                 hire_id,
                 self.id,
                 vendor_id,
@@ -478,6 +559,9 @@ impl Organization {
                 trip_volume,
             )?;
         }
+        tx.commit()?;
+
+        Self::after_dispatch_commit(&drawn, &trip_stops, &notifs);
 
         let status = Trip::compute_status(&trip_stops);
         Ok(Trip {
@@ -618,8 +702,9 @@ impl Organization {
     /// Apply a set of planned draws to `Stock` and return the resulting
     /// [`DispatchLineItem`]s (with `volume_in_size` snapshotted).
     fn draw_down_plans(
-        conn: &mut mysql::PooledConn,
+        conn: &mut Transaction<'_>,
         plans: Vec<LineItemPlan>,
+        drawn: &mut Vec<(Uuid, String)>,
     ) -> Result<Vec<DispatchLineItem>, Box<dyn Error>> {
         let mut items = Vec::with_capacity(plans.len());
         for plan in plans {
@@ -633,10 +718,7 @@ impl Organization {
                         "desc" => &plan.description,
                     },
                 )?;
-                crate::logistics::ai::chunk::reindex_stock_by_description_best_effort(
-                    *godown_id,
-                    &plan.description,
-                );
+                drawn.push((*godown_id, plan.description.clone()));
             }
             items.push(DispatchLineItem {
                 stock_description: plan.description,
@@ -839,17 +921,39 @@ impl Organization {
         }))
     }
 
+    /// Delete the org and everything it owns. Most tables follow through
+    /// `ON DELETE CASCADE`; `Dispatches` and `OrgCredentials` have no foreign key
+    /// to `Orgs`, and files on disk aren't in the database at all.
     pub fn remove_organization(&self) -> Result<(), Box<dyn Error>> {
         let db_connection = DbConnection::from_env();
         let mut conn = db_connection.get_connection()?;
+        crate::logistics::dispatch::dispatch::ensure_tables(&mut conn)?;
+        crate::logistics::auth::auth::OrgCredentials::ensure_table(&mut conn)?;
+        crate::logistics::upload::upload::UploadedFile::ensure_table(&mut conn)?;
 
-        conn.exec_drop(
-            "DELETE FROM Orgs WHERE id = :id",
-            params! {
-                "id" => self.id.to_string(),
-            },
+        let id = self.id.to_string();
+        let files: Vec<String> = conn.exec(
+            "SELECT storage_path FROM UploadedFiles WHERE org_id = :id",
+            params! { "id" => &id },
         )?;
 
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        for sql in [
+            "DELETE FROM Dispatches WHERE org_id = :id",
+            "DELETE FROM OrgCredentials WHERE org_id = :id",
+            "DELETE FROM Orgs WHERE id = :id",
+        ] {
+            tx.exec_drop(sql, params! { "id" => &id })?;
+        }
+        tx.commit()?;
+
+        // Best-effort: the org is gone either way, and a leftover file is
+        // better than failing a delete that has already committed.
+        for path in files {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!("deleting org {id}: couldn't remove {path}: {e}");
+            }
+        }
         Ok(())
     }
 }
@@ -1523,6 +1627,86 @@ mod tests {
             fourth.vehicle_registration_number, first.vehicle_registration_number,
             "the delivered trip's vehicle should be available again"
         );
+    }
+
+    #[test]
+    fn test_remove_organization_leaves_nothing_behind() {
+        use crate::logistics::auth::auth::OrgCredentials;
+        use crate::logistics::dispatch::dispatch::{DispatchStatus, DispatchStatusEvent};
+
+        let _db = TestDb::create();
+        let gone = Organization::create_organization("Gone", "1 Rd").expect("org");
+        let stays = Organization::create_organization("Stays", "2 Rd").expect("org");
+        let mut conn = DbConnection::from_env().get_connection().expect("connect");
+
+        let dir = std::env::temp_dir().join(format!("org-delete-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut file_for = |org: &Organization| {
+            let path = dir.join(format!("{}.png", org.id));
+            std::fs::write(&path, b"x").unwrap();
+            conn.exec_drop(
+                "INSERT INTO UploadedFiles (id, org_id, content_type, byte_size, storage_path, uploaded_at)
+                 VALUES (:id, :org_id, 'image/png', 1, :path, 1)",
+                params! {
+                    "id" => Uuid::new_v4().to_string(),
+                    "org_id" => org.id.to_string(),
+                    "path" => path.to_string_lossy().into_owned(),
+                },
+            )
+            .unwrap();
+            path
+        };
+        let gone_file = file_for(&gone);
+        let stays_file = file_for(&stays);
+
+        for org in [&gone, &stays] {
+            OrgCredentials::create(org.id, &org.name, "password123").expect("credentials");
+            DispatchOrder {
+                id: Uuid::new_v4(),
+                org_id: org.id,
+                customer_id: Uuid::new_v4(),
+                vehicle_registration_number: None,
+                vehicle_source: Default::default(),
+                hire_id: None,
+                line_items: Vec::new(),
+                status: DispatchStatus::Pending,
+                dispatched_at: 1,
+                status_history: vec![DispatchStatusEvent {
+                    status: DispatchStatus::Pending,
+                    changed_at: 1,
+                }],
+                proof_of_delivery: None,
+                trip_id: None,
+                stop_sequence: None,
+            }
+            .save()
+            .expect("dispatch");
+        }
+
+        gone.remove_organization().expect("remove");
+
+        assert!(DispatchOrder::list_by_org(gone.id).unwrap().is_empty());
+        assert_eq!(DispatchOrder::list_by_org(stays.id).unwrap().len(), 1);
+        assert!(
+            OrgCredentials::verify_login(gone.id, "password123")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            OrgCredentials::verify_login(stays.id, "password123")
+                .unwrap()
+                .is_some()
+        );
+        let orphaned: Option<i64> = conn
+            .query_first(
+                "SELECT COUNT(*) FROM DispatchStatusHistory
+                 WHERE dispatch_id NOT IN (SELECT id FROM Dispatches)",
+            )
+            .unwrap();
+        assert_eq!(orphaned, Some(0));
+        assert!(!gone_file.exists());
+        assert!(stays_file.exists());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

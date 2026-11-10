@@ -96,8 +96,9 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   inventory, and dispatch volume over the last 14 days.
 - **Dispatch notifications** — when a dispatch is created or delivered, a
   notification is recorded for the customer (email or SMS, whichever is on
-  file) and the driver (SMS), and delivered via Twilio (SMS) / Resend
-  (email) when those are configured. The Dispatches page shows the log per
+  file) and the driver (SMS), and sent in the background with retries via
+  Twilio (SMS) / Gmail SMTP or Resend (email) when those are configured — see
+  [`docs/async-events.md`](docs/async-events.md). The Dispatches page shows the log per
   order. A background scan also alerts the customer if a dispatch is still
   in transit well past when it should have arrived — see
   [`docs/delay-alerts.md`](docs/delay-alerts.md).
@@ -192,8 +193,16 @@ export ANTHROPIC_WORKSPACE_ID="wrkspc_..."
 export TWILIO_ACCOUNT_SID="AC..."
 export TWILIO_AUTH_TOKEN="..."
 export TWILIO_FROM_NUMBER="+15551234567"
+# Email: a Gmail address + App Password (or any SMTP server), or else Resend.
+export SMTP_USERNAME="you@gmail.com"
+export SMTP_PASSWORD="your-16-char-app-password"
 export RESEND_API_KEY="re_..."
 export RESEND_FROM_EMAIL="dispatch@yourdomain.com"
+
+# Optional: run the background consumers (notification sending, delay alerts).
+# Off by default, so a dev server can't message real customers.
+# See docs/async-events.md.
+export EVENT_WORKERS_ENABLED="true"
 
 # Optional: where uploaded files (e.g. proof-of-delivery photos) are stored
 # on disk — see docs/file-uploads.md. Defaults to ./uploads.
@@ -308,6 +317,17 @@ All routes are served under the `/api` prefix.
 | GET | `/api/dispatches/{id}/summary` | AI-generated summary of a dispatch |
 | GET | `/api/dispatches/{id}/notifications` | Customer + driver notifications recorded for a dispatch |
 | GET | `/api/orgs/{id}/notifications` | The org's 100 most recent notifications |
+| GET, PUT | `/api/orgs/{id}/agents/settings` | Read or change (Admin) the org's autonomy mode, see [docs/agentic-workflow.md](docs/agentic-workflow.md) |
+| POST | `/api/orgs/{id}/agents/run` | Run the dispatch desk agent now |
+| GET | `/api/orgs/{id}/agents/runs` | The org's 100 most recent agent runs |
+| GET | `/api/orgs/{id}/agents/actions` | The org's 100 most recent agent actions, optionally `?status=PENDING_APPROVAL` |
+| POST | `/api/agent-actions/{id}/approve` | Approve and carry out a pending agent action |
+| POST | `/api/agent-actions/{id}/reject` | Reject a pending agent action |
+| GET, POST | `/api/chat/conversations` | This person's chat conversations, or start one, see [docs/chat-inbox.md](docs/chat-inbox.md) |
+| GET, DELETE | `/api/chat/conversations/{id}` | Read a conversation or delete it |
+| POST | `/api/chat/conversations/{id}/messages` | Send a message and wait for the answer |
+| POST | `/api/chat/proposals/{id}/confirm` | Run a change the assistant prepared, as this person |
+| POST | `/api/chat/proposals/{id}/cancel` | Refuse a change the assistant prepared |
 | GET/POST | `/api/dispatches/{id}/invoice` | Get / raise the freight invoice for a dispatch |
 | PUT | `/api/invoices/{id}` | Amend an unpaid invoice's amount or due date |
 | POST | `/api/invoices/{id}/pay` | Mark an invoice paid |

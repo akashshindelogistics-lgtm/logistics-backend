@@ -31,9 +31,11 @@ use crate::logistics::vendor::vendor::VehicleVendor;
 use actix_web::{App, test};
 use uuid::Uuid;
 
+mod agents;
 mod ai;
 mod auth;
 mod billing;
+mod chat;
 mod customers;
 mod dispatches;
 mod driver_app;

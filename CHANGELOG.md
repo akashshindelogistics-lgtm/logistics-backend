@@ -4,6 +4,56 @@ All notable changes to this project are documented here. From v0.1.1 on, this
 file is maintained automatically by [release-please](https://github.com/googleapis/release-please)
 from the conventional-commit history.
 
+## [0.19.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.18.0...v0.19.0) (2026-11-09)
+
+
+### Features
+
+* **chat:** keep chat off until a server sets CHAT_ENABLED=true ([50eee1f](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/50eee1fc636600daa5bf55f0c5e4f33338257c4b))
+* **chat:** run operations from a chat, with a confirmation card for every change ([fb19fd6](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/fb19fd6af391d58cf25b0b5d61c2fa70860fa6e8))
+
+## [0.18.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.17.0...v0.18.0) (2026-11-09)
+
+
+### Features
+
+* **agents:** agent runtime, autonomy modes and a dispatch desk agent ([9c07189](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/9c0718957193a7b8dbe278e5ff7f86e31b3c5816))
+
+## [0.17.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.16.0...v0.17.0) (2026-11-09)
+
+
+### Features
+
+* **notifications:** send email through Gmail SMTP ([3302d84](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/3302d8425f187e5b2faaa4e7cd00507af1ebc20b))
+
+## [0.16.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.15.0...v0.16.0) (2026-11-09)
+
+
+### Features
+
+* **deploy:** auto-deploy master to the ngrok host ([5072008](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/5072008bd11c1cf070f3e407326f6a3fc1a8f37e))
+* **deploy:** auto-deploy master to the ngrok host ([bf2cf1b](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/bf2cf1b2a37ba2d9f4a0852e17f5e4bef0effbe9))
+* **events:** run notifications through a durable event queue ([66159dc](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/66159dcbdd8a9defb2bd9bc189596751f058c2c4))
+* **events:** run notifications through a durable MySQL event queue ([44d90ce](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/44d90ce9e167a34afc9b5535a7cd0b601bd163f5))
+* **trips:** list standalone dispatches as one-stop trips ([c09d46b](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/c09d46b4b7dbfb53c104051c1d105521427c037f))
+* **trips:** list standalone dispatches as one-stop trips ([5585aae](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/5585aae5cac584c2b6737c44a9f501b1fff0a4a1))
+
+
+### Bug Fixes
+
+* **orgs:** complete org deletion, add cleanup_db, plan the live cleanup ([6612c9f](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/6612c9fc9cea0d5f46e0ce469919e1b2859f2d05))
+* **orgs:** remove an org's dispatches, credentials and files when deleting it ([0e6c660](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/0e6c66042bd9f1ca5a933ee81508dfb8f6337807))
+
+
+### Documentation
+
+* explore RAG across the logistics system and plan it in phases ([b9f2fb2](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/b9f2fb2d96dfd0d114210f9f5731aea7bd96c656))
+* explore RAG across the logistics system and plan it in phases ([748cbb4](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/748cbb4c886dbdfdae48eae47fd179cbae5e7762))
+* plan splitting the monorepo into backend, frontend and android repos ([249b372](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/249b37291cf0c7c604de644eaa764c19d844a159))
+* plan the live database cleanup ([8613a52](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/8613a527d3416b9eb962fb1f72ca3fe1b955035b))
+* the repo split is done; as-built notes and what's left ([28718f9](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/28718f97b6cfa1de6d0e15600f5dfc07c3784455))
+* the repo split is done; as-built notes and what's left ([bd8bf4c](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/bd8bf4ce1a86b77dd0c04d0f0c661cdd767f8931))
+
 ## [0.15.0](https://github.com/akashshindelogistics-lgtm/logistics/compare/v0.14.0...v0.15.0) (2026-11-02)
 
 

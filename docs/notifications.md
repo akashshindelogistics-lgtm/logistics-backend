@@ -26,31 +26,72 @@ Every notification lands in the `Notifications` table with a status:
 
 | status | meaning |
 | --- | --- |
-| `QUEUED` | ready to send, but no provider is configured for its channel yet |
+| `QUEUED` | waiting for a background worker, or no provider is configured for its channel yet |
 | `SKIPPED` | no contact on file for this party, nothing to send |
 | `SENT` | delivery succeeded |
-| `FAILED` | delivery was attempted and the provider reported an error |
+| `FAILED` | the provider kept reporting errors until every retry was used up |
 
-Recording and delivery happen in the same request: right after a `QUEUED`
-row is inserted, `Notification::deliver_queued_best_effort` calls
-[`crate::logistics::notification::delivery`] to actually send it — Twilio for
-SMS, [Resend](https://resend.com) for email (a JSON-over-HTTPS transactional
-email API, chosen over raw SMTP so this reuses the same reqwest-based
-HTTP-call shape already used for the Anthropic integration rather than
-adding a new client/protocol dependency). Both are optional and read their
-credentials from the environment:
+Recording happens in the request, in the same transaction as the dispatch
+change. Sending happens afterwards in a background consumer, with retries (see
+[async-events.md](async-events.md)). The consumer calls
+[`crate::logistics::notification::delivery`] to send each row — Twilio for
+SMS, and for email either SMTP (Gmail by default) or
+[Resend](https://resend.com). All are optional and read their credentials from
+the environment:
 
 | Channel | Variables |
 | --- | --- |
 | SMS (Twilio) | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` |
-| Email (Resend) | `RESEND_API_KEY`, `RESEND_FROM_EMAIL` |
+| Email (SMTP) | `SMTP_USERNAME`, `SMTP_PASSWORD`, optional `SMTP_FROM`, `SMTP_HOST`, `SMTP_PORT` |
+| Email (Resend) | `RESEND_API_KEY`, `RESEND_FROM_EMAIL`; only used when SMTP isn't set |
 
 A channel with no credentials configured behaves exactly as before this
 feature existed: the row is left `QUEUED` rather than marked `FAILED` —
 nothing was actually attempted, and it's ready to send the moment the
-provider is configured. Delivery is best-effort either way: a failure only
-updates that notification's own status, it never fails the dispatch
-create/deliver request it's attached to.
+provider is configured. A provider failure never affects the dispatch request:
+the consumer retries it, and only marks the row `FAILED` when retries run out.
+Workers must be enabled with `EVENT_WORKERS_ENABLED=true`, otherwise rows stay
+`QUEUED`.
+
+## Sending email from a Gmail account
+
+Resend only sends from a domain you have verified, so a `@gmail.com` sender has
+to go through Gmail's SMTP server:
+
+1. Turn on 2-Step Verification for the account, at
+   <https://myaccount.google.com/security>.
+2. Create an App Password at <https://myaccount.google.com/apppasswords>.
+   Google shows 16 characters in groups of four; drop the spaces.
+3. Set the variables wherever the API gets its environment:
+
+   ```
+   SMTP_USERNAME=akashshinde.logistics@gmail.com
+   SMTP_PASSWORD=abcdefghijklmnop
+   SMTP_FROM=Logistics Dispatch <akashshinde.logistics@gmail.com>
+   ```
+
+4. Check them by sending yourself a message, with no dispatch involved:
+
+   ```
+   cargo run --bin send_test_email -- you@example.com
+   ```
+
+5. Restart the API.
+
+Things to know:
+
+- A personal Gmail account can send about 500 messages a day, and Google may
+  pause an account that looks like bulk mail. A verified domain on Resend or
+  similar is the upgrade path when volume grows; it needs only a config change.
+- Copies of everything sent appear in the account's **Sent** folder, and bounces
+  and customer replies land in its inbox. Nothing in this system reads them.
+- Changing the account's password revokes its App Passwords, and sends then fail
+  until a new one is set.
+- With workers running, a row whose channel has no provider completes its event
+  and stays `QUEUED`, so it is not sent when email is turned on later.
+- With workers off (`EVENT_WORKERS_ENABLED` unset), events wait in the queue.
+  Turning workers on with SMTP configured sends everything still waiting,
+  however old. Clear those events first if customers shouldn't get them.
 
 ## Channel choice
 
@@ -90,15 +131,19 @@ Both are reads — any authenticated member of the org can see them.
 - Rust model (`notification/tests.rs`): created records customer + driver and
   prefers email; SMS fallback then `SKIPPED` with no contact; delivered
   notifies only the customer; `list_by_org` is scoped and newest-first;
-  cascade delete with the org; `deliver_queued_best_effort` leaves `QUEUED`
-  rows `QUEUED` without provider credentials and never touches a `SKIPPED`
-  row; created/delivered fall back to the exact fixed template text without
-  `ANTHROPIC_API_KEY`. Plus `Customer::set_contact` normalisation.
+  cascade delete with the org; rows start with the exact fixed template text.
+  Plus `Customer::set_contact` normalisation.
+- Rust consumer (`notification/consumer.rs`): sends every `QUEUED` row, retries
+  only what failed, leaves rows `QUEUED` without a provider, never sends a
+  `SKIPPED` row, and marks undelivered rows `FAILED` when retries run out.
 - Rust delivery (`notification/delivery.rs`): `deliver` returns
   `NotConfigured` for SMS/email without credentials (including a partial
-  Twilio credential set) — the only path tested, matching this codebase's
-  convention of never hitting a live third-party API in tests (see
-  `ai/status.rs`'s equivalent note about the Anthropic call).
+  Twilio credential set); SMTP authenticates and sends a full message against
+  a fake local server, rejects a malformed address or a line break in one, and
+  reports an unreachable server as a provider error. Twilio, Resend and Gmail
+  themselves are never called, matching this codebase's convention of never
+  hitting a live third-party API in tests (see `ai/status.rs`'s equivalent note
+  about the Anthropic call).
 - Rust AI copy (`ai/notification_copy.rs`): each of the three prompt
   builders includes the customer name, order reference and situation; each
   `generate_*` function errors with the missing-API-key message when

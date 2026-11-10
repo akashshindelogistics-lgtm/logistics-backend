@@ -280,7 +280,7 @@
     {
       "type": "stat",
       "title": "Delay-alert scans failed (24h)",
-      "description": "The background scan runs every 15 minutes.",
+      "description": "The background scan runs every 15 minutes, only when EVENT_WORKERS_ENABLED=true.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

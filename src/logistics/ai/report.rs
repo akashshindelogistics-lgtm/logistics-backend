@@ -103,7 +103,7 @@ pub async fn generate_report_summary(report: &OpsReport) -> Result<String, Strin
 
     let prompt = build_report_prompt(report);
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let mut request = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", &api_key)
