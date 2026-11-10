@@ -282,7 +282,8 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             trip_id VARCHAR(36) DEFAULT NULL,
             stop_sequence BIGINT DEFAULT NULL,
             vehicle_source VARCHAR(10) NOT NULL DEFAULT 'OWN',
-            hire_id VARCHAR(36) DEFAULT NULL
+            hire_id VARCHAR(36) DEFAULT NULL,
+            tracking_token VARCHAR(36) DEFAULT NULL UNIQUE
         )",
     )
     .expect("migrate: create Dispatches");

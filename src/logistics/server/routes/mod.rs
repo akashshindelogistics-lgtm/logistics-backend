@@ -57,6 +57,7 @@ mod maintenance;
 mod notifications;
 mod orgs;
 mod reports;
+mod tracking;
 mod trips;
 mod uploads;
 mod users;
@@ -81,6 +82,7 @@ pub use maintenance::*;
 pub use notifications::*;
 pub use orgs::*;
 pub use reports::*;
+pub use tracking::*;
 pub use trips::*;
 pub use uploads::*;
 pub use users::*;
@@ -185,6 +187,7 @@ impl Modify for SecurityAddon {
         dispatch_stock,
         update_dispatch_status,
         get_dispatch_summary,
+        public_track_dispatch,
         ask_assistant,
         reindex_assistant,
         get_daily_digest,
@@ -256,6 +259,7 @@ impl Modify for SecurityAddon {
             DriverAppRelease, DriverAppReleaseResponse,
             VendorResponse, VendorListResponse, VehicleHireResponse, VehicleHireListResponse,
             DispatchOrderResponse, DispatchOrderListResponse,
+            PublicTracking, PublicVehiclePosition, PublicTrackingResponse,
             InvoiceResponse, InvoiceListResponse, CustomerBillingResponse,
             OpsReportResponse, UserResponse, UserListResponse, NotificationListResponse,
             TripResponse, TripListResponse, CreateTripPayload, TripStopPayload,
@@ -340,6 +344,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(edit_vehicle)
             .service(update_vehicle_location)
             .service(track_vehicle_location)
+            .service(public_track_dispatch)
             .service(rotate_vehicle_tracker_key)
             .service(report_driver_location)
             .service(driver_me)

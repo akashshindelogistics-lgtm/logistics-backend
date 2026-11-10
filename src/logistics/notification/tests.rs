@@ -242,3 +242,25 @@ async fn recording_a_notification_indexes_it_for_the_assistant() {
         "the recorded notification should be indexed and findable: {results:?}"
     );
 }
+
+#[test]
+fn tracking_link_is_appended_only_when_there_is_one() {
+    use super::notification::with_tracking_link;
+    use crate::logistics::dispatch::dispatch::{set_test_public_app_url, tracking_url};
+
+    let token = Uuid::new_v4();
+    set_test_public_app_url(None);
+    assert_eq!(tracking_url(token), None);
+    set_test_public_app_url(Some("  "));
+    assert_eq!(tracking_url(token), None);
+    set_test_public_app_url(Some("https://x.example/ "));
+    let url = tracking_url(token).unwrap();
+    assert_eq!(url, format!("https://x.example/track/{token}"));
+    set_test_public_app_url(None);
+
+    assert_eq!(with_tracking_link("Hi".into(), None), "Hi");
+    assert_eq!(
+        with_tracking_link("Hi".into(), Some(&url)),
+        format!("Hi\n\nTrack your order: {url}")
+    );
+}

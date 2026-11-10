@@ -62,13 +62,68 @@ fn ensure_dispatches_table(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn E
             trip_id VARCHAR(36) DEFAULT NULL,
             stop_sequence BIGINT DEFAULT NULL,
             vehicle_source VARCHAR(10) NOT NULL DEFAULT 'OWN',
-            hire_id VARCHAR(36) DEFAULT NULL
+            hire_id VARCHAR(36) DEFAULT NULL,
+            tracking_token VARCHAR(36) DEFAULT NULL UNIQUE
         )",
         (),
     )?;
     ensure_trip_columns(conn)?;
     ensure_hire_columns(conn)?;
+    ensure_tracking_token_column(conn)?;
     Ok(())
+}
+
+/// Add `tracking_token` to a `Dispatches` table that predates the customer
+/// tracking link. Older dispatches keep `NULL` (no link): `UUID()` in MySQL is
+/// time-based and partly guessable, so tokens only come from
+/// [`Uuid::new_v4`] in [`DispatchOrder::save_in`]. See
+/// `docs/customer-tracking.md`.
+pub(crate) fn ensure_tracking_token_column(
+    conn: &mut mysql::PooledConn,
+) -> Result<(), Box<dyn Error>> {
+    let present: Option<i64> = conn.exec_first(
+        "SELECT 1 FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = 'Dispatches'
+           AND column_name = 'tracking_token'",
+        (),
+    )?;
+    if present.is_none() {
+        conn.query_drop(
+            "ALTER TABLE Dispatches ADD COLUMN tracking_token VARCHAR(36) DEFAULT NULL UNIQUE",
+        )?;
+    }
+    Ok(())
+}
+
+/// The customer-facing tracking page for `token`, or `None` when
+/// `PUBLIC_APP_URL` (the dashboard's public address) isn't set.
+pub fn tracking_url(token: Uuid) -> Option<String> {
+    let base = public_app_url()?;
+    let base = base.trim().trim_end_matches('/');
+    (!base.is_empty()).then(|| format!("{base}/track/{token}"))
+}
+
+#[cfg(not(test))]
+fn public_app_url() -> Option<String> {
+    std::env::var("PUBLIC_APP_URL").ok()
+}
+
+// Tests set this per thread instead of the process-wide env var, which would
+// leak links into every concurrently running notification test (the same
+// reason `TestDb` overrides the database name per thread).
+#[cfg(test)]
+thread_local! {
+    static TEST_PUBLIC_APP_URL: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn public_app_url() -> Option<String> {
+    TEST_PUBLIC_APP_URL.with(|c| c.borrow().clone())
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_public_app_url(url: Option<&str>) {
+    TEST_PUBLIC_APP_URL.with(|c| *c.borrow_mut() = url.map(str::to_string));
 }
 
 /// Bring a `Dispatches` table from before hired vehicles up to date: add
@@ -567,8 +622,8 @@ impl DispatchOrder {
     /// already exist, and the caller reindexes after committing.
     pub(crate) fn save_in(&mut self, conn: &mut Transaction<'_>) -> Result<(), Box<dyn Error>> {
         conn.exec_drop(
-            "INSERT INTO Dispatches (id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id)
-             VALUES (:id, :org_id, :customer_id, :vehicle_registration_number, :status, :dispatched_at, :trip_id, :stop_sequence, :vehicle_source, :hire_id)",
+            "INSERT INTO Dispatches (id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id, tracking_token)
+             VALUES (:id, :org_id, :customer_id, :vehicle_registration_number, :status, :dispatched_at, :trip_id, :stop_sequence, :vehicle_source, :hire_id, :tracking_token)",
             params! {
                 "id" => self.id.to_string(),
                 "org_id" => self.org_id.to_string(),
@@ -580,6 +635,7 @@ impl DispatchOrder {
                 "stop_sequence" => self.stop_sequence,
                 "vehicle_source" => self.vehicle_source.as_str(),
                 "hire_id" => self.hire_id.map(|h| h.to_string()),
+                "tracking_token" => Uuid::new_v4().to_string(),
             },
         )?;
 
@@ -892,6 +948,36 @@ impl DispatchOrder {
         let history = DispatchStatusEvent::list_by_dispatch(&mut conn, id)?;
         let proof = ProofOfDelivery::get_by_dispatch(&mut conn, id)?;
         Ok(Some(Self::row_to_order(row, line_items, history, proof)))
+    }
+
+    /// The dispatch a customer tracking link points at. `None` for an unknown
+    /// token — callers must not say whether the dispatch exists.
+    pub fn by_tracking_token(token: Uuid) -> Result<Option<Self>, Box<dyn Error>> {
+        let db_connection = DbConnection::from_env();
+        let mut conn = db_connection.get_connection()?;
+        ensure_tables(&mut conn)?;
+        let id: Option<String> = conn.exec_first(
+            "SELECT id FROM Dispatches WHERE tracking_token = :token",
+            params! { "token" => token.to_string() },
+        )?;
+        match id.and_then(|id| Uuid::parse_str(&id).ok()) {
+            Some(id) => Self::get_by_id(id),
+            None => Ok(None),
+        }
+    }
+
+    /// This dispatch's tracking token, read on `conn` so it also sees a row
+    /// inserted earlier in the same transaction. `None` for dispatches created
+    /// before tracking links existed.
+    pub(crate) fn tracking_token_in(
+        conn: &mut impl Queryable,
+        id: Uuid,
+    ) -> Result<Option<Uuid>, Box<dyn Error>> {
+        let token: Option<Option<String>> = conn.exec_first(
+            "SELECT tracking_token FROM Dispatches WHERE id = :id",
+            params! { "id" => id.to_string() },
+        )?;
+        Ok(token.flatten().and_then(|t| Uuid::parse_str(&t).ok()))
     }
 
     pub fn list_all() -> Result<Vec<Self>, Box<dyn Error>> {
@@ -1591,6 +1677,7 @@ mod tests {
         ensure_tables(&mut conn).unwrap();
         conn.query_drop(
             "ALTER TABLE Dispatches DROP COLUMN vehicle_source, DROP COLUMN hire_id,
+             DROP COLUMN tracking_token,
              MODIFY vehicle_registration_number VARCHAR(255) NOT NULL",
         )
         .unwrap();
@@ -1601,6 +1688,12 @@ mod tests {
 
         ensure_tables(&mut conn).expect("upgrade");
         ensure_tables(&mut conn).expect("second run is a no-op");
+
+        // Old dispatches get the column but no token (no guessable backfill).
+        let token: Option<Option<String>> = conn
+            .query_first("SELECT tracking_token FROM Dispatches WHERE id = 'old-1'")
+            .unwrap();
+        assert_eq!(token, Some(None));
 
         let (reg, source, nullable): (Option<String>, String, String) = conn
             .query_first(

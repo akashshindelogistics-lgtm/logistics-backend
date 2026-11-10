@@ -316,6 +316,7 @@ All routes are served under the `/api` prefix.
 | PUT | `/api/dispatches/{id}/status` | Advance a dispatch's lifecycle status |
 | GET | `/api/dispatches/{id}/summary` | AI-generated summary of a dispatch |
 | GET | `/api/dispatches/{id}/notifications` | Customer + driver notifications recorded for a dispatch |
+| GET | `/api/public/track/{token}` | Customer tracking link: order status, timeline and the vehicle's last position while in transit — no login, the token is the credential (see `docs/customer-tracking.md`) |
 | GET | `/api/orgs/{id}/notifications` | The org's 100 most recent notifications |
 | GET, PUT | `/api/orgs/{id}/agents/settings` | Read or change (Admin) the org's autonomy mode, see [docs/agentic-workflow.md](docs/agentic-workflow.md) |
 | POST | `/api/orgs/{id}/agents/run` | Run the dispatch desk agent now |

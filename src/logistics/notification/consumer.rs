@@ -7,7 +7,7 @@ use crate::logistics::events::queue::{Event, EventType};
 use crate::logistics::events::worker::Consumer;
 use crate::logistics::notification::delivery::{self, DeliveryError};
 use crate::logistics::notification::notification::{
-    Notification, NotificationEvent, NotificationStatus,
+    Notification, NotificationEvent, NotificationStatus, with_tracking_link,
 };
 use futures_util::future::LocalBoxFuture;
 use std::future::Future;
@@ -77,7 +77,11 @@ async fn personalized_body(n: &Notification, event: &Event) -> Option<String> {
             copy::generate_dispatch_running_late_customer_body(name, short_id, hours_late).await
         }
     };
-    result.ok()
+    // The driver's message never carries the customer's link.
+    let link = (n.recipient_kind != "driver")
+        .then(|| event.payload["tracking_url"].as_str())
+        .flatten();
+    result.ok().map(|body| with_tracking_link(body, link))
 }
 
 /// Send every `QUEUED` notification for this event. One row failing doesn't

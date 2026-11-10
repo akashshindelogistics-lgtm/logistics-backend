@@ -1393,7 +1393,8 @@
 * TODO [#B] Send email notifications from akashshinde.logistics@gmail.com - dispatch created / delivered / running late emails to customers were recorded but stayed QUEUED, because no email provider was configured and Resend can't send from a @gmail.com address
    Plan/context: [[file:docs/notifications.md]] ("Sending email from a Gmail account").
 ** DONE Gmail SMTP backend - SMTP_USERNAME/SMTP_PASSWORD (optional SMTP_FROM, SMTP_HOST, SMTP_PORT), used ahead of Resend; send_test_email bin to check credentials
-** TODO Create an App Password on the Gmail account, add the variables to the deployment's environment, send a test email, deploy this version and restart the API
+** DONE Gmail App Password couldn't be created; switched the deployment to Resend instead (2026-11-10): SMTP_* commented out of ~/.config/logistics-ngrok/api.env (backup api.env.bak-gmail-*), RESEND_API_KEY + RESEND_FROM_EMAIL set, test email accepted
+** TODO Verify a domain on Resend - the onboarding@resend.dev sender only reaches the Resend account's own address, so customer emails fail until then
 * DONE Pub/sub and consumers so slow operations run asynchronously
   Requests no longer wait on Claude, SMS or email. New src/logistics/events:
   Events + EventDeliveries tables in MySQL, claimed with FOR UPDATE SKIP LOCKED,
@@ -1404,7 +1405,7 @@
 ** DONE Phase 3: event queue, worker pool, retention
 ** DONE Phase 4: notifications and delay alerts moved onto consumers; dedupe key stops double delay alerts
 ** TODO assistant/reindex as a background job, with a logistics-frontend PR for its count
-** TODO Build proof-of-delivery photo checks and SMS tracking links as consumers
+** TODO Build proof-of-delivery photo checks as a consumer (tracking links: see "Customer tracking link" below)
 ** TODO SSE consumer for live dashboard updates
 * TODO [#A] Clean test data out of the live database and stop it mixing again - local Playwright and demos write to the same logistics database as the deployment. Do this before email or agents go live
    Plan: [[file:docs/database-cleanup.md]]
@@ -1414,3 +1415,5 @@
 ** DONE Move the deployment to logistics_live with its own MySQL user (2026-11-10). Going back: restore ~/.config/logistics-ngrok/api.env.pre-cleanup and restart logi-api
 ** DONE Afterwards: remove listed upload files, add the missing foreign keys (on logistics_live by hand, not in code), daily dumps (logi-backup.timer)
 ** TODO Drop the old logistics database and ~/backups/uploads-removed-*.tar.gz after 2026-12-10; encrypt or delete ~/backups/logistics-pre-cleanup-*.sql
+* TODO [#B] Customer tracking link - dispatch created / running late emails and SMS only say "on its way"; customers get no way to see where their order is
+   Each dispatch gets a random tracking token; GET /api/public/track/{token} returns status, timeline and the vehicle's last position with no login; a public /track/{token} page in logistics-frontend shows it; the link (PUBLIC_APP_URL + /track/{token}) is appended to the customer's created and running-late messages.

@@ -14,6 +14,7 @@
 
 use crate::logistics::customer::customer::Customer;
 use crate::logistics::db::connection::DbConnection;
+use crate::logistics::dispatch::dispatch::{DispatchOrder, tracking_url};
 use crate::logistics::driver::driver::Driver;
 use crate::logistics::events;
 use crate::logistics::events::queue::EventType;
@@ -153,6 +154,15 @@ type Row = (
 
 const SELECT_COLS: &str =
     "id, org_id, dispatch_id, event, channel, recipient_kind, recipient, body, status, created_at";
+
+/// `body` followed by the customer tracking link, when there is one. Applied
+/// in code, not left to the AI copy, so the link can't be dropped or altered.
+pub(crate) fn with_tracking_link(body: String, url: Option<&str>) -> String {
+    match url {
+        Some(url) => format!("{body}\n\nTrack your order: {url}"),
+        None => body,
+    }
+}
 
 impl Notification {
     pub fn ensure_table(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
@@ -315,6 +325,7 @@ impl Notification {
         driver_phone: Option<&str>,
     ) -> Result<Vec<Notification>, Box<dyn Error>> {
         let short_id = &dispatch_id.to_string()[..8];
+        let tracking_url = Self::tracking_url_in(tx, dispatch_id)?;
         let driver_target = driver_phone
             .filter(|s| !s.is_empty())
             .map(|p| (NotificationChannel::Sms, p.to_string()));
@@ -325,9 +336,12 @@ impl Notification {
                 NotificationEvent::DispatchCreated,
                 "customer",
                 Self::customer_target(customer),
-                format!(
-                    "Hi {}, your order (ref {short_id}) has been dispatched and is on its way.",
-                    customer.name
+                with_tracking_link(
+                    format!(
+                        "Hi {}, your order (ref {short_id}) has been dispatched and is on its way.",
+                        customer.name
+                    ),
+                    tracking_url.as_deref(),
                 ),
             ),
             Self::build(
@@ -350,6 +364,7 @@ impl Notification {
             serde_json::json!({
                 "dispatch_id": dispatch_id,
                 "customer_name": customer.name,
+                "tracking_url": tracking_url,
             }),
             None,
         )?;
@@ -400,6 +415,7 @@ impl Notification {
         customer: &Customer,
         hours_late: i64,
     ) -> Result<Option<Vec<Notification>>, Box<dyn Error>> {
+        let tracking_url = Self::tracking_url_in(tx, dispatch_id)?;
         let published = events::queue::publish(
             tx,
             org_id,
@@ -408,6 +424,7 @@ impl Notification {
                 "dispatch_id": dispatch_id,
                 "customer_name": customer.name,
                 "hours_late": hours_late,
+                "tracking_url": tracking_url,
             }),
             Some(&format!("dispatch.running_late:{dispatch_id}")),
         )?;
@@ -421,13 +438,26 @@ impl Notification {
             NotificationEvent::DispatchRunningLate,
             "customer",
             Self::customer_target(customer),
-            format!(
-                "Hi {}, your order (ref {short_id}) is running about {hours_late}h behind its expected delivery time. We're sorry for the delay.",
-                customer.name
+            with_tracking_link(
+                format!(
+                    "Hi {}, your order (ref {short_id}) is running about {hours_late}h behind its expected delivery time. We're sorry for the delay.",
+                    customer.name
+                ),
+                tracking_url.as_deref(),
             ),
         )];
         Self::insert_all(tx, &notifs)?;
         Ok(Some(notifs))
+    }
+
+    /// The customer tracking link for a dispatch, if it has a token and
+    /// `PUBLIC_APP_URL` is set. Read in `tx` so a dispatch inserted earlier in
+    /// the same transaction is found.
+    fn tracking_url_in(
+        tx: &mut Transaction<'_>,
+        dispatch_id: Uuid,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        Ok(DispatchOrder::tracking_token_in(tx, dispatch_id)?.and_then(tracking_url))
     }
 
     fn insert_all(tx: &mut Transaction<'_>, notifs: &[Notification]) -> Result<(), Box<dyn Error>> {
