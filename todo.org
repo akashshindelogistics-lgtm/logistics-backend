@@ -1419,5 +1419,5 @@
    Each dispatch gets a random tracking token; GET /api/public/track/{token} returns status, timeline and the vehicle's last position with no login; a public /track/{token} page in logistics-frontend shows it; the link (PUBLIC_APP_URL + /track/{token}) is appended to the customer's created and running-late messages.
    Plan/context: [[file:docs/customer-tracking.md]]
 ** DONE Backend: tracking_token, GET /api/public/track/{token}, link in created / running-late customer messages (PR #118)
-** TODO logistics-frontend PR: public /track/:token page, tracking.spec.ts, tracking.demo.ts, full-flow step (patch ~/logistics-split/customer-tracking-frontend.patch, after #118 merges)
+** DONE logistics-frontend PR #13: public /track/:token page, tracking.spec.ts, tracking.demo.ts, full-flow step (merge after #118)
 ** TODO Set PUBLIC_APP_URL to the ngrok address in ~/.config/logistics-ngrok/api.env and restart logi-api once both are deployed
