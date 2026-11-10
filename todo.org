@@ -1367,6 +1367,10 @@
 ** TODO Phase 5: driver assistant in the Android app, scoped to the driver's own dispatches and trips
 ** TODO Phase 6: documents - PDF compliance uploads, org knowledge base (org_doc chunks), in-app help over product docs
 ** TODO Phase 7 (conditional): embeddings + hybrid retrieval, only if phase 1's evaluation shows paraphrase misses that matter
+** TODO Phase 8a: MCP server for outside AI agents, read-only - personal access tokens (hashed, expiring, revocable), per-org MCP switch (off by default), POST /mcp with search_facts + the chat catalog's read operations, call audit log, route tests, standalone demo
+   No vector database: outside agents bring their own model and need tools, not a second copy of the data. See "External agents (MCP)" in [[file:docs/rag-integration.md]].
+** TODO Phase 8b: MCP writes as ChatProposals cards that the person confirms on /chat
+** TODO Later: OAuth 2.1 on /mcp so hosted connectors (e.g. claude.ai) can connect without pasting a token
 * TODO [#B] Chat inbox - a ChatGPT-style page to run every operation by asking, instead of going from tab to tab
    Plan and as-built: [[file:docs/chat-inbox.md]]
    Chat acts as the signed-in person through the real API handlers. Reads run straight
