@@ -214,16 +214,21 @@ pub async fn edit_vehicle(
     request_body = LocationPayload,
     responses(
         (status = 200, description = "Vehicle location updated successfully", body = LocationResponse),
-        (status = 401, description = "Unauthorized", body = EmptyResponse)
+        (status = 401, description = "Unauthorized", body = EmptyResponse),
+        (status = 403, description = "Vehicle belongs to a different organization", body = EmptyResponse),
+        (status = 404, description = "Vehicle not found", body = EmptyResponse)
     )
 )]
 #[put("/vehicles/{reg}/location")]
 pub async fn update_vehicle_location(
     path: web::Path<String>,
     payload: web::Json<LocationPayload>,
-    _auth: AuthenticatedOrg,
+    auth: AuthenticatedOrg,
 ) -> impl Responder {
     let reg_number = path.into_inner();
+    if let Err(resp) = check_owned_vehicle(&reg_number, auth.org_id) {
+        return resp;
+    }
     let mut vehicle = Vehicle::new(&reg_number, 0, Unit::MetricTon);
 
     match vehicle.update_location(payload.latitude, payload.longitude, payload.address.clone()) {
@@ -370,12 +375,17 @@ pub async fn rotate_vehicle_tracker_key(
     params(("reg" = String, Path, description = "Vehicle registration number")),
     responses(
         (status = 200, description = "Vehicle deleted successfully", body = EmptyResponse),
-        (status = 401, description = "Unauthorized", body = EmptyResponse)
+        (status = 401, description = "Unauthorized", body = EmptyResponse),
+        (status = 403, description = "Vehicle belongs to a different organization", body = EmptyResponse),
+        (status = 404, description = "Vehicle not found", body = EmptyResponse)
     )
 )]
 #[delete("/vehicles/{reg}")]
-pub async fn delete_vehicle(path: web::Path<String>, _auth: AuthenticatedOrg) -> impl Responder {
+pub async fn delete_vehicle(path: web::Path<String>, auth: AuthenticatedOrg) -> impl Responder {
     let reg_number = path.into_inner();
+    if let Err(resp) = check_owned_vehicle(&reg_number, auth.org_id) {
+        return resp;
+    }
     let vehicle = Vehicle::new(&reg_number, 0, Unit::MetricTon);
 
     match vehicle.remove_vehicle() {

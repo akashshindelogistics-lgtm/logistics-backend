@@ -130,15 +130,26 @@ async fn test_add_vehicle_to_nonexistent_org_returns_error() {
 async fn test_update_vehicle_location_endpoint() {
     let _db = TestDb::create();
     let app = test::init_service(App::new().configure(config_routes)).await;
-    let org_id = Uuid::new_v4();
+    let (org, auth) = setup_org(&app, "Location Owner").await;
+    let (_other, other_auth) = setup_org(&app, "Location Attacker").await;
+    register_vehicle(&app, org.id, &auth, "LOC-VH-1").await;
     let payload = LocationPayload {
         latitude: 19.0760,
         longitude: 72.8777,
         address: Some("Mumbai, Maharashtra".to_string()),
     };
+
+    // Another org can't move it.
     let req = test::TestRequest::put()
-        .uri("/api/vehicles/NONEXISTENT-REG-001/location")
-        .insert_header(("Authorization", make_auth_header(org_id, "Test")))
+        .uri("/api/vehicles/LOC-VH-1/location")
+        .insert_header(("Authorization", other_auth))
+        .set_json(&payload)
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
+
+    let req = test::TestRequest::put()
+        .uri("/api/vehicles/LOC-VH-1/location")
+        .insert_header(("Authorization", auth))
         .set_json(&payload)
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -169,10 +180,20 @@ async fn test_update_vehicle_location_invalid_payload() {
 async fn test_delete_vehicle_endpoint() {
     let _db = TestDb::create();
     let app = test::init_service(App::new().configure(config_routes)).await;
-    let org_id = Uuid::new_v4();
+    let (org, auth) = setup_org(&app, "Delete Owner").await;
+    let (_other, other_auth) = setup_org(&app, "Delete Attacker").await;
+    register_vehicle(&app, org.id, &auth, "DEL-VH-1").await;
+
+    // Another org can't delete it.
     let req = test::TestRequest::delete()
-        .uri("/api/vehicles/NONEXISTENT-REG-002")
-        .insert_header(("Authorization", make_auth_header(org_id, "Test")))
+        .uri("/api/vehicles/DEL-VH-1")
+        .insert_header(("Authorization", other_auth))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
+
+    let req = test::TestRequest::delete()
+        .uri("/api/vehicles/DEL-VH-1")
+        .insert_header(("Authorization", auth))
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status().as_u16(), 200);
