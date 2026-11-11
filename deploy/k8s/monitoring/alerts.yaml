@@ -1,0 +1,505 @@
+# Grafana alert rules, provisioned at startup and read-only in the UI.
+# No contact point is configured: alerts show under Alerting > Alert rules.
+apiVersion: 1
+groups:
+- orgId: 1
+  name: infrastructure
+  folder: Logistics
+  interval: 1m
+  rules:
+  - uid: target-down
+    title: Scrape target down
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        expr: up
+        instant: true
+        range: false
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: lt
+            params:
+            - 1
+    for: 2m
+    noDataState: Alerting
+    execErrState: Error
+    labels:
+      severity: critical
+    annotations:
+      summary: Prometheus can't scrape {{ $labels.job }} ({{ $labels.instance }}).
+  - uid: mysql-down
+    title: MySQL down
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        expr: mysql_up
+        instant: true
+        range: false
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: lt
+            params:
+            - 1
+    for: 2m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: critical
+    annotations:
+      summary: mysqld-exporter can't reach MySQL.
+  - uid: api-5xx-ratio
+    title: API 5xx error ratio above 5%
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        expr: sum(rate(http_requests_total{job="logistics-api",status=~"5.."}[5m])) / sum(rate(http_requests_total{job="logistics-api"}[5m]))
+        instant: true
+        range: false
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0.05
+    for: 5m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: critical
+    annotations:
+      summary: '{{ humanizePercentage $values.A.Value }} of API requests failed with 5xx over the last 5 minutes.'
+  - uid: api-p95-latency
+    title: API p95 latency above 2s
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="logistics-api"}[5m])))
+        instant: true
+        range: false
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 2
+    for: 10m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: warning
+    annotations:
+      summary: API p95 latency is {{ humanize $values.A.Value }}s.
+  - uid: delay-alert-scan-failing
+    title: Delay-alert scan failing
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        expr: increase(delay_alert_scans_total{job="logistics-api",result="error"}[1h])
+        instant: true
+        range: false
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: warning
+    annotations:
+      summary: The delay-alert background scan failed {{ humanize $values.A.Value }} times in the last hour; customers may miss late-delivery alerts.
+  - uid: pod-memory-near-limit
+    title: Pod memory above 90% of limit
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        expr: max by (pod) (container_memory_working_set_bytes{container!=""} / (container_spec_memory_limit_bytes{container!=""} > 0))
+        instant: true
+        range: false
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0.9
+    for: 10m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.pod }} is at {{ humanizePercentage $values.A.Value }} of its memory limit and may be OOM-killed.'
+  - uid: mysql-slow-queries
+    title: MySQL slow queries
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        expr: increase(mysql_global_status_slow_queries[15m])
+        instant: true
+        range: false
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 5
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ humanize $values.A.Value }} slow queries in the last 15 minutes.'
+- orgId: 1
+  name: operations
+  folder: Logistics
+  interval: 5m
+  rules:
+  - uid: dispatch-stuck-in-transit
+    title: Dispatches in transit over 48h
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: logistics-mysql
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        rawSql: SELECT o.name AS org, COUNT(*) AS value FROM Dispatches d JOIN Orgs o ON o.id = d.org_id WHERE d.status = 'IN_TRANSIT' AND d.dispatched_at < UNIX_TIMESTAMP() - 172800 GROUP BY o.name
+        rawQuery: true
+        editorMode: code
+        format: table
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.org }}: {{ $values.A.Value }} dispatches have been in transit for over 48 hours.'
+  - uid: stock-below-reorder
+    title: Stock at or below reorder threshold
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: logistics-mysql
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        rawSql: SELECT o.name AS org, COUNT(*) AS value FROM Stock s JOIN Godowns g ON g.id = s.godown_id JOIN Orgs o ON o.id = g.org_id WHERE s.reorder_threshold IS NOT NULL AND s.quantity <= s.reorder_threshold
+          GROUP BY o.name
+        rawQuery: true
+        editorMode: code
+        format: table
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: info
+    annotations:
+      summary: '{{ $labels.org }}: {{ $values.A.Value }} stock items are at or below their reorder threshold.'
+  - uid: vehicle-document-expired
+    title: Vehicle documents expired
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: logistics-mysql
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        rawSql: SELECT o.name AS org, COUNT(*) AS value FROM VehicleDocuments v JOIN Orgs o ON o.id = v.org_id WHERE v.expires_on < CURDATE() GROUP BY o.name
+        rawQuery: true
+        editorMode: code
+        format: table
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.org }}: {{ $values.A.Value }} vehicle documents have expired.'
+  - uid: maintenance-overdue
+    title: Vehicle maintenance overdue
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: logistics-mysql
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        rawSql: SELECT o.name AS org, COUNT(*) AS value FROM VehicleMaintenance m JOIN Orgs o ON o.id = m.org_id WHERE (m.due_on IS NOT NULL AND m.due_on < CURDATE()) OR (m.due_at_mileage_km IS NOT NULL
+          AND m.current_mileage_km >= m.due_at_mileage_km) GROUP BY o.name
+        rawQuery: true
+        editorMode: code
+        format: table
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: info
+    annotations:
+      summary: '{{ $labels.org }}: {{ $values.A.Value }} vehicles are overdue for maintenance.'
+  - uid: invoices-overdue
+    title: Invoices overdue
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: logistics-mysql
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        rawSql: SELECT o.name AS org, COUNT(*) AS value FROM Invoices i JOIN Orgs o ON o.id = i.org_id WHERE i.paid_on IS NULL AND i.due_on < CURDATE() GROUP BY o.name
+        rawQuery: true
+        editorMode: code
+        format: table
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: info
+    annotations:
+      summary: '{{ $labels.org }}: {{ $values.A.Value }} invoices are unpaid past their due date.'
+  - uid: hired-vehicle-not-assigned
+    title: Hired vehicle not assigned for 6h
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: logistics-mysql
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        rawSql: SELECT o.name AS org, COUNT(*) AS value FROM Dispatches d JOIN Orgs o ON o.id = d.org_id WHERE d.status = 'AWAITING_VEHICLE' AND d.dispatched_at < UNIX_TIMESTAMP() - 21600 GROUP BY o.name
+        rawQuery: true
+        editorMode: code
+        format: table
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.org }}: {{ $values.A.Value }} dispatches have waited over 6 hours for a hired vehicle.'
+  - uid: notifications-failing
+    title: Notifications failing
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: logistics-mysql
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        rawSql: SELECT o.name AS org, COUNT(*) AS value FROM Notifications n JOIN Orgs o ON o.id = n.org_id WHERE n.status = 'FAILED' AND n.created_at >= UNIX_TIMESTAMP() - 3600 GROUP BY o.name
+        rawQuery: true
+        editorMode: code
+        format: table
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    for: 0s
+    noDataState: OK
+    execErrState: OK
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.org }}: {{ $values.A.Value }} customer or driver notifications failed in the last hour.'
+  - uid: vehicles-not-reporting
+    title: Vehicles not reporting location
+    condition: B
+    data:
+    - refId: A
+      datasourceUid: logistics-mysql
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        rawSql: SELECT o.name AS org, COUNT(*) AS value FROM Vehicle v JOIN Orgs o ON o.id = v.org_id JOIN Dispatches d ON d.vehicle_registration_number = v.registration_number AND d.status = 'IN_TRANSIT'
+          WHERE v.last_updated_at IS NULL OR v.last_updated_at < UNIX_TIMESTAMP() - 1800 GROUP BY o.name
+        rawQuery: true
+        editorMode: code
+        format: table
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+    for: 10m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.org }}: {{ $values.A.Value }} vehicles on in-transit dispatches haven''t reported location for 30 minutes.'
