@@ -4,7 +4,7 @@
 //! instead. Not RAG — straight prompt-over-structured-data: every figure fed
 //! to the prompt is already computed by [`OpsReport::for_org`], the same way
 //! `generate_dispatch_summary` narrates fields the caller already fetched.
-//! See `todo.org`'s "AI opportunities" section for the full design.
+//! See `docs/todo-archive.org`'s "AI opportunities" section for the full design.
 
 use crate::logistics::reports::OpsReport;
 

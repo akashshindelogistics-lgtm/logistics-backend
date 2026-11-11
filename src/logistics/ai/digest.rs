@@ -8,7 +8,7 @@
 //! and asks Claude to prioritize them into a short actionable list. Folded
 //! into the "ask your data" assistant widget as a canned starter question
 //! rather than a page of its own, since the widget already gives it a place
-//! to live. See `todo.org`'s "AI opportunities" section for the full design.
+//! to live. See `docs/todo-archive.org`'s "AI opportunities" section for the full design.
 
 use crate::logistics::dispatch::dispatch::DispatchOrder;
 use crate::logistics::godown::godown::Godown;

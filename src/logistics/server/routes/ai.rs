@@ -93,7 +93,7 @@ pub async fn get_dispatch_summary(path: web::Path<Uuid>, auth: AuthenticatedOrg)
 // answered using only facts retrieved from that org's own indexed data
 // (dispatch notifications, vehicle compliance documents — see
 // crate::logistics::ai::chunk). Every role may ask; this is a read, not a
-// write. See todo.org's "AI opportunities" section for the full design.
+// write. See docs/todo-archive.org's "AI opportunities" section for the full design.
 
 #[utoipa::path(
     post,
