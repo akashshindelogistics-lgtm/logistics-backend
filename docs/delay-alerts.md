@@ -41,7 +41,8 @@ assumes:
 3. Otherwise looks up the dispatch's customer, records a
    `NotificationEvent::DispatchRunningLate` notification and publishes its
    event in one transaction. The same background consumer as the other
-   notifications writes the AI copy and sends it, with retries — see
+   notifications writes the AI copy (email only; an SMS keeps its
+   DLT-approved fixed text) and sends it, with retries — see
    [async-events.md](async-events.md).
 4. An error on one dispatch (its customer was since deleted, say) is logged
    and skipped rather than aborting the rest of the scan.

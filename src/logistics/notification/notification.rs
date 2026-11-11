@@ -3,8 +3,10 @@
 //! When a dispatch is created, and again when it's delivered, the system
 //! records a notification for each party it should tell and publishes an
 //! event, in the same transaction as the dispatch change. The background
-//! [`crate::logistics::notification::consumer`] then writes the AI copy and
-//! sends it via [`crate::logistics::notification::delivery`], with retries.
+//! [`crate::logistics::notification::consumer`] then writes the AI copy for
+//! emails and sends it via [`crate::logistics::notification::delivery`] (MSG91
+//! for SMS, SMTP or Resend for email), with retries. An SMS always keeps its
+//! fixed text, since Indian operators only deliver DLT-approved wording.
 //! See `docs/async-events.md`. Every row lands with status `QUEUED`
 //! (ready to send), `SKIPPED` (no phone/email on file for that party),
 //! `SENT` (delivery succeeded), or `FAILED` (every retry was used up). A `QUEUED` row whose channel has no
@@ -18,6 +20,7 @@ use crate::logistics::dispatch::dispatch::{DispatchOrder, tracking_url};
 use crate::logistics::driver::driver::Driver;
 use crate::logistics::events;
 use crate::logistics::events::queue::EventType;
+use crate::logistics::notification::delivery::{SmsTemplate, sms_var};
 use crate::logistics::vehicle::vehicle::Vehicle;
 use mysql::prelude::*;
 use mysql::*;
@@ -294,6 +297,37 @@ impl Notification {
         }
     }
 
+    /// Whether this target goes by SMS. An SMS body has to match its DLT
+    /// template word for word (see `docs/notifications.md`), so it uses the
+    /// name cut to DLT's limit and carries nothing the template has no
+    /// variable for: no tracking link, no hours late.
+    fn is_sms(target: &Option<(NotificationChannel, String)>) -> bool {
+        matches!(target, Some((NotificationChannel::Sms, _)))
+    }
+
+    /// The DLT template this notification goes out as, if sent by SMS.
+    pub(crate) fn sms_template(&self) -> SmsTemplate {
+        match self.event {
+            NotificationEvent::DispatchCreated if self.recipient_kind == "driver" => {
+                SmsTemplate::DispatchCreatedDriver
+            }
+            NotificationEvent::DispatchCreated => SmsTemplate::DispatchCreatedCustomer,
+            NotificationEvent::DispatchDelivered => SmsTemplate::DispatchDelivered,
+            NotificationEvent::DispatchRunningLate => SmsTemplate::DispatchRunningLate,
+        }
+    }
+
+    /// Values for [`Self::sms_template`]'s variables, in template order.
+    pub(crate) fn sms_vars(&self, customer_name: &str) -> Vec<String> {
+        let name = sms_var(customer_name);
+        let short_id = self.dispatch_id.to_string()[..8].to_string();
+        if self.recipient_kind == "driver" {
+            vec![short_id, name]
+        } else {
+            vec![name, short_id]
+        }
+    }
+
     /// Create the notification and queue tables. Must run before the
     /// transaction opens: MySQL implicitly commits on `CREATE TABLE`.
     pub fn prepare_tables(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
@@ -329,31 +363,33 @@ impl Notification {
         let driver_target = driver_phone
             .filter(|s| !s.is_empty())
             .map(|p| (NotificationChannel::Sms, p.to_string()));
+        let customer_target = Self::customer_target(customer);
+        let sms_name = sms_var(&customer.name);
+        let fixed = |name: &str| {
+            format!("Hi {name}, your order (ref {short_id}) has been dispatched and is on its way.")
+        };
+        let customer_body = if Self::is_sms(&customer_target) {
+            fixed(&sms_name)
+        } else {
+            with_tracking_link(fixed(&customer.name), tracking_url.as_deref())
+        };
         let notifs = vec![
             Self::build(
                 org_id,
                 dispatch_id,
                 NotificationEvent::DispatchCreated,
                 "customer",
-                Self::customer_target(customer),
-                with_tracking_link(
-                    format!(
-                        "Hi {}, your order (ref {short_id}) has been dispatched and is on its way.",
-                        customer.name
-                    ),
-                    tracking_url.as_deref(),
-                ),
+                customer_target,
+                customer_body,
             ),
+            // The driver is only ever reached by SMS.
             Self::build(
                 org_id,
                 dispatch_id,
                 NotificationEvent::DispatchCreated,
                 "driver",
                 driver_target,
-                format!(
-                    "New trip assigned: dispatch {short_id} to {}.",
-                    customer.name
-                ),
+                format!("New trip assigned: dispatch {short_id} to {sms_name}."),
             ),
         ];
         Self::insert_all(tx, &notifs)?;
@@ -380,16 +416,19 @@ impl Notification {
         customer: &Customer,
     ) -> Result<Vec<Notification>, Box<dyn Error>> {
         let short_id = &dispatch_id.to_string()[..8];
+        let customer_target = Self::customer_target(customer);
+        let name = if Self::is_sms(&customer_target) {
+            sms_var(&customer.name)
+        } else {
+            customer.name.clone()
+        };
         let notifs = vec![Self::build(
             org_id,
             dispatch_id,
             NotificationEvent::DispatchDelivered,
             "customer",
-            Self::customer_target(customer),
-            format!(
-                "Hi {}, your order (ref {short_id}) has been delivered. Thank you!",
-                customer.name
-            ),
+            customer_target,
+            format!("Hi {name}, your order (ref {short_id}) has been delivered. Thank you!"),
         )];
         Self::insert_all(tx, &notifs)?;
         events::queue::publish(
@@ -432,19 +471,30 @@ impl Notification {
             return Ok(None);
         }
         let short_id = &dispatch_id.to_string()[..8];
-        let notifs = vec![Self::build(
-            org_id,
-            dispatch_id,
-            NotificationEvent::DispatchRunningLate,
-            "customer",
-            Self::customer_target(customer),
+        let customer_target = Self::customer_target(customer);
+        // A DLT template holds at most two variables, so the SMS leaves out
+        // the hours. The email keeps them.
+        let customer_body = if Self::is_sms(&customer_target) {
+            format!(
+                "Hi {}, your order (ref {short_id}) is running behind its expected delivery time. We're sorry for the delay.",
+                sms_var(&customer.name)
+            )
+        } else {
             with_tracking_link(
                 format!(
                     "Hi {}, your order (ref {short_id}) is running about {hours_late}h behind its expected delivery time. We're sorry for the delay.",
                     customer.name
                 ),
                 tracking_url.as_deref(),
-            ),
+            )
+        };
+        let notifs = vec![Self::build(
+            org_id,
+            dispatch_id,
+            NotificationEvent::DispatchRunningLate,
+            "customer",
+            customer_target,
+            customer_body,
         )];
         Self::insert_all(tx, &notifs)?;
         Ok(Some(notifs))

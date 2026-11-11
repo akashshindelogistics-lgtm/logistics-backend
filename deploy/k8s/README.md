@@ -75,7 +75,7 @@ Alerting > Contact points and point the default notification policy at it.
 
 `up` generates the MySQL passwords and `JWT_SECRET` into the
 `logistics-secrets` Secret once, and reuses them afterwards. To turn on the AI
-features, set `ANTHROPIC_API_KEY` when running `up` for a new cluster. Twilio
+features, set `ANTHROPIC_API_KEY` when running `up` for a new cluster. MSG91
 and Resend aren't wired in, so notifications stay queued.
 
 ## Host-specific fixes

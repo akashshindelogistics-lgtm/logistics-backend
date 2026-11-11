@@ -222,7 +222,7 @@ async fn delivery_publishes_only_for_the_delivered_status() {
 async fn the_consumer_finishes_a_real_event_without_any_provider() {
     // SAFETY: matches the other notification tests that clear these keys.
     unsafe {
-        for key in ["ANTHROPIC_API_KEY", "TWILIO_ACCOUNT_SID", "RESEND_API_KEY"] {
+        for key in ["ANTHROPIC_API_KEY", "MSG91_AUTH_KEY", "RESEND_API_KEY"] {
             std::env::remove_var(key);
         }
     }

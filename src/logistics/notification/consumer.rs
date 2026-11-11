@@ -1,5 +1,6 @@
 //! Turns dispatch events into sent messages: writes the AI copy for each
-//! `QUEUED` notification and sends it. Only `QUEUED` rows are touched, so a
+//! `QUEUED` email and sends it. An SMS keeps its fixed text, which has to
+//! match its DLT template. Only `QUEUED` rows are touched, so a
 //! retry skips anything already sent.
 
 use crate::logistics::ai::notification_copy as copy;
@@ -7,7 +8,7 @@ use crate::logistics::events::queue::{Event, EventType};
 use crate::logistics::events::worker::Consumer;
 use crate::logistics::notification::delivery::{self, DeliveryError};
 use crate::logistics::notification::notification::{
-    Notification, NotificationEvent, NotificationStatus, with_tracking_link,
+    Notification, NotificationChannel, NotificationEvent, NotificationStatus, with_tracking_link,
 };
 use futures_util::future::LocalBoxFuture;
 use std::future::Future;
@@ -27,7 +28,13 @@ impl Consumer for NotificationConsumer {
         event: &'a Event,
         attempt: u32,
     ) -> LocalBoxFuture<'a, Result<(), String>> {
-        Box::pin(process_event(event, attempt, send))
+        let customer_name = event.payload["customer_name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        Box::pin(process_event(event, attempt, move |n| {
+            send(n, customer_name.clone())
+        }))
     }
 
     fn on_dead_letter(&self, event: &Event) {
@@ -37,8 +44,16 @@ impl Consumer for NotificationConsumer {
     }
 }
 
-async fn send(n: Notification) -> Result<(), DeliveryError> {
-    delivery::deliver(n.channel, &n.recipient, n.event.email_subject(), &n.body).await
+async fn send(n: Notification, customer_name: String) -> Result<(), DeliveryError> {
+    match n.channel {
+        NotificationChannel::Email => {
+            delivery::send_email(&n.recipient, n.event.email_subject(), &n.body).await
+        }
+        NotificationChannel::Sms => {
+            let vars = n.sms_vars(&customer_name);
+            delivery::send_sms(&n.recipient, n.sms_template(), &vars).await
+        }
+    }
 }
 
 fn notification_event(event: &Event) -> Result<NotificationEvent, String> {
@@ -57,30 +72,29 @@ fn dispatch_id(event: &Event) -> Result<Uuid, String> {
         .ok_or_else(|| "event payload has no valid dispatch_id".to_string())
 }
 
-/// `Err` from the model means "keep the template text".
+/// `None` means "keep the template text": always for an SMS, whose wording
+/// must match its DLT template, and when the model errors.
 async fn personalized_body(n: &Notification, event: &Event) -> Option<String> {
+    if n.channel == NotificationChannel::Sms {
+        return None;
+    }
     let name = event.payload["customer_name"].as_str()?;
     let dispatch_id = n.dispatch_id.to_string();
     let short_id = &dispatch_id[..8];
-    let result = match (n.event, n.recipient_kind.as_str()) {
-        (NotificationEvent::DispatchCreated, "driver") => {
-            copy::generate_dispatch_created_driver_body(name, short_id).await
-        }
-        (NotificationEvent::DispatchCreated, _) => {
+    // Only customers get email; the driver is reached by SMS.
+    let result = match n.event {
+        NotificationEvent::DispatchCreated => {
             copy::generate_dispatch_created_customer_body(name, short_id).await
         }
-        (NotificationEvent::DispatchDelivered, _) => {
+        NotificationEvent::DispatchDelivered => {
             copy::generate_dispatch_delivered_customer_body(name, short_id).await
         }
-        (NotificationEvent::DispatchRunningLate, _) => {
+        NotificationEvent::DispatchRunningLate => {
             let hours_late = event.payload["hours_late"].as_i64().unwrap_or(0);
             copy::generate_dispatch_running_late_customer_body(name, short_id, hours_late).await
         }
     };
-    // The driver's message never carries the customer's link.
-    let link = (n.recipient_kind != "driver")
-        .then(|| event.payload["tracking_url"].as_str())
-        .flatten();
+    let link = event.payload["tracking_url"].as_str();
     result.ok().map(|body| with_tracking_link(body, link))
 }
 
