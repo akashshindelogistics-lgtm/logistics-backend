@@ -3,7 +3,8 @@
 Serves `master` of [logistics-backend] and [logistics-frontend] from one machine
 through an ngrok tunnel, and redeploys within about a minute of a merge plus
 build time. This is separate from the Oracle VM setup in
-[`../README.md`](../README.md).
+[`../README.md`](../README.md). The local kind cluster auto-deploys the same
+way; see "Auto-deploy" in [`../k8s/README.md`](../k8s/README.md).
 
 ```
 Browser ─▶ ngrok ─▶ logi-web :4173 (vite preview) ─ /api ─▶ logi-api :8090 ─▶ local MySQL

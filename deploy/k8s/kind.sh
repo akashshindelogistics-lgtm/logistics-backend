@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Run the whole system on a local kind cluster of its own.
-#   deploy/k8s/kind.sh up     create or update it
-#   deploy/k8s/kind.sh down   delete the cluster and all its data
+#   deploy/k8s/kind.sh up      build images, create or update the cluster
+#   deploy/k8s/kind.sh apply   roll out images that are already in the cluster
+#   deploy/k8s/kind.sh down    delete the cluster and all its data
 # FRONTEND_DIR: logistics-frontend checkout (default: sibling of this repo).
 # ANTHROPIC_API_KEY: stored in the cluster on first `up` if set; enables AI.
+# API_TAG / FRONTEND_TAG: image tags (default `local`). autodeploy.sh tags by
+#   commit so it can roll back to images still in the cluster with `apply`.
 set -euo pipefail
 
 CLUSTER=logistics
@@ -12,6 +15,10 @@ NAMESPACE=logistics
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 FRONTEND_DIR="${FRONTEND_DIR:-$REPO_ROOT/../logistics-frontend}"
+API_TAG="${API_TAG:-local}"
+FRONTEND_TAG="${FRONTEND_TAG:-local}"
+API_IMAGE="logistics-api:$API_TAG"
+FRONTEND_IMAGE="logistics-frontend:$FRONTEND_TAG"
 kc() { kubectl --context "$CONTEXT" "$@"; }
 
 ensure_cluster() {
@@ -39,23 +46,33 @@ ensure_secrets() {
   kc -n "$NAMESPACE" create secret generic logistics-secrets "${args[@]}"
 }
 
+# Apply the manifests with this run's image tags and wait for the rollout.
+apply() {
+  ensure_secrets
+  kc kustomize "$HERE" |
+    sed -e "s#image: logistics-api:local\$#image: $API_IMAGE#" \
+        -e "s#image: logistics-frontend:local\$#image: $FRONTEND_IMAGE#" |
+    kc apply -f -
+  if [ "$API_TAG" = local ] || [ "$FRONTEND_TAG" = local ]; then
+    # A reused tag doesn't change the spec, so a rollout has to be asked for.
+    kc -n "$NAMESPACE" rollout restart deployment/logistics-api deployment/logistics-frontend
+  fi
+  kc -n "$NAMESPACE" rollout status statefulset/mysql --timeout=300s
+  kc -n "$NAMESPACE" rollout status deployment/logistics-api --timeout=300s
+  kc -n "$NAMESPACE" rollout status deployment/logistics-frontend --timeout=120s
+  kc -n "$NAMESPACE" rollout status deployment/prometheus deployment/grafana --timeout=180s
+}
+
 up() {
   if [ ! -f "$FRONTEND_DIR/package.json" ]; then
     echo "No frontend at $FRONTEND_DIR; set FRONTEND_DIR." >&2
     exit 1
   fi
-  docker build -t logistics-api:local "$REPO_ROOT"
-  docker build -t logistics-frontend:local -f "$HERE/frontend.Dockerfile" "$FRONTEND_DIR"
+  docker build -t "$API_IMAGE" "$REPO_ROOT"
+  docker build -t "$FRONTEND_IMAGE" -f "$HERE/frontend.Dockerfile" "$FRONTEND_DIR"
   ensure_cluster
-  kind load docker-image --name "$CLUSTER" logistics-api:local logistics-frontend:local
-  ensure_secrets
-  kc apply -k "$HERE"
-  # The tags don't change between builds, so a rollout has to be asked for.
-  kc -n "$NAMESPACE" rollout restart deployment/logistics-api deployment/logistics-frontend
-  kc -n "$NAMESPACE" rollout status statefulset/mysql --timeout=300s
-  kc -n "$NAMESPACE" rollout status deployment/logistics-api --timeout=300s
-  kc -n "$NAMESPACE" rollout status deployment/logistics-frontend --timeout=120s
-  kc -n "$NAMESPACE" rollout status deployment/prometheus deployment/grafana --timeout=180s
+  kind load docker-image --name "$CLUSTER" "$API_IMAGE" "$FRONTEND_IMAGE"
+  apply
   cat <<URLS
 
 Dashboard:  http://localhost:8088
@@ -67,6 +84,7 @@ URLS
 
 case "${1:-}" in
   up) up ;;
+  apply) apply ;;
   down) kind delete cluster --name "$CLUSTER" ;;
-  *) echo "usage: $0 up|down" >&2; exit 2 ;;
+  *) echo "usage: $0 up|apply|down" >&2; exit 2 ;;
 esac

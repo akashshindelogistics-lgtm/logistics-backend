@@ -1,0 +1,10 @@
+[Unit]
+Description=Deploy master of logistics-backend and logistics-frontend to the kind cluster
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/go/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/logistics-kind/autodeploy/repos/logistics-backend/deploy/k8s/autodeploy.sh
+# Building both images from cold takes a while on a laptop.
+TimeoutStartSec=60min
+Nice=10

@@ -5,6 +5,7 @@ cluster named `logistics`. Nothing here connects to the host's MySQL.
 
 ```
 deploy/k8s/kind.sh up      # build images, create or update the cluster
+deploy/k8s/kind.sh apply   # roll out images already loaded (API_TAG, FRONTEND_TAG)
 deploy/k8s/kind.sh down    # delete the cluster and all its data
 ```
 
@@ -28,6 +29,40 @@ kubectl context as it was:
 ```
 kubectl --context kind-logistics -n logistics get pods
 ```
+
+## Auto-deploy
+
+`logi-kind-deploy.timer` keeps the cluster on `master` of both repos, the same
+way [`../ngrok`](../ngrok/README.md) keeps the ngrok host on it. Together they
+redeploy local staging (kind) and the ngrok deployment within a few minutes of
+a merge.
+
+```
+deploy/k8s/install-autodeploy.sh   # once; needs git, docker, kind, kubectl
+```
+
+Every minute, `autodeploy.sh` fetches `master` of both repos into
+`~/logistics-kind/autodeploy/repos/`. When either has a new commit it builds
+both images tagged with their commits, rolls them out with `kind.sh up`, and
+checks that the dashboard and API answer. If the build, the rollout or the
+check fails, it puts the last good images back with `kind.sh apply` (they are
+still loaded in the cluster) and doesn't retry that pair of commits until one
+of the repos moves on. The newest three image tags are kept.
+
+The API changes the database schema itself at startup, and a rollback does not
+undo that.
+
+```sh
+journalctl --user -u logi-kind-deploy -f            # follow deploys
+cat ~/logistics-kind/autodeploy/state/deployed      # live commits (backend frontend)
+systemctl --user start logi-kind-deploy             # check now instead of waiting
+rm ~/logistics-kind/autodeploy/state/failed         # retry a failed pair
+systemctl --user stop logi-kind-deploy.timer        # pause auto-deploy
+```
+
+It uses its own checkouts, not this one, so running `kind.sh up` by hand from
+a working copy still deploys what's on disk there; the timer puts `master`
+back on the next new commit.
 
 ## Monitoring
 
