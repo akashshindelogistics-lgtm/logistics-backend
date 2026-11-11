@@ -113,6 +113,10 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ("report_driver_location", "for the driver's phone"),
     ("driver_me", "for the driver's phone"),
     ("track_vehicle_location", "for GPS trackers"),
+    (
+        "public_track_dispatch",
+        "for customers holding a tracking link",
+    ),
     ("latest_driver_app", "for the driver's phone"),
     ("download_driver_app", "binary download"),
     ("upload_file", "the chat composer uploads files itself"),

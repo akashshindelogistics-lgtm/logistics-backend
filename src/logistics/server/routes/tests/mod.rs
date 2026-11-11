@@ -47,6 +47,7 @@ mod maintenance;
 mod notifications;
 mod orgs;
 mod reports;
+mod tracking;
 mod trips;
 mod uploads;
 mod users;

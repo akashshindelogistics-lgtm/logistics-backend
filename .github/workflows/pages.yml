@@ -68,6 +68,7 @@ jobs:
               '/api/orgs/{id}/stock-transfers', '/api/orgs/{id}/dispatch',
               '/api/dispatches/{id}/status', '/api/vehicles/{reg}/location',
               '/api/track/{tracker_key}', '/api/vehicles/{reg}/tracker-key/rotate',
+              '/api/public/track/{token}',
               '/api/vehicles/{reg}', '/api/vehicles/{reg}/driver',
               '/api/orgs/{id}/vendors', '/api/vendors/{id}',
               '/api/orgs/{id}/vehicle-hires', '/api/vehicle-hires/{id}/assign',
