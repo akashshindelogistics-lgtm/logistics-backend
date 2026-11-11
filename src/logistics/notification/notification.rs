@@ -21,6 +21,7 @@ use crate::logistics::driver::driver::Driver;
 use crate::logistics::events;
 use crate::logistics::events::queue::EventType;
 use crate::logistics::notification::delivery::{SmsTemplate, sms_var};
+use crate::logistics::user::user::{OrgRole, OrgUser};
 use crate::logistics::vehicle::vehicle::Vehicle;
 use mysql::prelude::*;
 use mysql::*;
@@ -28,6 +29,9 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+/// `recipient_kind` for an org's ADMIN team members.
+pub(crate) const ORG_ADMIN: &str = "org_admin";
 
 fn now_unix() -> i64 {
     SystemTime::now()
@@ -47,6 +51,9 @@ pub enum NotificationEvent {
     /// it was created. Recorded by
     /// [`crate::logistics::notification::delay_alerts::scan_and_alert`].
     DispatchRunningLate,
+    /// A freight invoice was raised against the dispatch. Email only: there
+    /// is no DLT template for it, so a customer with just a phone is skipped.
+    InvoiceRaised,
 }
 
 impl NotificationEvent {
@@ -55,6 +62,7 @@ impl NotificationEvent {
             NotificationEvent::DispatchCreated => "DISPATCH_CREATED",
             NotificationEvent::DispatchDelivered => "DISPATCH_DELIVERED",
             NotificationEvent::DispatchRunningLate => "DISPATCH_RUNNING_LATE",
+            NotificationEvent::InvoiceRaised => "INVOICE_RAISED",
         }
     }
 
@@ -65,6 +73,7 @@ impl NotificationEvent {
             NotificationEvent::DispatchCreated => "Your order is on its way",
             NotificationEvent::DispatchDelivered => "Your order has been delivered",
             NotificationEvent::DispatchRunningLate => "Your order is running behind schedule",
+            NotificationEvent::InvoiceRaised => "Your invoice is ready",
         }
     }
 }
@@ -133,7 +142,7 @@ pub struct Notification {
     pub dispatch_id: Uuid,
     pub event: NotificationEvent,
     pub channel: NotificationChannel,
-    /// `"customer"` or `"driver"`.
+    /// `"customer"`, `"driver"` or `"org_admin"` (an active ADMIN team member).
     pub recipient_kind: String,
     /// The phone number or email address, or a placeholder when `SKIPPED`.
     pub recipient: String,
@@ -222,6 +231,7 @@ impl Notification {
             event: match event.as_str() {
                 "DISPATCH_DELIVERED" => NotificationEvent::DispatchDelivered,
                 "DISPATCH_RUNNING_LATE" => NotificationEvent::DispatchRunningLate,
+                "INVOICE_RAISED" => NotificationEvent::InvoiceRaised,
                 _ => NotificationEvent::DispatchCreated,
             },
             channel: NotificationChannel::from_str(&channel),
@@ -306,15 +316,39 @@ impl Notification {
     }
 
     /// The DLT template this notification goes out as, if sent by SMS.
-    pub(crate) fn sms_template(&self) -> SmsTemplate {
+    /// `None` for an email-only event.
+    pub(crate) fn sms_template(&self) -> Option<SmsTemplate> {
         match self.event {
             NotificationEvent::DispatchCreated if self.recipient_kind == "driver" => {
-                SmsTemplate::DispatchCreatedDriver
+                Some(SmsTemplate::DispatchCreatedDriver)
             }
-            NotificationEvent::DispatchCreated => SmsTemplate::DispatchCreatedCustomer,
-            NotificationEvent::DispatchDelivered => SmsTemplate::DispatchDelivered,
-            NotificationEvent::DispatchRunningLate => SmsTemplate::DispatchRunningLate,
+            NotificationEvent::DispatchCreated => Some(SmsTemplate::DispatchCreatedCustomer),
+            NotificationEvent::DispatchDelivered => Some(SmsTemplate::DispatchDelivered),
+            NotificationEvent::DispatchRunningLate => Some(SmsTemplate::DispatchRunningLate),
+            NotificationEvent::InvoiceRaised => None,
         }
+    }
+
+    /// The email subject. Org admins get an internal alert, not the
+    /// customer-facing wording.
+    pub(crate) fn email_subject(&self) -> String {
+        if self.recipient_kind == ORG_ADMIN {
+            let short_id = &self.dispatch_id.to_string()[..8];
+            return format!("Dispatch {short_id} is running late");
+        }
+        self.event.email_subject().to_string()
+    }
+
+    /// Email targets for every active ADMIN team member of the org: the
+    /// owner-level people who should hear about problems.
+    fn org_admin_targets(
+        org_id: Uuid,
+    ) -> Result<Vec<(NotificationChannel, String)>, Box<dyn Error>> {
+        Ok(OrgUser::list_by_org(org_id)?
+            .into_iter()
+            .filter(|u| u.is_active && u.role == OrgRole::Admin && !u.email.is_empty())
+            .map(|u| (NotificationChannel::Email, u.email))
+            .collect())
     }
 
     /// Values for [`Self::sms_template`]'s variables, in template order.
@@ -488,7 +522,7 @@ impl Notification {
                 tracking_url.as_deref(),
             )
         };
-        let notifs = vec![Self::build(
+        let mut notifs = vec![Self::build(
             org_id,
             dispatch_id,
             NotificationEvent::DispatchRunningLate,
@@ -496,8 +530,63 @@ impl Notification {
             customer_target,
             customer_body,
         )];
+        let admin_body = format!(
+            "Dispatch {short_id} to {} is still in transit, about {hours_late}h past its expected delivery time. The customer has been told about the delay.",
+            customer.name
+        );
+        for target in Self::org_admin_targets(org_id)? {
+            notifs.push(Self::build(
+                org_id,
+                dispatch_id,
+                NotificationEvent::DispatchRunningLate,
+                ORG_ADMIN,
+                Some(target),
+                admin_body.clone(),
+            ));
+        }
         Self::insert_all(tx, &notifs)?;
         Ok(Some(notifs))
+    }
+
+    /// Record the "your invoice is ready" email to the customer and publish
+    /// its event, in the caller's transaction. `amount` is in whole rupees.
+    pub fn enqueue_invoice_raised(
+        tx: &mut Transaction<'_>,
+        org_id: Uuid,
+        dispatch_id: Uuid,
+        customer: &Customer,
+        amount: i64,
+        due_on: &str,
+    ) -> Result<Vec<Notification>, Box<dyn Error>> {
+        let short_id = &dispatch_id.to_string()[..8];
+        let target = customer
+            .email
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|e| (NotificationChannel::Email, e.to_string()));
+        let notifs = vec![Self::build(
+            org_id,
+            dispatch_id,
+            NotificationEvent::InvoiceRaised,
+            "customer",
+            target,
+            format!(
+                "Hi {}, an invoice of Rs {amount} has been raised for your order (ref {short_id}). Payment is due by {due_on}. Thank you for your business!",
+                customer.name
+            ),
+        )];
+        Self::insert_all(tx, &notifs)?;
+        events::queue::publish(
+            tx,
+            org_id,
+            EventType::InvoiceRaised,
+            serde_json::json!({
+                "dispatch_id": dispatch_id,
+                "customer_name": customer.name,
+            }),
+            None,
+        )?;
+        Ok(notifs)
     }
 
     /// The customer tracking link for a dispatch, if it has a token and
