@@ -8,14 +8,15 @@
 
 A logistics management platform for tracking organizations, their vehicle
 fleets, stock, customers, and delivery dispatches. This repo is its Rust REST
-API backed by MySQL, with the feature docs (`docs/`) and the task list
-(`todo.org`) for the whole system.
+API backed by MySQL, with the feature docs (`docs/`) for the whole system.
+Work is tracked in [GitHub Issues](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues)
+(the old `todo.org` is archived as `docs/todo-archive.org`).
 
 The system is three repos:
 
 | Repo | What | CI |
 | --- | --- | --- |
-| **logistics-backend** | This API, the deployment (`deploy/`), feature docs and `todo.org` | [![Cargo Tests](https://github.com/akashshindelogistics-lgtm/logistics-backend/actions/workflows/periodic-tests.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-backend/actions/workflows/periodic-tests.yml) |
+| **logistics-backend** | This API, the deployment (`deploy/`), feature docs and the issue tracker | [![Cargo Tests](https://github.com/akashshindelogistics-lgtm/logistics-backend/actions/workflows/periodic-tests.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-backend/actions/workflows/periodic-tests.yml) |
 | [logistics-frontend](https://github.com/akashshindelogistics-lgtm/logistics-frontend) | The React + TypeScript dispatch dashboard: day-to-day operations, live location maps, AI-generated dispatch summaries | [![Unit Tests](https://github.com/akashshindelogistics-lgtm/logistics-frontend/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-frontend/actions/workflows/unit-tests.yml) [![E2E](https://github.com/akashshindelogistics-lgtm/logistics-frontend/actions/workflows/e2e.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-frontend/actions/workflows/e2e.yml) |
 | [logistics-android](https://github.com/akashshindelogistics-lgtm/logistics-android) | The native Kotlin driver app that reports a driver's phone location | [![Android CI](https://github.com/akashshindelogistics-lgtm/logistics-android/actions/workflows/android.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-android/actions/workflows/android.yml) |
 
@@ -401,11 +402,21 @@ artifacts or touch production):
   the OpenAPI spec on a GitHub Release, optionally deploys the VM.
 - **deploy-backend.yml** — manual (`workflow_dispatch`): pin the VM to any
   existing GHCR image tag — redeploy or rollback.
+- **claude-agent.yml** — when the repo owner labels an issue `agent:ready`,
+  Claude Code works on it and opens a draft PR. See *Contributing*.
 
 ## Contributing
 
 Issues and pull requests are welcome. Please open an issue to discuss any
 significant change before submitting a PR.
+
+Work is tracked as GitHub issues: `priority:A|B|C` labels, phases as
+sub-issues. Items migrated from the old `todo.org` carry `from-todo-org`. To
+hand an issue to Claude Code, the owner adds `agent:ready`; the agent moves it
+to `agent:working`, then `agent:review` once its draft PR (which closes the
+issue) is open. `claude-agent.yml` needs the Claude GitHub App and its
+`CLAUDE_CODE_OAUTH_TOKEN` secret, set up once with `/install-github-app` in
+Claude Code.
 
 ## License
 

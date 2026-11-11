@@ -4,7 +4,7 @@
 //! MySQL's built-in `FULLTEXT` index rather than embeddings — this app has
 //! no vector store and deliberately avoids adding a second AI vendor just
 //! for embeddings, so lexical relevance ranking stands in for semantic
-//! similarity. See `todo.org`'s "AI opportunities" section for the full
+//! similarity. See `docs/todo-archive.org`'s "AI opportunities" section for the full
 //! design and phasing.
 //!
 //! v1 (Phase 1) indexed [`Notification`] and [`VehicleDocument`]. Phase 2

@@ -1,3 +1,7 @@
+# Archived on 2026-11-11. Every item now lives in GitHub Issues:
+# https://github.com/akashshindelogistics-lgtm/logistics-backend/issues (label: from-todo-org).
+# Kept for the design notes that code comments point at. Do not add new items here.
+
 * DONE refactor org struct methods with self implementation in [[file: src/org/orgs.rs]]
 * DONE Add location details to the Organization
 * DONE Add customer details and dispatcher system

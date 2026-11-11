@@ -7,7 +7,7 @@
 //! `dispatched_at`, no new table). Folded into the assistant widget as a
 //! canned starter question, the same way
 //! [`crate::logistics::ai::digest::generate_daily_digest`] is. See
-//! `todo.org`'s "AI opportunities" section for the full design.
+//! `docs/todo-archive.org`'s "AI opportunities" section for the full design.
 
 use crate::logistics::dispatch::dispatch::DispatchOrder;
 use crate::logistics::godown::godown::Godown;
