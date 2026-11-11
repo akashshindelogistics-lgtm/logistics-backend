@@ -1,7 +1,7 @@
-//! Multi-stop trips that group several dispatches onto one vehicle run.
+//! Multi-stop trips that group several dispatches onto one vehicle run. The
+//! read routes also present each standalone dispatch as a one-stop trip.
 
 use super::common::*;
-use super::dispatches::notify_dispatch_created;
 use crate::logistics::customer::customer::Customer;
 use crate::logistics::dispatch::dispatch::{DispatchLineItemInput, VehicleSource};
 use crate::logistics::dispatch::trip::Trip;
@@ -153,24 +153,11 @@ pub async fn create_trip(
     };
 
     match result {
-        Ok(trip) => {
-            // Best-effort per-stop notifications; a hired trip's go out when
-            // its truck is assigned.
-            if trip.vehicle_source == VehicleSource::Own {
-                for stop in &trip.stops {
-                    if let Some((customer, _)) =
-                        resolved.iter().find(|(c, _)| c.id == stop.customer_id)
-                    {
-                        notify_dispatch_created(org_id, stop, customer).await;
-                    }
-                }
-            }
-            HttpResponse::Ok().json(ApiResponse {
-                success: true,
-                message: format!("Trip created with {} stops", trip.stops.len()),
-                data: Some(trip),
-            })
-        }
+        Ok(trip) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: format!("Trip created with {} stops", trip.stops.len()),
+            data: Some(trip),
+        }),
         Err(err) => HttpResponse::BadRequest().json(ApiResponse::<String> {
             success: false,
             message: format!("Trip failed: {}", err),
@@ -186,7 +173,7 @@ pub async fn create_trip(
     security(("bearer_auth" = [])),
     params(("id" = Uuid, Path, description = "Organization UUID")),
     responses(
-        (status = 200, description = "The org's trips, newest first", body = TripListResponse),
+        (status = 200, description = "The org's trips, newest first, including each standalone dispatch as a one-stop trip", body = TripListResponse),
         (status = 403, description = "Forbidden", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse)
     )
@@ -220,7 +207,7 @@ pub async fn list_org_trips(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> im
     path = "/api/trips/{id}",
     tag = "Trips",
     security(("bearer_auth" = [])),
-    params(("id" = Uuid, Path, description = "Trip UUID")),
+    params(("id" = Uuid, Path, description = "Trip UUID, or a standalone dispatch's UUID for its one-stop trip")),
     responses(
         (status = 200, description = "The trip and its stops", body = TripResponse),
         (status = 403, description = "Forbidden", body = EmptyResponse),

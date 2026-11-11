@@ -36,25 +36,21 @@ assumes:
    keeps the ones `is_running_late()`.
 2. For each, checks whether it already carries a `DISPATCH_RUNNING_LATE`
    notification (`Notification::list_by_dispatch`) — if so, skips it. This is
-   what makes the scan idempotent: it can run as often as you like (or be
-   called twice at once) without ever double-sending.
-3. Otherwise looks up the dispatch's customer and records + attempts to
-   deliver a new `NotificationEvent::DispatchRunningLate` notification via
-   `Notification::record_dispatch_running_late`, reusing the existing
-   SMS/email delivery pipeline (`notification::delivery`) exactly as the
-   dispatch-created / dispatch-delivered events do — this is a new trigger
-   condition on the same mechanism, not a new one. The body is
-   AI-personalized via `ai::notification_copy::generate_dispatch_running_late_customer_body`
-   when `ANTHROPIC_API_KEY` is configured, falling back to a fixed template
-   on any error, matching every other notification in this codebase.
+   what makes repeat scans harmless. Two scans racing past this check are
+   stopped by the event's unique dedupe key, so only one can alert.
+3. Otherwise looks up the dispatch's customer, records a
+   `NotificationEvent::DispatchRunningLate` notification and publishes its
+   event in one transaction. The same background consumer as the other
+   notifications writes the AI copy (email only; an SMS keeps its
+   DLT-approved fixed text) and sends it, with retries — see
+   [async-events.md](async-events.md).
 4. An error on one dispatch (its customer was since deleted, say) is logged
    and skipped rather than aborting the rest of the scan.
 
-`main.rs` spawns this on a `tokio` timer at startup (`DELAY_ALERT_SCAN_INTERVAL`,
-currently 15 minutes) for the lifetime of the process — this app's actual
-deploy target is a persistent VM (see `docs/file-uploads.md`), not an
-ephemeral-per-request platform, so an in-process background loop needs no
-new infrastructure. There is no user-facing route for it; nothing calls it
+`events::worker` runs this every 15 minutes on its own thread when
+`EVENT_WORKERS_ENABLED=true` — this app's actual deploy target is a persistent
+VM (see `docs/file-uploads.md`), so an in-process loop needs no new
+infrastructure. There is no user-facing route for it; nothing calls it
 except that loop and the tests below.
 
 ## Frontend

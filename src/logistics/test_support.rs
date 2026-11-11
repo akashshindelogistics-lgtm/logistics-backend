@@ -261,6 +261,8 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
     )
     .expect("migrate: create Notifications");
 
+    crate::logistics::events::queue::ensure_tables(conn).expect("migrate: create event queue");
+
     // Transitional: a dispatch used to carry exactly one stock line
     // (`Dispatches.stock_description` + `quantity`); it now carries a list of
     // line items in `DispatchLineItems`. Dev/test dispatches are disposable,
@@ -280,7 +282,8 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             trip_id VARCHAR(36) DEFAULT NULL,
             stop_sequence BIGINT DEFAULT NULL,
             vehicle_source VARCHAR(10) NOT NULL DEFAULT 'OWN',
-            hire_id VARCHAR(36) DEFAULT NULL
+            hire_id VARCHAR(36) DEFAULT NULL,
+            tracking_token VARCHAR(36) DEFAULT NULL UNIQUE
         )",
     )
     .expect("migrate: create Dispatches");
@@ -444,6 +447,9 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
         )",
     )
     .expect("migrate: create UploadedFiles");
+
+    crate::logistics::agent::store::ensure_tables(conn).expect("migrate: create agent tables");
+    crate::logistics::chat::store::ensure_tables(conn).expect("migrate: create chat tables");
 }
 
 /// A private, uniquely-named MySQL database scoped to exactly one test.

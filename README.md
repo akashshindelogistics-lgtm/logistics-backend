@@ -86,7 +86,8 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   sequence; each stop is a normal dispatch with its own lifecycle, linked
   under a trip whose status is derived from its stops. Optionally
   auto-order the stops by proximity (nearest-neighbour route optimization)
-  instead of visiting them in the order they were entered.
+  instead of visiting them in the order they were entered. Standalone
+  dispatches appear in the same list as one-stop trips.
 - **Freight billing** — raise one invoice per dispatch with an amount and a
   due date; the dashboard tracks each invoice as paid / pending / overdue
   and rolls a customer's unpaid invoices up into an outstanding balance.
@@ -95,8 +96,9 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   inventory, and dispatch volume over the last 14 days.
 - **Dispatch notifications** — when a dispatch is created or delivered, a
   notification is recorded for the customer (email or SMS, whichever is on
-  file) and the driver (SMS), and delivered via MSG91 (SMS) / Gmail SMTP or Resend
-  (email) when those are configured. The Dispatches page shows the log per
+  file) and the driver (SMS), and sent in the background with retries via
+  MSG91 (SMS) / Gmail SMTP or Resend (email) when those are configured — see
+  [`docs/async-events.md`](docs/async-events.md). The Dispatches page shows the log per
   order. A background scan also alerts the customer if a dispatch is still
   in transit well past when it should have arrived — see
   [`docs/delay-alerts.md`](docs/delay-alerts.md).
@@ -196,6 +198,11 @@ export SMTP_USERNAME="you@gmail.com"
 export SMTP_PASSWORD="your-16-char-app-password"
 export RESEND_API_KEY="re_..."
 export RESEND_FROM_EMAIL="dispatch@yourdomain.com"
+
+# Optional: run the background consumers (notification sending, delay alerts).
+# Off by default, so a dev server can't message real customers.
+# See docs/async-events.md.
+export EVENT_WORKERS_ENABLED="true"
 
 # Optional: where uploaded files (e.g. proof-of-delivery photos) are stored
 # on disk — see docs/file-uploads.md. Defaults to ./uploads.
@@ -303,13 +310,25 @@ All routes are served under the `/api` prefix.
 | GET/POST | `/api/customers`, `/api/orgs/{id}/customers` | List the org's customers / add one (optionally with an initial `latitude`/`longitude`) |
 | PUT/DELETE | `/api/customers/{id}/location`, `/api/customers/{id}` | Update a customer's location / delete the customer |
 | POST | `/api/orgs/{id}/dispatch` | Dispatch stock from an org to one of its customers (`vehicle_source: HIRED` + `vendor_id` to hire the truck) |
-| POST/GET | `/api/orgs/{id}/trips` | Plan a multi-stop trip (one vehicle, several customers; can also be hired) / list the org's trips |
-| GET | `/api/trips/{id}` | One multi-stop trip and its ordered stops |
+| POST/GET | `/api/orgs/{id}/trips` | Plan a multi-stop trip (one vehicle, several customers; can also be hired) / list the org's trips, including standalone dispatches as one-stop trips |
+| GET | `/api/trips/{id}` | One trip and its ordered stops; also takes a standalone dispatch's id for its one-stop trip |
 | GET | `/api/dispatches` | List dispatch orders |
 | PUT | `/api/dispatches/{id}/status` | Advance a dispatch's lifecycle status |
 | GET | `/api/dispatches/{id}/summary` | AI-generated summary of a dispatch |
 | GET | `/api/dispatches/{id}/notifications` | Customer + driver notifications recorded for a dispatch |
+| GET | `/api/public/track/{token}` | Customer tracking link: order status, timeline and the vehicle's last position while in transit — no login, the token is the credential (see `docs/customer-tracking.md`) |
 | GET | `/api/orgs/{id}/notifications` | The org's 100 most recent notifications |
+| GET, PUT | `/api/orgs/{id}/agents/settings` | Read or change (Admin) the org's autonomy mode, see [docs/agentic-workflow.md](docs/agentic-workflow.md) |
+| POST | `/api/orgs/{id}/agents/run` | Run the dispatch desk agent now |
+| GET | `/api/orgs/{id}/agents/runs` | The org's 100 most recent agent runs |
+| GET | `/api/orgs/{id}/agents/actions` | The org's 100 most recent agent actions, optionally `?status=PENDING_APPROVAL` |
+| POST | `/api/agent-actions/{id}/approve` | Approve and carry out a pending agent action |
+| POST | `/api/agent-actions/{id}/reject` | Reject a pending agent action |
+| GET, POST | `/api/chat/conversations` | This person's chat conversations, or start one, see [docs/chat-inbox.md](docs/chat-inbox.md) |
+| GET, DELETE | `/api/chat/conversations/{id}` | Read a conversation or delete it |
+| POST | `/api/chat/conversations/{id}/messages` | Send a message and wait for the answer |
+| POST | `/api/chat/proposals/{id}/confirm` | Run a change the assistant prepared, as this person |
+| POST | `/api/chat/proposals/{id}/cancel` | Refuse a change the assistant prepared |
 | GET/POST | `/api/dispatches/{id}/invoice` | Get / raise the freight invoice for a dispatch |
 | PUT | `/api/invoices/{id}` | Amend an unpaid invoice's amount or due date |
 | POST | `/api/invoices/{id}/pay` | Mark an invoice paid |
@@ -317,6 +336,7 @@ All routes are served under the `/api` prefix.
 | GET | `/api/customers/{id}/billing` | A customer's payment standing (outstanding, overdue) |
 | GET | `/api/orgs/{id}/reports` | Operational report: fleet utilization, delivery performance, godown inventory, 14-day dispatch volume |
 | GET | `/api/health` | Health check |
+| GET | `/metrics` | Prometheus metrics: requests, latency and status per route (not under `/api`; blocked by the Caddy proxy) |
 
 The published Swagger UI (see CI/CD below) has "Try it out" enabled and the
 server enables permissive CORS, so it can call the deployed API directly.

@@ -1,8 +1,6 @@
 //! Vehicle hires from vendors and the payments recorded against them.
 
 use super::common::*;
-use super::dispatches::notify_dispatch_created;
-use crate::logistics::customer::customer::Customer;
 use crate::logistics::vehicle::vehicle::Unit;
 use crate::logistics::vendor::hire::{
     HireAssignment, HireError, HireStatus, VehicleHire, VendorPayment,
@@ -276,23 +274,14 @@ pub async fn assign_vehicle_hire(
         advance_paid: payload.advance_paid,
     };
     match hire.assign(assignment) {
-        Ok(released) => {
-            // The dispatches are now real: tell each customer and the hired
-            // driver, as an own-fleet dispatch does at creation.
-            for order in &released {
-                if let Ok(Some(customer)) = Customer::get_by_id(order.customer_id) {
-                    notify_dispatch_created(auth.org_id, order, &customer).await;
-                }
-            }
-            HttpResponse::Ok().json(ApiResponse {
-                success: true,
-                message: format!(
-                    "Hired truck assigned; {} dispatch(es) moved to PENDING",
-                    released.len()
-                ),
-                data: Some(hire),
-            })
-        }
+        Ok(released) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: format!(
+                "Hired truck assigned; {} dispatch(es) moved to PENDING",
+                released.len()
+            ),
+            data: Some(hire),
+        }),
         Err(err) => hire_error_response("assign vehicle hire", err),
     }
 }

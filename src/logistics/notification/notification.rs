@@ -1,23 +1,27 @@
 //! Dispatch notifications to the customer and driver.
 //!
 //! When a dispatch is created, and again when it's delivered, the system
-//! builds a notification for each party it should tell — an email body is
-//! AI-personalized via [`crate::logistics::ai::notification_copy`] when
-//! `ANTHROPIC_API_KEY` is configured, falling back to a fixed template on
-//! any error, and an SMS always uses a fixed template, since Indian operators
-//! only deliver DLT-approved wording — records it, then immediately attempts
-//! to actually send it via [`crate::logistics::notification::delivery`] (MSG91
-//! for SMS, SMTP or Resend for email). Every row lands with status `QUEUED`
+//! records a notification for each party it should tell and publishes an
+//! event, in the same transaction as the dispatch change. The background
+//! [`crate::logistics::notification::consumer`] then writes the AI copy for
+//! emails and sends it via [`crate::logistics::notification::delivery`] (MSG91
+//! for SMS, SMTP or Resend for email), with retries. An SMS always keeps its
+//! fixed text, since Indian operators only deliver DLT-approved wording.
+//! See `docs/async-events.md`. Every row lands with status `QUEUED`
 //! (ready to send), `SKIPPED` (no phone/email on file for that party),
-//! `SENT` (delivery succeeded), or `FAILED` (delivery was attempted and the
-//! provider reported an error). A `QUEUED` row whose channel has no
+//! `SENT` (delivery succeeded), or `FAILED` (every retry was used up). A `QUEUED` row whose channel has no
 //! provider credentials configured is left `QUEUED` rather than `FAILED` —
 //! nothing was actually attempted, and it's ready to send once configured.
 //! See `docs/notifications.md`.
 
 use crate::logistics::customer::customer::Customer;
 use crate::logistics::db::connection::DbConnection;
-use crate::logistics::notification::delivery::{self, SmsTemplate, sms_var};
+use crate::logistics::dispatch::dispatch::{DispatchOrder, tracking_url};
+use crate::logistics::driver::driver::Driver;
+use crate::logistics::events;
+use crate::logistics::events::queue::EventType;
+use crate::logistics::notification::delivery::{SmsTemplate, sms_var};
+use crate::logistics::vehicle::vehicle::Vehicle;
 use mysql::prelude::*;
 use mysql::*;
 use serde::{Deserialize, Serialize};
@@ -56,7 +60,7 @@ impl NotificationEvent {
 
     /// The email subject line for this event. Only used for
     /// [`NotificationChannel::Email`] — SMS has no subject.
-    fn email_subject(&self) -> &'static str {
+    pub(crate) fn email_subject(&self) -> &'static str {
         match self {
             NotificationEvent::DispatchCreated => "Your order is on its way",
             NotificationEvent::DispatchDelivered => "Your order has been delivered",
@@ -136,10 +140,6 @@ pub struct Notification {
     pub body: String,
     pub status: NotificationStatus,
     pub created_at: i64,
-    /// Values for the SMS template's variables. Only needed to send a freshly
-    /// recorded notification, so never stored or returned by the API.
-    #[serde(skip)]
-    pub sms_vars: Vec<String>,
 }
 
 type Row = (
@@ -157,6 +157,15 @@ type Row = (
 
 const SELECT_COLS: &str =
     "id, org_id, dispatch_id, event, channel, recipient_kind, recipient, body, status, created_at";
+
+/// `body` followed by the customer tracking link, when there is one. Applied
+/// in code, not left to the AI copy, so the link can't be dropped or altered.
+pub(crate) fn with_tracking_link(body: String, url: Option<&str>) -> String {
+    match url {
+        Some(url) => format!("{body}\n\nTrack your order: {url}"),
+        None => body,
+    }
+}
 
 impl Notification {
     pub fn ensure_table(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
@@ -221,11 +230,10 @@ impl Notification {
             body,
             status: NotificationStatus::from_str(&status),
             created_at,
-            sms_vars: Vec::new(),
         }
     }
 
-    fn insert(conn: &mut mysql::PooledConn, n: &Notification) -> Result<(), Box<dyn Error>> {
+    fn insert(conn: &mut impl Queryable, n: &Notification) -> Result<(), Box<dyn Error>> {
         conn.exec_drop(
             "INSERT INTO Notifications (id, org_id, dispatch_id, event, channel, recipient_kind, recipient, body, status, created_at)
              VALUES (:id, :org_id, :dispatch_id, :event, :channel, :recipient_kind, :recipient, :body, :status, :created_at)",
@@ -266,7 +274,6 @@ impl Notification {
         recipient_kind: &str,
         target: Option<(NotificationChannel, String)>,
         body: String,
-        sms_vars: Vec<String>,
     ) -> Notification {
         let (channel, recipient, status) = match target {
             Some((ch, to)) => (ch, to, NotificationStatus::Queued),
@@ -287,12 +294,19 @@ impl Notification {
             body,
             status,
             created_at: now_unix(),
-            sms_vars,
         }
     }
 
+    /// Whether this target goes by SMS. An SMS body has to match its DLT
+    /// template word for word (see `docs/notifications.md`), so it uses the
+    /// name cut to DLT's limit and carries nothing the template has no
+    /// variable for: no tracking link, no hours late.
+    fn is_sms(target: &Option<(NotificationChannel, String)>) -> bool {
+        matches!(target, Some((NotificationChannel::Sms, _)))
+    }
+
     /// The DLT template this notification goes out as, if sent by SMS.
-    fn sms_template(&self) -> SmsTemplate {
+    pub(crate) fn sms_template(&self) -> SmsTemplate {
         match self.event {
             NotificationEvent::DispatchCreated if self.recipient_kind == "driver" => {
                 SmsTemplate::DispatchCreatedDriver
@@ -303,42 +317,62 @@ impl Notification {
         }
     }
 
-    /// Record the "your shipment is on its way" notifications for a new
-    /// dispatch: one for the customer, one for the driver (via `driver_phone`).
-    /// A customer email is AI-personalized when `ANTHROPIC_API_KEY` is
-    /// configured (see `crate::logistics::ai::notification_copy`), falling
-    /// back to the fixed text on any error — a misconfigured or rate-limited
-    /// environment must never block recording a dispatch. An SMS always uses
-    /// the fixed text, which has to match its DLT template (see
-    /// `docs/notifications.md`), and so does a row with no contact to send to.
-    pub async fn record_dispatch_created(
+    /// Values for [`Self::sms_template`]'s variables, in template order.
+    pub(crate) fn sms_vars(&self, customer_name: &str) -> Vec<String> {
+        let name = sms_var(customer_name);
+        let short_id = self.dispatch_id.to_string()[..8].to_string();
+        if self.recipient_kind == "driver" {
+            vec![short_id, name]
+        } else {
+            vec![name, short_id]
+        }
+    }
+
+    /// Create the notification and queue tables. Must run before the
+    /// transaction opens: MySQL implicitly commits on `CREATE TABLE`.
+    pub fn prepare_tables(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+        Self::ensure_table(conn)?;
+        events::queue::ensure_tables(conn)
+    }
+
+    /// The phone of the active driver assigned to `reg`, if any. A failed
+    /// lookup just means the driver isn't told.
+    pub fn driver_phone_for_vehicle(reg: &str, org_id: Uuid) -> Option<String> {
+        let vehicle = Vehicle::list_by_org(org_id)
+            .ok()?
+            .into_iter()
+            .find(|v| v.registration_number == reg)?;
+        let driver_id = vehicle.assigned_driver_id?;
+        Driver::get_by_id(driver_id).ok().flatten().map(|d| d.phone)
+    }
+
+    /// Record the "your shipment is on its way" notifications (customer and
+    /// driver) and publish the event that sends them, in the caller's
+    /// transaction. Bodies start as a fixed template; the consumer replaces
+    /// them with AI copy when that's configured. Call [`Self::index_best_effort`]
+    /// and `events::worker::wake` after committing.
+    pub fn enqueue_dispatch_created(
+        tx: &mut Transaction<'_>,
         org_id: Uuid,
         dispatch_id: Uuid,
         customer: &Customer,
         driver_phone: Option<&str>,
     ) -> Result<Vec<Notification>, Box<dyn Error>> {
         let short_id = &dispatch_id.to_string()[..8];
-        let customer_target = Self::customer_target(customer);
+        let tracking_url = Self::tracking_url_in(tx, dispatch_id)?;
         let driver_target = driver_phone
             .filter(|s| !s.is_empty())
             .map(|p| (NotificationChannel::Sms, p.to_string()));
-
-        let name = sms_var(&customer.name);
+        let customer_target = Self::customer_target(customer);
+        let sms_name = sms_var(&customer.name);
         let fixed = |name: &str| {
             format!("Hi {name}, your order (ref {short_id}) has been dispatched and is on its way.")
         };
-        let customer_body = if Self::is_email(&customer_target) {
-            crate::logistics::ai::notification_copy::generate_dispatch_created_customer_body(
-                &customer.name,
-                short_id,
-            )
-            .await
-            .unwrap_or_else(|_| fixed(&customer.name))
+        let customer_body = if Self::is_sms(&customer_target) {
+            fixed(&sms_name)
         } else {
-            fixed(&name)
+            with_tracking_link(fixed(&customer.name), tracking_url.as_deref())
         };
-        let driver_body = format!("New trip assigned: dispatch {short_id} to {name}.");
-
         let notifs = vec![
             Self::build(
                 org_id,
@@ -347,99 +381,113 @@ impl Notification {
                 "customer",
                 customer_target,
                 customer_body,
-                vec![name.clone(), short_id.to_string()],
             ),
+            // The driver is only ever reached by SMS.
             Self::build(
                 org_id,
                 dispatch_id,
                 NotificationEvent::DispatchCreated,
                 "driver",
                 driver_target,
-                driver_body,
-                vec![short_id.to_string(), name],
+                format!("New trip assigned: dispatch {short_id} to {sms_name}."),
             ),
         ];
-        Self::persist(&notifs)?;
+        Self::insert_all(tx, &notifs)?;
+        events::queue::publish(
+            tx,
+            org_id,
+            EventType::DispatchCreated,
+            serde_json::json!({
+                "dispatch_id": dispatch_id,
+                "customer_name": customer.name,
+                "tracking_url": tracking_url,
+            }),
+            None,
+        )?;
         Ok(notifs)
     }
 
-    /// Whether this customer target goes by email, and so can take AI copy.
-    fn is_email(target: &Option<(NotificationChannel, String)>) -> bool {
-        matches!(target, Some((NotificationChannel::Email, _)))
-    }
-
-    /// Record the "your shipment was delivered" notification for the
-    /// customer. AI-personalized / fixed text behavior matches
-    /// [`Self::record_dispatch_created`].
-    pub async fn record_dispatch_delivered(
+    /// Record the "your shipment was delivered" notification and publish its
+    /// event, in the caller's transaction.
+    pub fn enqueue_dispatch_delivered(
+        tx: &mut Transaction<'_>,
         org_id: Uuid,
         dispatch_id: Uuid,
         customer: &Customer,
     ) -> Result<Vec<Notification>, Box<dyn Error>> {
         let short_id = &dispatch_id.to_string()[..8];
         let customer_target = Self::customer_target(customer);
-
-        let name = sms_var(&customer.name);
-        let fixed = |name: &str| {
-            format!("Hi {name}, your order (ref {short_id}) has been delivered. Thank you!")
-        };
-        let customer_body = if Self::is_email(&customer_target) {
-            crate::logistics::ai::notification_copy::generate_dispatch_delivered_customer_body(
-                &customer.name,
-                short_id,
-            )
-            .await
-            .unwrap_or_else(|_| fixed(&customer.name))
+        let name = if Self::is_sms(&customer_target) {
+            sms_var(&customer.name)
         } else {
-            fixed(&name)
+            customer.name.clone()
         };
-
         let notifs = vec![Self::build(
             org_id,
             dispatch_id,
             NotificationEvent::DispatchDelivered,
             "customer",
             customer_target,
-            customer_body,
-            vec![name, short_id.to_string()],
+            format!("Hi {name}, your order (ref {short_id}) has been delivered. Thank you!"),
         )];
-        Self::persist(&notifs)?;
+        Self::insert_all(tx, &notifs)?;
+        events::queue::publish(
+            tx,
+            org_id,
+            EventType::DispatchDelivered,
+            serde_json::json!({
+                "dispatch_id": dispatch_id,
+                "customer_name": customer.name,
+            }),
+            None,
+        )?;
         Ok(notifs)
     }
 
-    /// Record the "your shipment is running behind schedule" notification
-    /// for the customer, when a dispatch is still `IN_TRANSIT` past
-    /// [`crate::logistics::dispatch::dispatch::PROMISED_DELIVERY_HOURS`].
-    /// Called by [`crate::logistics::notification::delay_alerts::scan_and_alert`],
-    /// which is also responsible for not calling this twice for the same
-    /// dispatch. AI-personalized / fixed text behavior matches
-    /// [`Self::record_dispatch_created`]. The SMS leaves out the hours, because
-    /// a DLT template can only hold two variables.
-    pub async fn record_dispatch_running_late(
+    /// Record the "running behind schedule" notification and publish its
+    /// event, at most once per dispatch however many scans race: the event's
+    /// unique dedupe key decides. Returns `None` if it was already published.
+    pub fn enqueue_dispatch_running_late(
+        tx: &mut Transaction<'_>,
         org_id: Uuid,
         dispatch_id: Uuid,
         customer: &Customer,
         hours_late: i64,
-    ) -> Result<Vec<Notification>, Box<dyn Error>> {
+    ) -> Result<Option<Vec<Notification>>, Box<dyn Error>> {
+        let tracking_url = Self::tracking_url_in(tx, dispatch_id)?;
+        let published = events::queue::publish(
+            tx,
+            org_id,
+            EventType::DispatchRunningLate,
+            serde_json::json!({
+                "dispatch_id": dispatch_id,
+                "customer_name": customer.name,
+                "hours_late": hours_late,
+                "tracking_url": tracking_url,
+            }),
+            Some(&format!("dispatch.running_late:{dispatch_id}")),
+        )?;
+        if !published {
+            return Ok(None);
+        }
         let short_id = &dispatch_id.to_string()[..8];
         let customer_target = Self::customer_target(customer);
-
-        let name = sms_var(&customer.name);
-        let customer_body = if Self::is_email(&customer_target) {
-            crate::logistics::ai::notification_copy::generate_dispatch_running_late_customer_body(&customer.name, short_id, hours_late)
-                .await
-                .unwrap_or_else(|_| {
-                    format!(
-                        "Hi {}, your order (ref {short_id}) is running about {hours_late}h behind its expected delivery time. We're sorry for the delay.",
-                        customer.name
-                    )
-                })
-        } else {
+        // A DLT template holds at most two variables, so the SMS leaves out
+        // the hours. The email keeps them.
+        let customer_body = if Self::is_sms(&customer_target) {
             format!(
-                "Hi {name}, your order (ref {short_id}) is running behind its expected delivery time. We're sorry for the delay."
+                "Hi {}, your order (ref {short_id}) is running behind its expected delivery time. We're sorry for the delay.",
+                sms_var(&customer.name)
+            )
+        } else {
+            with_tracking_link(
+                format!(
+                    "Hi {}, your order (ref {short_id}) is running about {hours_late}h behind its expected delivery time. We're sorry for the delay.",
+                    customer.name
+                ),
+                tracking_url.as_deref(),
             )
         };
-
         let notifs = vec![Self::build(
             org_id,
             dispatch_id,
@@ -447,20 +495,33 @@ impl Notification {
             "customer",
             customer_target,
             customer_body,
-            vec![name, short_id.to_string()],
         )];
-        Self::persist(&notifs)?;
-        Ok(notifs)
+        Self::insert_all(tx, &notifs)?;
+        Ok(Some(notifs))
     }
 
-    fn persist(notifs: &[Notification]) -> Result<(), Box<dyn Error>> {
-        let mut conn = DbConnection::from_env().get_connection()?;
-        Self::ensure_table(&mut conn)?;
+    /// The customer tracking link for a dispatch, if it has a token and
+    /// `PUBLIC_APP_URL` is set. Read in `tx` so a dispatch inserted earlier in
+    /// the same transaction is found.
+    fn tracking_url_in(
+        tx: &mut Transaction<'_>,
+        dispatch_id: Uuid,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        Ok(DispatchOrder::tracking_token_in(tx, dispatch_id)?.and_then(tracking_url))
+    }
+
+    fn insert_all(tx: &mut Transaction<'_>, notifs: &[Notification]) -> Result<(), Box<dyn Error>> {
         for n in notifs {
-            Self::insert(&mut conn, n)?;
-            // Best-effort: index this notification for the "ask your data"
-            // assistant. Never allowed to fail recording the notification
-            // itself — see chunk::upsert_best_effort.
+            Self::insert(tx, n)?;
+        }
+        Ok(())
+    }
+
+    /// Index notifications for the "ask your data" assistant. Run after
+    /// commit: the index writes on its own connection and couldn't see the
+    /// row earlier. Never fails the caller.
+    pub fn index_best_effort(notifs: &[Notification]) {
+        for n in notifs {
             crate::logistics::ai::chunk::upsert_best_effort(
                 n.org_id,
                 crate::logistics::ai::chunk::ChunkKind::Notification,
@@ -468,10 +529,12 @@ impl Notification {
                 crate::logistics::ai::chunk::notification_chunk_text(n),
             );
         }
-        Ok(())
     }
 
-    fn update_status(id: Uuid, status: NotificationStatus) -> Result<(), Box<dyn Error>> {
+    pub(crate) fn update_status(
+        id: Uuid,
+        status: NotificationStatus,
+    ) -> Result<(), Box<dyn Error>> {
         let mut conn = DbConnection::from_env().get_connection()?;
         conn.exec_drop(
             "UPDATE Notifications SET status = :status WHERE id = :id",
@@ -480,52 +543,34 @@ impl Notification {
         Ok(())
     }
 
-    /// Attempt to actually send every `QUEUED` notification in `notifs` via
-    /// [`crate::logistics::notification::delivery`], updating each
-    /// row's status to `SENT` or `FAILED` accordingly. Best-effort: a
-    /// delivery failure only updates that row's status, it never propagates
-    /// — the caller (recording a dispatch event) must not fail because a
-    /// downstream SMS/email provider had a bad day. Rows whose channel has
-    /// no provider configured are left `QUEUED`, not marked `FAILED`. Takes
-    /// freshly recorded notifications: rows read back from the database don't
-    /// carry `sms_vars`.
-    pub async fn deliver_queued_best_effort(notifs: &[Notification]) {
-        for n in notifs {
-            if n.status != NotificationStatus::Queued {
-                continue;
-            }
-            let result = match n.channel {
-                NotificationChannel::Email => {
-                    delivery::send_email(&n.recipient, n.event.email_subject(), &n.body).await
-                }
-                NotificationChannel::Sms => {
-                    delivery::send_sms(&n.recipient, n.sms_template(), &n.sms_vars).await
-                }
-            };
-            match result {
-                Ok(()) => {
-                    if let Err(e) = Self::update_status(n.id, NotificationStatus::Sent) {
-                        eprintln!(
-                            "notification delivery: sent {} but failed to update its status: {e}",
-                            n.id
-                        );
-                    }
-                }
-                Err(delivery::DeliveryError::NotConfigured) => {}
-                Err(err) => {
-                    eprintln!(
-                        "notification delivery: failed to send {} to {}: {err}",
-                        n.id, n.recipient
-                    );
-                    if let Err(e) = Self::update_status(n.id, NotificationStatus::Failed) {
-                        eprintln!(
-                            "notification delivery: also failed to mark {} as failed: {e}",
-                            n.id
-                        );
-                    }
-                }
-            }
-        }
+    /// Replace a row's body with its personalized copy and reindex it.
+    pub(crate) fn update_body(n: &Notification, body: &str) -> Result<(), Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        conn.exec_drop(
+            "UPDATE Notifications SET body = :body WHERE id = :id",
+            params! { "body" => body, "id" => n.id.to_string() },
+        )?;
+        let mut updated = n.clone();
+        updated.body = body.to_string();
+        Self::index_best_effort(&[updated]);
+        Ok(())
+    }
+
+    /// The rows for one dispatch event that still need sending.
+    pub(crate) fn list_queued(
+        dispatch_id: Uuid,
+        event: NotificationEvent,
+    ) -> Result<Vec<Self>, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        let rows: Vec<Row> = conn.exec(
+            format!(
+                "SELECT {SELECT_COLS} FROM Notifications
+                 WHERE dispatch_id = :dispatch_id AND event = :event AND status = 'QUEUED'
+                 ORDER BY seq ASC"
+            ),
+            params! { "dispatch_id" => dispatch_id.to_string(), "event" => event.as_str() },
+        )?;
+        Ok(rows.into_iter().map(Self::row_to_notification).collect())
     }
 
     pub fn list_by_dispatch(dispatch_id: Uuid) -> Result<Vec<Self>, Box<dyn Error>> {

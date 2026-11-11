@@ -16,7 +16,8 @@
 //! stock or dispatch history, which are already covered above) — plus
 //! [`reindex_org`], a backfill for orgs whose rows predate this feature and
 //! so never triggered a write-through hook. Indexing is write-through and
-//! best-effort — see [`upsert_best_effort`] — never a background job, and
+//! best-effort — see [`upsert_best_effort`] — not a background job (see
+//! `docs/async-events.md` for why), and
 //! never allowed to fail the write it's attached to.
 
 use crate::logistics::customer::customer::Customer;
@@ -571,7 +572,6 @@ mod tests {
             body: "Hi Priya Sharma, your order (ref a1b2c3d4) has been dispatched.".to_string(),
             status: NotificationStatus::Queued,
             created_at: 1_700_000_000,
-            sms_vars: Vec::new(),
         }
     }
 

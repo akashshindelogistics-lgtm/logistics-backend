@@ -7,6 +7,7 @@
 //! re-exported from here, so `routes::config_routes`, `routes::ApiDoc` and
 //! `routes::<Type>` paths are unchanged.
 
+use super::metrics::{self, metrics_endpoint};
 use crate::logistics::ai::assistant::{AssistantAnswer, AssistantSource};
 use crate::logistics::auth::auth::OrgSummary;
 use crate::logistics::billing::invoice::{CustomerBillingSummary, Invoice, PaymentStatus};
@@ -35,14 +36,17 @@ use crate::logistics::vehicle::maintenance::{MaintenanceStatus, VehicleMaintenan
 use crate::logistics::vehicle::vehicle::{Location, Unit, Vehicle, VehicleType};
 use crate::logistics::vendor::hire::{HireStatus, VehicleHire, VendorPayment};
 use crate::logistics::vendor::vendor::VehicleVendor;
+use actix_web::dev::Service;
 use actix_web::web;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
+mod agents;
 mod ai;
 mod auth;
 mod billing;
+mod chat;
 mod common;
 mod customers;
 mod dispatches;
@@ -55,6 +59,7 @@ mod maintenance;
 mod notifications;
 mod orgs;
 mod reports;
+mod tracking;
 mod trips;
 mod uploads;
 mod users;
@@ -62,9 +67,11 @@ mod vehicle_documents;
 mod vehicles;
 mod vendors;
 
+pub use agents::*;
 pub use ai::*;
 pub use auth::*;
 pub use billing::*;
+pub use chat::*;
 pub use common::*;
 pub use customers::*;
 pub use dispatches::*;
@@ -77,6 +84,7 @@ pub use maintenance::*;
 pub use notifications::*;
 pub use orgs::*;
 pub use reports::*;
+pub use tracking::*;
 pub use trips::*;
 pub use uploads::*;
 pub use users::*;
@@ -181,6 +189,7 @@ impl Modify for SecurityAddon {
         dispatch_stock,
         update_dispatch_status,
         get_dispatch_summary,
+        public_track_dispatch,
         ask_assistant,
         reindex_assistant,
         get_daily_digest,
@@ -195,6 +204,20 @@ impl Modify for SecurityAddon {
         get_ops_report_summary,
         list_dispatch_notifications,
         list_org_notifications,
+        get_agent_settings,
+        update_agent_settings,
+        run_agents_now,
+        list_chat_conversations,
+        create_chat_conversation,
+        get_chat_conversation,
+        delete_chat_conversation,
+        send_chat_message,
+        confirm_chat_proposal,
+        cancel_chat_proposal,
+        list_agent_runs,
+        list_agent_actions,
+        approve_agent_action,
+        reject_agent_action,
         create_trip,
         list_org_trips,
         get_trip,
@@ -238,12 +261,27 @@ impl Modify for SecurityAddon {
             DriverAppRelease, DriverAppReleaseResponse,
             VendorResponse, VendorListResponse, VehicleHireResponse, VehicleHireListResponse,
             DispatchOrderResponse, DispatchOrderListResponse,
+            PublicTracking, PublicVehiclePosition, PublicTrackingResponse,
             InvoiceResponse, InvoiceListResponse, CustomerBillingResponse,
             OpsReportResponse, UserResponse, UserListResponse, NotificationListResponse,
             TripResponse, TripListResponse, CreateTripPayload, TripStopPayload,
             UploadedFileResponse, UploadedFileRef,
             AssistantAskPayload, AssistantAnswer, AssistantSource, AssistantAnswerResponse,
             AssistantReindexResult, AssistantReindexResponse,
+            AgentSettings, AgentSettingsResponse, AgentRunResponse, AgentRunListResponse,
+            AgentActionResponse, AgentActionListResponse,
+            crate::logistics::agent::store::AutonomyMode,
+            crate::logistics::agent::store::Risk,
+            crate::logistics::agent::store::ActionStatus,
+            ChatMessagePayload, ChatConversationResponse, ChatConversationListResponse, ChatThreadResponse,
+            crate::logistics::chat::store::ChatConversation,
+            crate::logistics::chat::store::ChatProposal,
+            crate::logistics::chat::store::ProposalField,
+            crate::logistics::chat::store::ProposalStatus,
+            crate::logistics::chat::runtime::ChatItem,
+            crate::logistics::chat::runtime::ChatThread,
+            crate::logistics::agent::store::AgentRun,
+            crate::logistics::agent::store::AgentAction,
             LocationResponse, OrgSummaryListResponse, EmptyResponse,
         )
     ),
@@ -266,17 +304,44 @@ impl Modify for SecurityAddon {
         (name = "Notifications", description = "Customer and driver notifications recorded for each dispatch"),
         (name = "Trips", description = "Multi-stop trips: one vehicle serving several customer orders in sequence"),
         (name = "Uploads", description = "File storage for uploaded images, e.g. proof-of-delivery photos and signatures"),
+        (name = "Chat", description = "The chat inbox: run operations by asking, with a confirmation card for every change"),
+        (name = "Agents", description = "Autonomy settings, the audit trail of agent runs and actions, and the approval inbox"),
         (name = "AI Assistant", description = "Retrieval-grounded natural-language Q&A over an organization's own data"),
     )
 )]
 pub struct ApiDoc;
 
 pub fn config_routes(cfg: &mut web::ServiceConfig) {
+    config_api_routes(cfg);
+    cfg.service(
+        SwaggerUi::new("/swagger-ui/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi()),
+    );
+}
+
+/// Everything under `/api`, without the Swagger UI. Chat runs requests through
+/// this in-process, where building the whole spec each time would be wasted.
+pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
     // Where the driver app's releases are kept. Tests register their own
     // after configure(), which replaces this one.
     cfg.app_data(web::Data::new(DriverAppDir::from_env()));
+    cfg.service(metrics_endpoint);
     cfg.service(
         web::scope("/api")
+            .wrap_fn(|req, srv| {
+                let start = std::time::Instant::now();
+                let method = req.method().to_string();
+                let fut = srv.call(req);
+                async move {
+                    let res = fut.await?;
+                    metrics::observe(
+                        &method,
+                        res.request().match_pattern(),
+                        res.status().as_u16(),
+                        start.elapsed(),
+                    );
+                    Ok(res)
+                }
+            })
             .service(health_check)
             .service(auth_orgs)
             .service(auth_login)
@@ -297,6 +362,7 @@ pub fn config_routes(cfg: &mut web::ServiceConfig) {
             .service(edit_vehicle)
             .service(update_vehicle_location)
             .service(track_vehicle_location)
+            .service(public_track_dispatch)
             .service(rotate_vehicle_tracker_key)
             .service(report_driver_location)
             .service(driver_me)
@@ -363,13 +429,26 @@ pub fn config_routes(cfg: &mut web::ServiceConfig) {
             .service(get_ops_report_summary)
             .service(list_dispatch_notifications)
             .service(list_org_notifications)
+            .service(get_agent_settings)
+            .service(update_agent_settings)
+            .service(run_agents_now)
+            .service(list_chat_conversations)
+            .service(create_chat_conversation)
+            .service(get_chat_conversation)
+            .service(delete_chat_conversation)
+            .service(send_chat_message)
+            .service(confirm_chat_proposal)
+            .service(cancel_chat_proposal)
+            .service(list_agent_runs)
+            .service(list_agent_actions)
+            .service(approve_agent_action)
+            .service(reject_agent_action)
             .service(create_trip)
             .service(list_org_trips)
             .service(get_trip)
             .service(upload_file)
             .service(get_uploaded_file),
-    )
-    .service(SwaggerUi::new("/swagger-ui/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi()));
+    );
 }
 
 #[cfg(test)]

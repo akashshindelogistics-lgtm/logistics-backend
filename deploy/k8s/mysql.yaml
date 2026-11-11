@@ -1,0 +1,86 @@
+# Passwords come from the `logistics-secrets` Secret, which kind.sh generates
+# so that none are committed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+spec:
+  clusterIP: None
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_DATABASE
+              value: logistics
+            - name: MYSQL_USER
+              value: logistics
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: logistics-secrets
+                  key: mysql-password
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: logistics-secrets
+                  key: mysql-root-password
+          # On a kind host that has MySQL installed, its AppArmor profile also
+          # captures this mysqld and blocks the stop signal, wedging the pod in
+          # Terminating. Shutting down from inside needs no signal.
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - mysqladmin -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" shutdown
+          # Over TCP on purpose: MySQL's first-boot temporary server listens
+          # on the socket only, and must not count as ready.
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mysql -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT 1"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 5Gi

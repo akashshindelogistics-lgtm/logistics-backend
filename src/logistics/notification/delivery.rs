@@ -16,8 +16,8 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use std::time::Duration;
 
-/// Sending happens inline in the dispatch request, so a hung mail server must
-/// not hold that request open for long.
+/// A hung mail server must not hold a background worker for long; a timeout
+/// fails the attempt and the event queue retries it.
 const SMTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Same reasoning as [`SMTP_TIMEOUT`].
@@ -147,7 +147,7 @@ async fn send_via_msg91(
         payload["sender"] = sender.as_str().into();
     }
 
-    let resp = reqwest::Client::new()
+    let resp = crate::logistics::http::client()
         .post(&config.url)
         .header("authkey", &config.auth_key)
         .timeout(MSG91_TIMEOUT)
@@ -298,7 +298,7 @@ async fn send_via_smtp(
 async fn send_via_resend(to: &str, subject: &str, body: &str) -> Result<(), DeliveryError> {
     let (api_key, from) = resend_credentials().ok_or(DeliveryError::NotConfigured)?;
 
-    let client = reqwest::Client::new();
+    let client = crate::logistics::http::client();
     let resp = client
         .post("https://api.resend.com/emails")
         .bearer_auth(&api_key)
