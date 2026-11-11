@@ -34,6 +34,11 @@ The highest-value next steps are not new vector infrastructure:
 Embeddings come last, and only if an evaluation shows the cheaper fixes
 aren't enough.
 
+Outside AI agents (Claude Desktop, Claude Code, an org's own agents) are a
+separate need, and a vector database doesn't serve it either: they need
+**tools**. That's an MCP server over the Chat inbox's catalog; see
+[External agents (MCP)](#external-agents-mcp).
+
 ## What exists today
 
 | Piece | Where | How |
@@ -199,6 +204,110 @@ question with a few round trips stays around a tenth of a cent. Usage should
 be logged per org anyway (`usage` in each response), so that's checked
 rather than assumed.
 
+## External agents (MCP)
+
+Added 2026-11-10. The sections above are about Claude answering inside the
+dashboard. This one is about **other AI agents using the logistics system**:
+someone's Claude Desktop or Claude Code, an agent framework, or an org's own
+automation. The standard way to offer that is a
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server: the
+agent connects to it, lists its tools and calls them.
+
+### Why not a vector database for this
+
+An outside agent brings its own model and does its own reasoning. What it
+lacks is a safe way to **look things up and act** in this system. A vector
+store would answer only fuzzy text questions, and would be a second copy of
+the data with its own tenant boundary to get right. Tools over the real API
+give exact answers and keep every rule in one place. Search is still offered,
+as one tool (`search_facts`) over `AiChunks`, so any retrieval improvement
+(phases 1 and 7) reaches outside agents for free.
+
+### Most of it already exists: the Chat inbox
+
+[chat-inbox.md](chat-inbox.md) built the hard parts for the dashboard chat,
+and an MCP server is a second front end over the same pieces:
+
+| Need | Already in `src/logistics/chat/` |
+| --- | --- |
+| Which operations an agent may call | `catalog::EXPOSED` / `EXCLUDED`, generated against the OpenAPI spec; a test forces every new route to choose |
+| Discovering an operation's parameters | `describe_operation`, built from the `utoipa` spec |
+| Running it as the person, with their role and org | `runtime::call_operation` through the real route handlers with the caller's own token (`Caller`) |
+| Keeping credentials away from the model | `catalog::redact` |
+| Writes that need a human | `ChatProposals` cards, confirmed once only (`store::claim_pending`) |
+
+### Shape
+
+- **Transport:** Streamable HTTP at `POST /mcp` on the existing actix server,
+  so it's one more route on the deployed API and the kind cluster, not a new
+  service. Use the official Rust SDK (`rmcp`) if its actix support fits;
+  otherwise the JSON-RPC handful of methods (`initialize`, `tools/list`,
+  `tools/call`) is small enough to write by hand.
+- **Tools,** mostly the ones the chat model already has:
+  - `search_facts(query)`: `chunk::search_by_org` for the token's org;
+  - `describe_operation(name)`, `call_operation(name, params)` and
+    `track_dispatch(id)`, as in chat;
+  - `list_operations`: new. Chat puts the one-line operation list in its
+    prompt, but an MCP server doesn't write the client's prompt, so the list
+    becomes a tool (or the `call_operation` description).
+- **Org and role come from the token, never from a tool argument.** Claims
+  already carry one `org_id` and the user, so a session can only ever see one
+  org, and every call is checked by the handler exactly as from the dashboard.
+- **Reads run straight away; writes never do.** An MCP client may or may not
+  ask its user before a tool call, and the server can't tell. So a write
+  becomes a `ChatProposals` card, and the tool answers "waiting for
+  confirmation in the dashboard" with the card's id. The person confirms or
+  cancels it on `/chat`, where the server builds the card from the real
+  request. **Phase 8a is read-only**; this proposal path is 8b.
+- **Same exclusions as chat:** no passwords, pairing or tracker keys, agent
+  controls or org deletion.
+
+### Authentication
+
+Today's tokens expire after 24 hours (`TOKEN_EXPIRY_SECS`), which suits a
+browser but not an agent that stays configured for weeks, and they can't be
+revoked one by one.
+
+- **8a: personal access tokens.** An Admin, or a team member for themselves,
+  creates a named token on a settings page. It's shown once, stored hashed,
+  tied to one user and org, carries an expiry (default 90 days) and can be
+  revoked. The agent sends it as `Authorization: Bearer …`, which Claude Code
+  and most MCP clients can configure. Only those tokens work on `/mcp`, and
+  they don't work on the rest of the API.
+- **Later: OAuth.** MCP's authorization spec is OAuth 2.1, which hosted
+  connectors (claude.ai custom connectors, for example) expect. That's
+  needed only once people want to connect without pasting a token.
+
+### Risks particular to MCP
+
+- **Data leaves to a model this system doesn't choose.** Chat sends data to
+  Anthropic under this deployment's key. An MCP client sends whatever it reads
+  to its own model and vendor, under the user's terms, not the org's. So the
+  server is off by default (`MCP_ENABLED`), and an org's Admin must turn it on
+  for that org before any token works.
+- **No token budget to enforce.** The model runs on the client side, so
+  `CHAT_DAILY_TOKEN_LIMIT` means nothing here. Rate-limit calls per token
+  instead, and cap result size with the same 30,000-character cut chat uses.
+- **Prompt injection reaches someone else's agent,** which may have other
+  tools (email, files). This server can't control that agent. It can only
+  limit what it hands over (the catalog, `redact` for credentials) and what
+  it lets the agent do; the read-only first version keeps the damage to what
+  the user could already read.
+- **Audit:** log every MCP call (token, operation, status, no bodies), so an
+  Admin can see what an agent did.
+
+### Done when
+
+- An MCP client connected with a personal access token lists the tools,
+  answers "which trucks have insurance expiring this month?" and "what
+  happened with dispatch X?" from real calls, and gets refusals for another
+  org's ids and for excluded operations.
+- Route tests: no token, an expired or revoked token, an org with MCP off,
+  and a normal dashboard JWT all get 401/403; a token from org A can't read
+  org B; a write in 8b only creates a card.
+- A standalone demo that drives `/mcp` with a scripted client and then shows
+  the resulting card on the dashboard's `/chat` page.
+
 ## Phased plan
 
 Each phase ships per this repo's conventions: backend and logistics-frontend
@@ -239,6 +348,12 @@ Android work goes in logistics-android.
    - In-app help over the product docs.
 7. **Embeddings (conditional, option C):** only if phase 1's evaluation still
    shows paraphrase misses that matter.
+8. **External agents (MCP)**, see [above](#external-agents-mcp). Doesn't
+   depend on phase 0, because no Claude call is made on the server.
+   - 8a: personal access tokens, a per-org MCP switch, `POST /mcp` with
+     `search_facts` and the chat catalog's read operations, call audit log.
+   - 8b: writes as `ChatProposals` cards confirmed on `/chat`.
+   - Later: OAuth for hosted connectors.
 
 ## Questions for the user
 
@@ -250,3 +365,6 @@ Android work goes in logistics-android.
 - Billing in the assistant: Admin and Dispatcher only, or Admin only?
 - Is a second vendor for embeddings acceptable if phase 1 isn't enough, or
   should retrieval stay within MySQL and the Claude API?
+- MCP: is it acceptable that an org's data goes to whichever model a user
+  connects, once that org's Admin has turned MCP on? And who may create
+  access tokens: Admins only, or every team member for themselves?
