@@ -1399,6 +1399,13 @@
 ** DONE Gmail SMTP backend - SMTP_USERNAME/SMTP_PASSWORD (optional SMTP_FROM, SMTP_HOST, SMTP_PORT), used ahead of Resend; send_test_email bin to check credentials
 ** DONE Gmail App Password couldn't be created; switched the deployment to Resend instead (2026-11-10): SMTP_* commented out of ~/.config/logistics-ngrok/api.env (backup api.env.bak-gmail-*), RESEND_API_KEY + RESEND_FROM_EMAIL set, test email accepted
 ** TODO Verify a domain on Resend - the onboarding@resend.dev sender only reaches the Resend account's own address, so customer emails fail until then
+* TODO [#B] Send SMS through MSG91 instead of Twilio - Twilio's India rate is about $0.0832 per SMS, MSG91 about Rs 0.25
+   Plan/context: [[file:docs/notifications.md]] ("Sending SMS through MSG91").
+** DONE Replace Twilio with MSG91 - fixed DLT templates plus variables, Indian number normalization, send_test_sms bin; driver SMS no longer AI-written
+** TODO Register business, sender ID and the four templates on a DLT portal, create them in MSG91, set MSG91_AUTH_KEY and the template IDs, send a test SMS, deploy
+** TODO Clean up driver records whose phone is a placeholder, they'd end up FAILED
+** TODO Read MSG91 delivery reports so the dashboard can tell "delivered" from "queued" - SENT only means MSG91 queued it, even a made-up key can get "success"
+** TODO SMS customers get no tracking link - the created / running-late DLT templates have no variable for it; register versions with a link variable and pass the URL
 * DONE Pub/sub and consumers so slow operations run asynchronously
   Requests no longer wait on Claude, SMS or email. New src/logistics/events:
   Events + EventDeliveries tables in MySQL, claimed with FOR UPDATE SKIP LOCKED,

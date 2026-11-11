@@ -176,8 +176,9 @@ pub async fn generate_reorder_narration(org_id: Uuid) -> Result<String, String> 
 
     let resp = request
         .json(&serde_json::json!({
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 320,
+            "model": super::MODEL,
+            "max_tokens": super::MAX_TOKENS,
+            "output_config": { "effort": "low" },
             "messages": [{ "role": "user", "content": prompt }]
         }))
         .send()
@@ -194,10 +195,7 @@ pub async fn generate_reorder_narration(org_id: Uuid) -> Result<String, String> 
         .await
         .map_err(|e| format!("Failed to parse API response: {}", e))?;
 
-    json["content"][0]["text"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Unexpected response format from Anthropic API".to_string())
+    super::response_text(&json).map(|s| s.to_string())
 }
 
 #[cfg(test)]

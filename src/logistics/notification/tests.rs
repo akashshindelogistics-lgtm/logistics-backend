@@ -3,6 +3,7 @@ use super::notification::{
 };
 use crate::logistics::customer::customer::Customer;
 use crate::logistics::db::connection::DbConnection;
+use crate::logistics::notification::delivery::SmsTemplate;
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::test_support::TestDb;
 use mysql::TxOpts;
@@ -241,6 +242,83 @@ async fn recording_a_notification_indexes_it_for_the_assistant() {
         results.iter().any(|c| c.text.contains("Priya Sharma")),
         "the recorded notification should be indexed and findable: {results:?}"
     );
+}
+
+#[actix_web::test]
+async fn sms_notifications_use_the_fixed_template_text_and_carry_its_variables() {
+    let _db = TestDb::create();
+    let org = org();
+    let mut customer =
+        Customer::create_customer(org.id, "Asha Rao", "9 Market Rd").expect("customer");
+    customer
+        .set_contact(Some("+91 98888 11111".into()), None)
+        .expect("contact");
+    let dispatch_id = Uuid::new_v4();
+    let short_id = dispatch_id.to_string()[..8].to_string();
+
+    let created = record_created(org.id, dispatch_id, &customer, Some("+91 98888 22222"))
+        .expect("record created");
+    let cust = created
+        .iter()
+        .find(|n| n.recipient_kind == "customer")
+        .unwrap();
+    assert_eq!(cust.channel, NotificationChannel::Sms);
+    assert_eq!(
+        cust.body,
+        format!("Hi Asha Rao, your order (ref {short_id}) has been dispatched and is on its way.")
+    );
+    assert_eq!(cust.sms_template(), SmsTemplate::DispatchCreatedCustomer);
+    assert_eq!(
+        cust.sms_vars(&customer.name),
+        ["Asha Rao", short_id.as_str()]
+    );
+    let driver = created
+        .iter()
+        .find(|n| n.recipient_kind == "driver")
+        .unwrap();
+    assert_eq!(
+        driver.body,
+        format!("New trip assigned: dispatch {short_id} to Asha Rao.")
+    );
+    assert_eq!(driver.sms_template(), SmsTemplate::DispatchCreatedDriver);
+    assert_eq!(
+        driver.sms_vars(&customer.name),
+        [short_id.as_str(), "Asha Rao"]
+    );
+
+    let late = in_tx(|tx| {
+        Notification::enqueue_dispatch_running_late(tx, org.id, dispatch_id, &customer, 7)
+    })
+    .expect("record late")
+    .expect("first late alert");
+    assert_eq!(
+        late[0].body,
+        format!(
+            "Hi Asha Rao, your order (ref {short_id}) is running behind its expected delivery time. We're sorry for the delay."
+        )
+    );
+    assert_eq!(late[0].sms_template(), SmsTemplate::DispatchRunningLate);
+    assert_eq!(
+        late[0].sms_vars(&customer.name),
+        ["Asha Rao", short_id.as_str()]
+    );
+}
+
+#[actix_web::test]
+async fn a_long_customer_name_is_cut_to_the_dlt_limit_in_the_text_and_the_variable() {
+    let _db = TestDb::create();
+    let org = org();
+    let long_name = "A".repeat(60);
+    let mut customer = Customer::create_customer(org.id, &long_name, "1 Rd").expect("customer");
+    customer
+        .set_contact(Some("9888811111".into()), None)
+        .expect("contact");
+    let dispatch_id = Uuid::new_v4();
+
+    let delivered = record_delivered(org.id, dispatch_id, &customer).expect("record");
+    let cut = "A".repeat(40);
+    assert_eq!(delivered[0].sms_vars(&customer.name)[0], cut);
+    assert!(delivered[0].body.starts_with(&format!("Hi {cut},")));
 }
 
 #[test]
