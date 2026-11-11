@@ -8,14 +8,15 @@
 
 A logistics management platform for tracking organizations, their vehicle
 fleets, stock, customers, and delivery dispatches. This repo is its Rust REST
-API backed by MySQL, with the feature docs (`docs/`) and the task list
-(`todo.org`) for the whole system.
+API backed by MySQL, with the feature docs (`docs/`) for the whole system.
+Work is tracked in [GitHub Issues](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues)
+(the old `todo.org` is archived as `docs/todo-archive.org`).
 
 The system is three repos:
 
 | Repo | What | CI |
 | --- | --- | --- |
-| **logistics-backend** | This API, the deployment (`deploy/`), feature docs and `todo.org` | [![Cargo Tests](https://github.com/akashshindelogistics-lgtm/logistics-backend/actions/workflows/periodic-tests.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-backend/actions/workflows/periodic-tests.yml) |
+| **logistics-backend** | This API, the deployment (`deploy/`), feature docs and the issue tracker | [![Cargo Tests](https://github.com/akashshindelogistics-lgtm/logistics-backend/actions/workflows/periodic-tests.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-backend/actions/workflows/periodic-tests.yml) |
 | [logistics-frontend](https://github.com/akashshindelogistics-lgtm/logistics-frontend) | The React + TypeScript dispatch dashboard: day-to-day operations, live location maps, AI-generated dispatch summaries | [![Unit Tests](https://github.com/akashshindelogistics-lgtm/logistics-frontend/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-frontend/actions/workflows/unit-tests.yml) [![E2E](https://github.com/akashshindelogistics-lgtm/logistics-frontend/actions/workflows/e2e.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-frontend/actions/workflows/e2e.yml) |
 | [logistics-android](https://github.com/akashshindelogistics-lgtm/logistics-android) | The native Kotlin driver app that reports a driver's phone location | [![Android CI](https://github.com/akashshindelogistics-lgtm/logistics-android/actions/workflows/android.yml/badge.svg)](https://github.com/akashshindelogistics-lgtm/logistics-android/actions/workflows/android.yml) |
 
@@ -99,9 +100,10 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   file) and the driver (SMS), and sent in the background with retries via
   MSG91 (SMS) / Gmail SMTP or Resend (email) when those are configured — see
   [`docs/async-events.md`](docs/async-events.md). The Dispatches page shows the log per
-  order. A background scan also alerts the customer if a dispatch is still
-  in transit well past when it should have arrived — see
-  [`docs/delay-alerts.md`](docs/delay-alerts.md).
+  order. A background scan also alerts the customer, and emails the org's
+  Admin team members, if a dispatch is still in transit well past when it
+  should have arrived — see [`docs/delay-alerts.md`](docs/delay-alerts.md).
+  Raising an invoice emails it to the customer.
 - **AI dispatch summaries** — generate a natural-language summary of a
   dispatch's status using the Anthropic (Claude) API.
 - **Authentication & roles** — JWT + bcrypt login. The organization password
@@ -315,7 +317,7 @@ All routes are served under the `/api` prefix.
 | GET | `/api/dispatches` | List dispatch orders |
 | PUT | `/api/dispatches/{id}/status` | Advance a dispatch's lifecycle status |
 | GET | `/api/dispatches/{id}/summary` | AI-generated summary of a dispatch |
-| GET | `/api/dispatches/{id}/notifications` | Customer + driver notifications recorded for a dispatch |
+| GET | `/api/dispatches/{id}/notifications` | Customer, driver and org-admin notifications recorded for a dispatch |
 | GET | `/api/public/track/{token}` | Customer tracking link: order status, timeline and the vehicle's last position while in transit — no login, the token is the credential (see `docs/customer-tracking.md`) |
 | GET | `/api/orgs/{id}/notifications` | The org's 100 most recent notifications |
 | GET, PUT | `/api/orgs/{id}/agents/settings` | Read or change (Admin) the org's autonomy mode, see [docs/agentic-workflow.md](docs/agentic-workflow.md) |
@@ -401,11 +403,21 @@ artifacts or touch production):
   the OpenAPI spec on a GitHub Release, optionally deploys the VM.
 - **deploy-backend.yml** — manual (`workflow_dispatch`): pin the VM to any
   existing GHCR image tag — redeploy or rollback.
+- **claude-agent.yml** — when the repo owner labels an issue `agent:ready`,
+  Claude Code works on it and opens a draft PR. See *Contributing*.
 
 ## Contributing
 
 Issues and pull requests are welcome. Please open an issue to discuss any
 significant change before submitting a PR.
+
+Work is tracked as GitHub issues: `priority:A|B|C` labels, phases as
+sub-issues. Items migrated from the old `todo.org` carry `from-todo-org`. To
+hand an issue to Claude Code, the owner adds `agent:ready`; the agent moves it
+to `agent:working`, then `agent:review` once its draft PR (which closes the
+issue) is open. `claude-agent.yml` needs the Claude GitHub App and its
+`CLAUDE_CODE_OAUTH_TOKEN` secret, set up once with `/install-github-app` in
+Claude Code.
 
 ## License
 

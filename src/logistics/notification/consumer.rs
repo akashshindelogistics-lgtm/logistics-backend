@@ -47,11 +47,12 @@ impl Consumer for NotificationConsumer {
 async fn send(n: Notification, customer_name: String) -> Result<(), DeliveryError> {
     match n.channel {
         NotificationChannel::Email => {
-            delivery::send_email(&n.recipient, n.event.email_subject(), &n.body).await
+            delivery::send_email(&n.recipient, &n.email_subject(), &n.body).await
         }
         NotificationChannel::Sms => {
+            let template = n.sms_template().ok_or(DeliveryError::NotConfigured)?;
             let vars = n.sms_vars(&customer_name);
-            delivery::send_sms(&n.recipient, n.sms_template(), &vars).await
+            delivery::send_sms(&n.recipient, template, &vars).await
         }
     }
 }
@@ -61,6 +62,7 @@ fn notification_event(event: &Event) -> Result<NotificationEvent, String> {
         Some(EventType::DispatchCreated) => Ok(NotificationEvent::DispatchCreated),
         Some(EventType::DispatchDelivered) => Ok(NotificationEvent::DispatchDelivered),
         Some(EventType::DispatchRunningLate) => Ok(NotificationEvent::DispatchRunningLate),
+        Some(EventType::InvoiceRaised) => Ok(NotificationEvent::InvoiceRaised),
         None => Err(format!("unknown event type {}", event.event_type)),
     }
 }
@@ -73,9 +75,10 @@ fn dispatch_id(event: &Event) -> Result<Uuid, String> {
 }
 
 /// `None` means "keep the template text": always for an SMS, whose wording
-/// must match its DLT template, and when the model errors.
+/// must match its DLT template, for internal org-admin alerts, and when the
+/// model errors.
 async fn personalized_body(n: &Notification, event: &Event) -> Option<String> {
-    if n.channel == NotificationChannel::Sms {
+    if n.channel == NotificationChannel::Sms || n.recipient_kind != "customer" {
         return None;
     }
     let name = event.payload["customer_name"].as_str()?;
@@ -93,6 +96,8 @@ async fn personalized_body(n: &Notification, event: &Event) -> Option<String> {
             let hours_late = event.payload["hours_late"].as_i64().unwrap_or(0);
             copy::generate_dispatch_running_late_customer_body(name, short_id, hours_late).await
         }
+        // Amounts and dates stay exactly as entered: no AI rewording.
+        NotificationEvent::InvoiceRaised => return None,
     };
     let link = event.payload["tracking_url"].as_str();
     result.ok().map(|body| with_tracking_link(body, link))
@@ -321,6 +326,41 @@ mod tests {
             statuses(dispatch),
             vec![NotificationStatus::Sent, NotificationStatus::Failed]
         );
+    }
+
+    #[actix_web::test]
+    async fn an_invoice_event_sends_its_email_with_the_fixed_text() {
+        let _db = TestDb::create();
+        let (org, customer, dispatch) = setup();
+        let mut conn = DbConnection::from_env().get_connection().expect("conn");
+        Notification::prepare_tables(&mut conn).expect("tables");
+        let mut tx = conn.start_transaction(TxOpts::default()).expect("tx");
+        let rows = Notification::enqueue_invoice_raised(
+            &mut tx,
+            org,
+            dispatch,
+            &customer,
+            900,
+            "2026-12-31",
+        )
+        .expect("enqueue");
+        tx.commit().expect("commit");
+
+        let sent = RefCell::new(Vec::new());
+        // Attempt 1: invoice text must never be reworded.
+        process_event(&claimed_event(), 1, |n| {
+            sent.borrow_mut()
+                .push((n.recipient.clone(), n.body.clone()));
+            async { Ok(()) }
+        })
+        .await
+        .expect("process");
+
+        assert_eq!(
+            *sent.borrow(),
+            vec![("asha@example.com".to_string(), rows[0].body.clone())]
+        );
+        assert_eq!(statuses(dispatch), vec![NotificationStatus::Sent]);
     }
 
     #[actix_web::test]

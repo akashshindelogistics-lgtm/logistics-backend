@@ -43,6 +43,19 @@ async fn test_invoice_lifecycle_via_api() {
     assert_eq!(inv.amount, 4500);
     assert_eq!(inv.status, PaymentStatus::Pending);
 
+    // Raising it queued a customer invoice email (or a SKIPPED row).
+    let notifs = Notification::list_by_dispatch(dispatch.id).expect("notifications");
+    let invoice_email = notifs
+        .iter()
+        .find(|n| n.event == NotificationEvent::InvoiceRaised)
+        .expect("invoice notification recorded");
+    assert_eq!(invoice_email.recipient_kind, "customer");
+    assert!(
+        invoice_email.body.contains("Rs 4500"),
+        "{}",
+        invoice_email.body
+    );
+
     // A second invoice for the same dispatch -> 409.
     let req = test::TestRequest::post()
         .uri(&format!("/api/dispatches/{}/invoice", dispatch.id))

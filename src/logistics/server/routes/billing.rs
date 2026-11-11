@@ -5,6 +5,10 @@ use super::common::*;
 use super::customers::load_owned_customer;
 use super::dispatches::load_owned_dispatch;
 use crate::logistics::billing::invoice::{CustomerBillingSummary, Invoice, InvoiceError};
+use crate::logistics::customer::customer::Customer;
+use crate::logistics::db::connection::DbConnection;
+use crate::logistics::events;
+use crate::logistics::notification::notification::Notification;
 use actix_web::{HttpResponse, Responder, get, post, put, web};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -131,13 +135,44 @@ pub async fn create_dispatch_invoice(
         payload.amount,
         payload.due_on.clone(),
     ) {
-        Ok(inv) => HttpResponse::Created().json(ApiResponse {
-            success: true,
-            message: "Invoice raised".to_string(),
-            data: Some(inv),
-        }),
+        Ok(inv) => {
+            if let Err(err) = notify_invoice_raised(&inv) {
+                eprintln!(
+                    "invoice {}: couldn't queue the customer email: {err}",
+                    inv.id
+                );
+            }
+            HttpResponse::Created().json(ApiResponse {
+                success: true,
+                message: "Invoice raised".to_string(),
+                data: Some(inv),
+            })
+        }
         Err(err) => invoice_error_response(err),
     }
+}
+
+/// Queue the "your invoice is ready" email. Best-effort: the invoice is
+/// already saved, and a missing email must not undo it.
+fn notify_invoice_raised(inv: &Invoice) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(customer) = Customer::get_by_id(inv.customer_id)? else {
+        return Ok(());
+    };
+    let mut conn = DbConnection::from_env().get_connection()?;
+    Notification::prepare_tables(&mut conn)?;
+    let mut tx = conn.start_transaction(mysql::TxOpts::default())?;
+    let notifs = Notification::enqueue_invoice_raised(
+        &mut tx,
+        inv.org_id,
+        inv.dispatch_id,
+        &customer,
+        inv.amount,
+        &inv.due_on,
+    )?;
+    tx.commit()?;
+    Notification::index_best_effort(&notifs);
+    events::worker::wake();
+    Ok(())
 }
 
 #[utoipa::path(

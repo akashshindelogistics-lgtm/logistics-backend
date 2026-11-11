@@ -34,6 +34,7 @@ pub enum EventType {
     DispatchCreated,
     DispatchDelivered,
     DispatchRunningLate,
+    InvoiceRaised,
 }
 
 impl EventType {
@@ -42,6 +43,7 @@ impl EventType {
             EventType::DispatchCreated => "dispatch.created",
             EventType::DispatchDelivered => "dispatch.delivered",
             EventType::DispatchRunningLate => "dispatch.running_late",
+            EventType::InvoiceRaised => "invoice.raised",
         }
     }
 
@@ -50,6 +52,7 @@ impl EventType {
             "dispatch.created" => Some(EventType::DispatchCreated),
             "dispatch.delivered" => Some(EventType::DispatchDelivered),
             "dispatch.running_late" => Some(EventType::DispatchRunningLate),
+            "invoice.raised" => Some(EventType::InvoiceRaised),
             _ => None,
         }
     }
@@ -59,7 +62,8 @@ impl EventType {
         match self {
             EventType::DispatchCreated
             | EventType::DispatchDelivered
-            | EventType::DispatchRunningLate => &[NOTIFICATION_CONSUMER],
+            | EventType::DispatchRunningLate
+            | EventType::InvoiceRaised => &[NOTIFICATION_CONSUMER],
         }
     }
 }

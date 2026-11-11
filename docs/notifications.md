@@ -6,6 +6,16 @@ records a notification for each party it should tell:
 - **created** → the customer ("your order is on its way") and the assigned
   driver ("new trip assigned")
 - **delivered** → the customer ("your order has been delivered")
+- **running late** → the customer ("running behind schedule") and, by email,
+  every active ADMIN team member of the org (`recipient_kind = "org_admin"`,
+  subject "Dispatch <ref> is running late"), so the owner hears about it too
+- **invoice raised** (`POST /api/dispatches/{id}/invoice`) → the customer, by
+  email only ("Your invoice is ready", amount and due date). There is no DLT
+  template for it, so a customer with only a phone is `SKIPPED`. Queuing is
+  best-effort: a failure is logged and the invoice is still raised.
+
+Org-admin alerts and invoice emails keep their fixed text: no AI rewording of
+internal alerts, amounts or dates.
 
 The customer's created and running-late emails end with a tracking link
 when `PUBLIC_APP_URL` is set. See [customer-tracking.md](customer-tracking.md).
@@ -150,6 +160,8 @@ would need MSG91's `unicode` option and its own templates.
 
 - **Customer**: email if `Customer.email` is set, otherwise SMS to
   `Customer.phone`, otherwise `SKIPPED`.
+- **Org admin**: email to each active `ADMIN` `OrgUser` (running-late only).
+  An org with no team members gets no admin rows.
 - **Driver**: SMS to the driver's phone (drivers always have one), or
   `SKIPPED` if the vehicle has no active assigned driver.
 
