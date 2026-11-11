@@ -1,0 +1,10 @@
+[Unit]
+Description=Check master for new commits every minute (kind cluster)
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
