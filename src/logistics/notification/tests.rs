@@ -267,7 +267,10 @@ async fn sms_notifications_use_the_fixed_template_text_and_carry_its_variables()
         cust.body,
         format!("Hi Asha Rao, your order (ref {short_id}) has been dispatched and is on its way.")
     );
-    assert_eq!(cust.sms_template(), SmsTemplate::DispatchCreatedCustomer);
+    assert_eq!(
+        cust.sms_template(),
+        Some(SmsTemplate::DispatchCreatedCustomer)
+    );
     assert_eq!(
         cust.sms_vars(&customer.name),
         ["Asha Rao", short_id.as_str()]
@@ -280,7 +283,10 @@ async fn sms_notifications_use_the_fixed_template_text_and_carry_its_variables()
         driver.body,
         format!("New trip assigned: dispatch {short_id} to Asha Rao.")
     );
-    assert_eq!(driver.sms_template(), SmsTemplate::DispatchCreatedDriver);
+    assert_eq!(
+        driver.sms_template(),
+        Some(SmsTemplate::DispatchCreatedDriver)
+    );
     assert_eq!(
         driver.sms_vars(&customer.name),
         [short_id.as_str(), "Asha Rao"]
@@ -297,7 +303,10 @@ async fn sms_notifications_use_the_fixed_template_text_and_carry_its_variables()
             "Hi Asha Rao, your order (ref {short_id}) is running behind its expected delivery time. We're sorry for the delay."
         )
     );
-    assert_eq!(late[0].sms_template(), SmsTemplate::DispatchRunningLate);
+    assert_eq!(
+        late[0].sms_template(),
+        Some(SmsTemplate::DispatchRunningLate)
+    );
     assert_eq!(
         late[0].sms_vars(&customer.name),
         ["Asha Rao", short_id.as_str()]
@@ -341,4 +350,126 @@ fn tracking_link_is_appended_only_when_there_is_one() {
         with_tracking_link("Hi".into(), Some(&url)),
         format!("Hi\n\nTrack your order: {url}")
     );
+}
+
+fn customer_with(org_id: Uuid, phone: Option<&str>, email: Option<&str>) -> Customer {
+    let mut c = Customer::create_customer(org_id, "Meera", "4 Mill Rd").expect("customer");
+    c.set_contact(phone.map(Into::into), email.map(Into::into))
+        .expect("contact");
+    c
+}
+
+#[actix_web::test]
+async fn running_late_also_emails_every_active_org_admin() {
+    use crate::logistics::user::user::{OrgRole, OrgUser};
+    let _db = TestDb::create();
+    let org = org();
+    OrgUser::create(
+        org.id,
+        "Owner",
+        "owner@example.com",
+        "password1",
+        OrgRole::Admin,
+    )
+    .expect("admin");
+    OrgUser::create(
+        org.id,
+        "Disp",
+        "disp@example.com",
+        "password1",
+        OrgRole::Dispatcher,
+    )
+    .expect("dispatcher");
+    let mut gone = OrgUser::create(
+        org.id,
+        "Old",
+        "old@example.com",
+        "password1",
+        OrgRole::Admin,
+    )
+    .expect("old admin");
+    gone.update("Old", OrgRole::Admin, false)
+        .expect("deactivate");
+    let customer = customer_with(org.id, None, Some("meera@example.com"));
+    let dispatch_id = Uuid::new_v4();
+
+    let rows = in_tx(|tx| {
+        Notification::enqueue_dispatch_running_late(tx, org.id, dispatch_id, &customer, 30)
+    })
+    .expect("enqueue")
+    .expect("first alert");
+
+    let admins: Vec<_> = rows
+        .iter()
+        .filter(|n| n.recipient_kind == "org_admin")
+        .collect();
+    assert_eq!(admins.len(), 1, "{rows:?}");
+    assert_eq!(admins[0].recipient, "owner@example.com");
+    assert_eq!(admins[0].channel, NotificationChannel::Email);
+    assert_eq!(admins[0].status, NotificationStatus::Queued);
+    assert!(admins[0].body.contains("30h"), "{}", admins[0].body);
+    let short_id = &dispatch_id.to_string()[..8];
+    assert_eq!(
+        admins[0].email_subject(),
+        format!("Dispatch {short_id} is running late")
+    );
+    let cust = rows
+        .iter()
+        .find(|n| n.recipient_kind == "customer")
+        .unwrap();
+    assert_eq!(
+        cust.email_subject(),
+        "Your order is running behind schedule"
+    );
+}
+
+#[actix_web::test]
+async fn invoice_raised_emails_the_customer_with_amount_and_due_date() {
+    let _db = TestDb::create();
+    let org = org();
+    let customer = customer_with(org.id, Some("+91 90000 11111"), Some("meera@example.com"));
+    let dispatch_id = Uuid::new_v4();
+
+    let rows = in_tx(|tx| {
+        Notification::enqueue_invoice_raised(tx, org.id, dispatch_id, &customer, 4500, "2026-12-01")
+    })
+    .expect("enqueue");
+
+    assert_eq!(rows.len(), 1);
+    let n = &rows[0];
+    assert_eq!(n.event, NotificationEvent::InvoiceRaised);
+    assert_eq!(n.channel, NotificationChannel::Email);
+    assert_eq!(n.recipient, "meera@example.com");
+    assert_eq!(n.status, NotificationStatus::Queued);
+    assert!(
+        n.body.contains("Rs 4500") && n.body.contains("2026-12-01"),
+        "{}",
+        n.body
+    );
+    assert_eq!(n.email_subject(), "Your invoice is ready");
+    assert_eq!(n.sms_template(), None);
+    // Round-trips through the table.
+    let stored = Notification::list_by_dispatch(dispatch_id).expect("list");
+    assert_eq!(stored[0].event, NotificationEvent::InvoiceRaised);
+}
+
+#[actix_web::test]
+async fn invoice_raised_skips_a_customer_with_only_a_phone() {
+    let _db = TestDb::create();
+    let org = org();
+    let customer = customer_with(org.id, Some("+91 90000 11111"), None);
+
+    let rows = in_tx(|tx| {
+        Notification::enqueue_invoice_raised(
+            tx,
+            org.id,
+            Uuid::new_v4(),
+            &customer,
+            100,
+            "2026-12-01",
+        )
+    })
+    .expect("enqueue");
+
+    assert_eq!(rows[0].status, NotificationStatus::Skipped);
 }

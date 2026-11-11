@@ -99,9 +99,10 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   file) and the driver (SMS), and sent in the background with retries via
   MSG91 (SMS) / Gmail SMTP or Resend (email) when those are configured — see
   [`docs/async-events.md`](docs/async-events.md). The Dispatches page shows the log per
-  order. A background scan also alerts the customer if a dispatch is still
-  in transit well past when it should have arrived — see
-  [`docs/delay-alerts.md`](docs/delay-alerts.md).
+  order. A background scan also alerts the customer, and emails the org's
+  Admin team members, if a dispatch is still in transit well past when it
+  should have arrived — see [`docs/delay-alerts.md`](docs/delay-alerts.md).
+  Raising an invoice emails it to the customer.
 - **AI dispatch summaries** — generate a natural-language summary of a
   dispatch's status using the Anthropic (Claude) API.
 - **Authentication & roles** — JWT + bcrypt login. The organization password
@@ -315,7 +316,7 @@ All routes are served under the `/api` prefix.
 | GET | `/api/dispatches` | List dispatch orders |
 | PUT | `/api/dispatches/{id}/status` | Advance a dispatch's lifecycle status |
 | GET | `/api/dispatches/{id}/summary` | AI-generated summary of a dispatch |
-| GET | `/api/dispatches/{id}/notifications` | Customer + driver notifications recorded for a dispatch |
+| GET | `/api/dispatches/{id}/notifications` | Customer, driver and org-admin notifications recorded for a dispatch |
 | GET | `/api/public/track/{token}` | Customer tracking link: order status, timeline and the vehicle's last position while in transit — no login, the token is the credential (see `docs/customer-tracking.md`) |
 | GET | `/api/orgs/{id}/notifications` | The org's 100 most recent notifications |
 | GET, PUT | `/api/orgs/{id}/agents/settings` | Read or change (Admin) the org's autonomy mode, see [docs/agentic-workflow.md](docs/agentic-workflow.md) |
