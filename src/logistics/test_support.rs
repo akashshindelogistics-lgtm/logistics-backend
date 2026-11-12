@@ -444,6 +444,7 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             password_hash VARCHAR(255) NOT NULL,
             role VARCHAR(32) NOT NULL,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            terms_accepted_at BIGINT DEFAULT NULL,
             CONSTRAINT fk_org_user_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
         )",
     )

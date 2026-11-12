@@ -72,7 +72,7 @@ impl Organization {
         Ok(())
     }
 
-    fn ensure_tables(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+    pub(crate) fn ensure_tables(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
         conn.exec_drop(
             "CREATE TABLE IF NOT EXISTS Orgs (
                 id VARCHAR(36) PRIMARY KEY,

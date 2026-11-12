@@ -84,6 +84,9 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: --max-turns 100 --allowedTools Bash,Read,Edit,Write,Glob,Grep
+          # Prints every message and tool result into this public log, so only for issues the
+          # owner labels `agent:debug`; delete the run's logs after reading them.
+          show_full_output: ${{ contains(github.event.issue.labels.*.name, 'agent:debug') }}
           prompt: |
             You are working on GitHub issue #${{ github.event.issue.number }} in ${{ github.repository }}.
             Read it first with `gh issue view ${{ github.event.issue.number }} --comments`, plus its parent
@@ -95,6 +98,9 @@ jobs:
                Follow the conventions of the surrounding code and docs/.
             3. Run `cargo fmt --all`, `cargo clippy --all-targets` and `cargo test --all` (MySQL is
                running; the MYSQL_* env vars are set). Fix what you broke.
+               Run every command in the foreground and wait for it, even if it takes minutes: never
+               use `run_in_background` or `&`. This is a one-shot run with no notifications, so ending
+               your turn to wait ends the whole run and loses your work.
             4. Commit with a Conventional Commits message, push, and open a draft PR against master whose
                body says what changed, how it was tested, and ends with `Closes #${{ github.event.issue.number }}`.
             5. Run `gh issue edit ${{ github.event.issue.number }} --remove-label agent:working --add-label agent:review`.

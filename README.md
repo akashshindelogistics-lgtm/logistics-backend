@@ -272,6 +272,7 @@ All routes are served under the `/api` prefix.
 | Method | Path | Description |
 |---|---|---|
 | POST | `/api/auth/login` | Log in to an organization (org-owner password — always Admin) |
+| POST | `/api/auth/signup` | Self-serve signup (public): `{org_name, address, owner_name, email, password, accept_terms}` creates the org and its first Admin user in one transaction and returns a user-scoped token like `user-login`. `400` for a weak password (8–72 chars, a letter and a digit) or `accept_terms: false`, `409` for a taken email, `429` over the per-IP limit (`SIGNUP_RATE_LIMIT`, default 5 per hour) |
 | POST | `/api/auth/user-login` | Log in as a team member with email + password |
 | GET | `/api/auth/me` | Get the authenticated organization |
 | GET | `/api/auth/orgs` | List organizations available for login |

@@ -124,6 +124,7 @@ impl Modify for SecurityAddon {
         auth_orgs,
         auth_login,
         user_login,
+        signup,
         auth_me,
         list_org_users,
         add_org_user,
@@ -355,6 +356,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(auth_orgs)
             .service(auth_login)
             .service(user_login)
+            .service(signup)
             .service(auth_me)
             .service(list_org_users)
             .service(add_org_user)
