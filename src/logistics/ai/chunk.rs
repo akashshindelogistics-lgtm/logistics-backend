@@ -119,7 +119,9 @@ pub fn ensure_table(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> 
 }
 
 /// Add and backfill `identifiers` on an `AiChunks` table that predates it.
-/// The probe is a single `information_schema` read.
+/// Each step is checked on its own, so a run interrupted part-way is finished
+/// by the next call. The index goes on last and marks the migration done:
+/// once it exists this is two `information_schema` reads.
 fn ensure_identifiers_column(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
     let has_column: Option<i64> = conn.exec_first(
         "SELECT 1 FROM information_schema.columns
@@ -127,21 +129,38 @@ fn ensure_identifiers_column(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn
            AND column_name = 'identifiers'",
         (),
     )?;
-    if has_column.is_some() {
+    if has_column.is_none() {
+        ignore_duplicate(conn.query_drop("ALTER TABLE AiChunks ADD COLUMN identifiers TEXT NULL"))?;
+    }
+    let has_index: Option<i64> = conn.exec_first(
+        "SELECT 1 FROM information_schema.statistics
+         WHERE table_schema = DATABASE() AND table_name = 'AiChunks'
+           AND index_name = 'ft_ai_chunk_identifiers' LIMIT 1",
+        (),
+    )?;
+    if has_index.is_some() {
         return Ok(());
     }
-    conn.query_drop("ALTER TABLE AiChunks ADD COLUMN identifiers TEXT NULL")?;
-    let rows: Vec<(String, String)> = conn.query("SELECT id, text FROM AiChunks")?;
+    let rows: Vec<(String, String)> =
+        conn.query("SELECT id, text FROM AiChunks WHERE identifiers IS NULL")?;
     for (id, text) in rows {
         conn.exec_drop(
             "UPDATE AiChunks SET identifiers = :ids WHERE id = :id",
             params! { "ids" => query::identifier_variants(&text), "id" => id },
         )?;
     }
-    conn.query_drop(
+    ignore_duplicate(conn.query_drop(
         "ALTER TABLE AiChunks ADD FULLTEXT INDEX ft_ai_chunk_identifiers (identifiers) WITH PARSER ngram",
-    )?;
-    Ok(())
+    ))
+}
+
+/// Treat "duplicate column" (1060) / "duplicate key name" (1061) as success:
+/// a concurrent caller already ran the same `ALTER TABLE`.
+fn ignore_duplicate(result: mysql::Result<()>) -> Result<(), Box<dyn Error>> {
+    match result {
+        Err(mysql::Error::MySqlError(e)) if e.code == 1060 || e.code == 1061 => Ok(()),
+        other => Ok(other?),
+    }
 }
 
 /// Build or refresh the chunk for one source row. Idempotent — re-indexing
@@ -967,6 +986,42 @@ mod tests {
             "{results:?}"
         );
         let _ = customer;
+    }
+
+    #[test]
+    fn ensure_table_finishes_a_migration_interrupted_before_the_index() {
+        let _db = TestDb::create();
+        let org = Organization::create_organization("Half Migrated", "5 Rd").unwrap();
+        let mut conn = DbConnection::from_env().get_connection().expect("connect");
+        ensure_table(&mut conn).expect("ensure table");
+        // Partial state: column added, rows not backfilled, index never created.
+        // Two rows: an ngram index built by ALTER over exactly one row scores
+        // it 0 and MySQL 8.0 then fails the ORDER BY sum with ERROR 1690.
+        conn.query_drop("ALTER TABLE AiChunks DROP INDEX ft_ai_chunk_identifiers")
+            .expect("drop index");
+        conn.exec_drop(
+            "INSERT INTO AiChunks (id, org_id, kind, source_id, text, identifiers, updated_at)
+             VALUES (UUID(), :org_id, 'notification', 'n1', 'Vehicle MH12DM9387 is late', NULL, 0),
+                    (UUID(), :org_id, 'notification', 'n2', 'Godown stock is low', NULL, 0)",
+            params! { "org_id" => org.id.to_string() },
+        )
+        .expect("insert");
+
+        ensure_table(&mut conn).expect("finish migration");
+        ensure_table(&mut conn).expect("second run is a no-op");
+
+        let has_index: Option<i64> = conn
+            .exec_first(
+                "SELECT 1 FROM information_schema.statistics
+                 WHERE table_schema = DATABASE() AND table_name = 'AiChunks'
+                   AND index_name = 'ft_ai_chunk_identifiers' LIMIT 1",
+                (),
+            )
+            .expect("probe");
+        assert!(has_index.is_some());
+        let results = search_by_org(org.id, "9387", 8).unwrap();
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].source_id, "n1");
     }
 
     /// Test-only helper: delete every chunk for an org, standing in for an

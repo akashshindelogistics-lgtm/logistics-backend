@@ -102,8 +102,9 @@ pub fn identifier_variants(text: &str) -> String {
     out.join(" ")
 }
 
-/// Join the pieces of a spaced registration (`MH 12 DM 9387`, `mh-12-dm-9387`)
-/// back into one token, leaving every other word alone.
+/// Add the joined form of a spaced registration (`MH 12 DM 9387`,
+/// `mh-12-dm-9387`) before its pieces. The pieces stay, since a phrase that
+/// only looks like one (`on 15 dec 2026`) must keep its words.
 fn join_registrations(query: &str) -> Vec<String> {
     let words: Vec<&str> = query
         .split(|c: char| c.is_whitespace() || c == '-')
@@ -125,6 +126,7 @@ fn join_registrations(query: &str) -> Vec<String> {
         match joined {
             Some((candidate, n)) => {
                 out.push(candidate);
+                out.extend(words[i..i + n].iter().map(|w| w.to_string()));
                 i += n;
             }
             None => {
@@ -232,14 +234,34 @@ mod tests {
     fn spaced_registration_is_joined() {
         assert_eq!(
             join_registrations("where is MH 12 DM 9387 now"),
-            vec!["where", "is", "MH12DM9387", "now"]
+            vec!["where", "is", "MH12DM9387", "MH", "12", "DM", "9387", "now"]
         );
-        assert_eq!(join_registrations("mh-12-dm-9387"), vec!["mh12dm9387"]);
-        assert_eq!(join_registrations("KA 01 1234"), vec!["KA011234"]);
+        assert_eq!(
+            join_registrations("mh-12-dm-9387"),
+            vec!["mh12dm9387", "mh", "12", "dm", "9387"]
+        );
+        assert_eq!(
+            join_registrations("KA 01 1234"),
+            vec!["KA011234", "KA", "01", "1234"]
+        );
         assert_eq!(
             join_registrations("10 units of cement"),
             vec!["10", "units", "of", "cement"]
         );
+    }
+
+    #[test]
+    fn date_phrase_keeps_its_words() {
+        let q = expand_query("documents expiring on 15 dec 2026");
+        for want in ["documents", "expiring", "on", "15", "dec", "2026"] {
+            assert!(q.split(' ').any(|t| t == want), "{want} missing in {q}");
+        }
+    }
+
+    #[test]
+    fn real_registration_still_yields_joined_token() {
+        let q = expand_query("MH 12 AB 1234");
+        assert!(q.split(' ').any(|t| t == "mh12ab1234"), "{q}");
     }
 
     #[test]
@@ -255,7 +277,7 @@ mod tests {
     #[test]
     fn identifier_query_quotes_digit_words_only() {
         assert_eq!(identifier_query("truck 9387"), "\"9387\"");
-        assert_eq!(identifier_query("MH 12 DM 9387"), "\"MH12DM9387\"");
+        assert_eq!(identifier_query("MH 12 DM 9387"), "\"MH12DM9387\" \"9387\"");
         assert_eq!(identifier_query("late trucks"), "");
         assert_eq!(identifier_query("5 trucks"), "");
     }
