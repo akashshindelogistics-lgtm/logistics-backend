@@ -904,7 +904,7 @@ impl Organization {
         });
 
         let vehicles: Vec<Vehicle> = conn.exec_map(
-            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type FROM Vehicle WHERE org_id = :org_id",
+            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type, location_source FROM Vehicle WHERE org_id = :org_id",
             params! { "org_id" => &org_id_str },
             Vehicle::row_to_vehicle,
         )?;

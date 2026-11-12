@@ -286,6 +286,12 @@ The backend is done. It follows the design above except where noted; the
 - Phone and hardware tracker on the same vehicle: **latest timestamp wins**.
   Both write `last_updated_at`; the phone path refuses anything not newer. The
   hardware path (`/api/track`) still stamps server time.
+- **Fix source.** Every write to the location also sets `Vehicle.location_source`,
+  returned on the vehicle as `last_location_source`: `driver_phone`
+  (`POST /api/driver/location`), `gps_tracker` (`POST /api/track/{key}`) or
+  `manual` (`PUT /api/vehicles/{reg}/location`). It is `null` when there is no
+  fix or the fix predates this column. Old databases get the column from
+  `ensure_tracker_key_column`. The vehicle page that displays it is tracked in #324.
 
 **Tests**
 

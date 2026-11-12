@@ -3,7 +3,7 @@
 
 use super::common::*;
 use crate::logistics::orgs::orgs::Organization;
-use crate::logistics::vehicle::vehicle::{Unit, Vehicle, VehicleType};
+use crate::logistics::vehicle::vehicle::{LocationSource, Unit, Vehicle, VehicleType};
 use actix_web::{HttpResponse, Responder, delete, get, post, put, web};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -293,7 +293,12 @@ pub async fn track_vehicle_location(
         }
     };
 
-    match vehicle.update_location(payload.latitude, payload.longitude, None::<String>) {
+    match vehicle.update_location_from(
+        LocationSource::GpsTracker,
+        payload.latitude,
+        payload.longitude,
+        None::<String>,
+    ) {
         Ok(_) => HttpResponse::Ok().json(ApiResponse {
             success: true,
             message: "Location recorded".to_string(),

@@ -90,6 +90,39 @@ impl VehicleType {
     }
 }
 
+/// Where a vehicle's last location fix came from. Serialized as
+/// `driver_phone`, `gps_tracker` or `manual`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationSource {
+    /// The driver's phone, via `POST /api/driver/location`.
+    DriverPhone,
+    /// A GPS tracker fitted to the vehicle, via `POST /api/track/{key}`.
+    GpsTracker,
+    /// A person, via `PUT /api/vehicles/{reg}/location`.
+    Manual,
+}
+
+impl LocationSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LocationSource::DriverPhone => "driver_phone",
+            LocationSource::GpsTracker => "gps_tracker",
+            LocationSource::Manual => "manual",
+        }
+    }
+
+    /// Parses the stored value; `None` for anything unrecognized.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "driver_phone" => Some(LocationSource::DriverPhone),
+            "gps_tracker" => Some(LocationSource::GpsTracker),
+            "manual" => Some(LocationSource::Manual),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Location {
     pub latitude: f64,
@@ -104,6 +137,11 @@ pub struct Vehicle {
     pub capacity: i64,
     pub unit: Unit,
     pub location: Option<Location>,
+    /// Where `location` came from. `None` when there is no fix, or the fix
+    /// predates source tracking. Sits next to `location.timestamp`, the time
+    /// of the fix.
+    #[serde(default)]
+    pub last_location_source: Option<LocationSource>,
     /// The driver currently assigned to this vehicle, if any. A vehicle
     /// can only be selected for a dispatch when this is set and the driver
     /// is active. Managed through `PUT /api/vehicles/{reg}/driver`.
@@ -139,7 +177,24 @@ pub(crate) fn ensure_tracker_key_column(
         conn.query_drop("ALTER TABLE Vehicle ADD COLUMN tracker_key VARCHAR(36) NULL")?;
         conn.query_drop("UPDATE Vehicle SET tracker_key = UUID() WHERE tracker_key IS NULL")?;
     }
-    ensure_vehicle_type_column(conn)
+    ensure_vehicle_type_column(conn)?;
+    ensure_location_source_column(conn)
+}
+
+/// Add the `location_source` column to a `Vehicle` table that predates it.
+/// Existing rows stay `NULL` (source unknown). Called from
+/// [`ensure_tracker_key_column`].
+fn ensure_location_source_column(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+    let has_column: Option<i64> = conn.exec_first(
+        "SELECT 1 FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = 'Vehicle'
+           AND column_name = 'location_source'",
+        (),
+    )?;
+    if has_column.is_none() {
+        conn.query_drop("ALTER TABLE Vehicle ADD COLUMN location_source VARCHAR(20) NULL")?;
+    }
+    Ok(())
 }
 
 /// Add the `vehicle_type` column to a `Vehicle` table that predates it.
@@ -163,7 +218,7 @@ fn ensure_vehicle_type_column(conn: &mut mysql::PooledConn) -> Result<(), Box<dy
 
 /// A `SELECT registration_number, capacity, unit, assigned_driver_id,
 /// latitude, longitude, last_updated_at, location_address, tracker_key,
-/// vehicle_type FROM Vehicle` row, as [`Vehicle::row_to_vehicle`] takes it.
+/// vehicle_type, location_source FROM Vehicle` row, as [`Vehicle::row_to_vehicle`] takes it.
 pub(crate) type VehicleRow = (
     String,
     i64,
@@ -172,6 +227,7 @@ pub(crate) type VehicleRow = (
     Option<f64>,
     Option<f64>,
     Option<i64>,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -184,6 +240,7 @@ impl Vehicle {
             capacity,
             unit,
             location: None,
+            last_location_source: None,
             assigned_driver_id: None,
             tracker_key: Uuid::new_v4(),
             vehicle_type: VehicleType::default(),
@@ -204,7 +261,7 @@ impl Vehicle {
         ensure_tracker_key_column(&mut conn)?;
 
         let rows: Vec<VehicleRow> = conn.exec_map(
-            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type FROM Vehicle WHERE tracker_key = :tracker_key LIMIT 1",
+            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type, location_source FROM Vehicle WHERE tracker_key = :tracker_key LIMIT 1",
             params! { "tracker_key" => tracker_key.to_string() },
             |r| r,
         )?;
@@ -221,7 +278,7 @@ impl Vehicle {
         ensure_tracker_key_column(&mut conn)?;
 
         let rows: Vec<VehicleRow> = conn.exec_map(
-            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type FROM Vehicle WHERE assigned_driver_id = :driver_id ORDER BY registration_number LIMIT 1",
+            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type, location_source FROM Vehicle WHERE assigned_driver_id = :driver_id ORDER BY registration_number LIMIT 1",
             params! { "driver_id" => driver_id.to_string() },
             |r| r,
         )?;
@@ -245,7 +302,7 @@ impl Vehicle {
         let mut conn = db_connection.get_connection()?;
 
         conn.exec_drop(
-            "UPDATE Vehicle SET latitude = :latitude, longitude = :longitude, last_updated_at = :recorded_at, location_address = NULL
+            "UPDATE Vehicle SET latitude = :latitude, longitude = :longitude, last_updated_at = :recorded_at, location_address = NULL, location_source = 'driver_phone'
              WHERE registration_number = :registration_number
                AND (last_updated_at IS NULL OR last_updated_at < :recorded_at)",
             params! {
@@ -265,6 +322,7 @@ impl Vehicle {
             timestamp: recorded_at,
             address: None,
         });
+        self.last_location_source = Some(LocationSource::DriverPhone);
         Ok(true)
     }
 
@@ -289,9 +347,9 @@ impl Vehicle {
 
     /// Build a `Vehicle` from a `SELECT registration_number, capacity, unit,
     /// assigned_driver_id, latitude, longitude, last_updated_at,
-    /// location_address, tracker_key, vehicle_type` row.
+    /// location_address, tracker_key, vehicle_type, location_source` row.
     pub(crate) fn row_to_vehicle(row: VehicleRow) -> Self {
-        let (reg, cap, unit_str, driver, lat, lng, ts, addr, tracker, vtype) = row;
+        let (reg, cap, unit_str, driver, lat, lng, ts, addr, tracker, vtype, source) = row;
         let location = lat.map(|latitude| Location {
             latitude,
             longitude: lng.unwrap_or(0.0),
@@ -302,6 +360,9 @@ impl Vehicle {
             registration_number: reg,
             capacity: cap,
             unit: Unit::from_str(&unit_str),
+            last_location_source: location
+                .as_ref()
+                .and(source.as_deref().and_then(LocationSource::parse)),
             location,
             assigned_driver_id: driver.and_then(|d| Uuid::parse_str(&d).ok()),
             tracker_key: tracker
@@ -351,6 +412,7 @@ impl Vehicle {
                 location_address VARCHAR(255) DEFAULT NULL,
                 tracker_key VARCHAR(36) DEFAULT NULL,
                 vehicle_type VARCHAR(20) NOT NULL DEFAULT 'Truck',
+                location_source VARCHAR(20) DEFAULT NULL,
                 CONSTRAINT fk_vehicle_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
             )",
             (),
@@ -371,9 +433,9 @@ impl Vehicle {
         // on insert — re-registering an existing registration number keeps the
         // key its devices already use.
         conn.exec_drop(
-            "INSERT INTO Vehicle (registration_number, capacity, unit, org_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type)
-             VALUES (:registration_number, :capacity, :unit, :org_id, :latitude, :longitude, :last_updated_at, :location_address, :tracker_key, :vehicle_type)
-             ON DUPLICATE KEY UPDATE capacity = VALUES(capacity), unit = VALUES(unit), org_id = VALUES(org_id), latitude = VALUES(latitude), longitude = VALUES(longitude), last_updated_at = VALUES(last_updated_at), location_address = VALUES(location_address), vehicle_type = VALUES(vehicle_type)",
+            "INSERT INTO Vehicle (registration_number, capacity, unit, org_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type, location_source)
+             VALUES (:registration_number, :capacity, :unit, :org_id, :latitude, :longitude, :last_updated_at, :location_address, :tracker_key, :vehicle_type, :location_source)
+             ON DUPLICATE KEY UPDATE capacity = VALUES(capacity), unit = VALUES(unit), org_id = VALUES(org_id), latitude = VALUES(latitude), longitude = VALUES(longitude), last_updated_at = VALUES(last_updated_at), location_address = VALUES(location_address), vehicle_type = VALUES(vehicle_type), location_source = VALUES(location_source)",
             params! {
                 "registration_number" => &self.registration_number,
                 "capacity" => self.capacity,
@@ -385,6 +447,7 @@ impl Vehicle {
                 "location_address" => addr,
                 "tracker_key" => self.tracker_key.to_string(),
                 "vehicle_type" => self.vehicle_type.as_str(),
+                "location_source" => self.last_location_source.map(|s| s.as_str()),
             },
         )?;
 
@@ -463,8 +526,20 @@ impl Vehicle {
         Ok(row.and_then(|s| Uuid::parse_str(&s).ok()))
     }
 
+    /// Record a manual position fix stamped with server time.
     pub fn update_location(
         &mut self,
+        latitude: f64,
+        longitude: f64,
+        address: Option<impl Into<String>>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.update_location_from(LocationSource::Manual, latitude, longitude, address)
+    }
+
+    /// Record a position fix stamped with server time and remember its source.
+    pub fn update_location_from(
+        &mut self,
+        source: LocationSource,
         latitude: f64,
         longitude: f64,
         address: Option<impl Into<String>>,
@@ -480,13 +555,14 @@ impl Vehicle {
         let address_str = address.map(|a| a.into());
 
         conn.exec_drop(
-            "UPDATE Vehicle SET latitude = :latitude, longitude = :longitude, last_updated_at = :last_updated_at, location_address = :location_address WHERE registration_number = :registration_number",
+            "UPDATE Vehicle SET latitude = :latitude, longitude = :longitude, last_updated_at = :last_updated_at, location_address = :location_address, location_source = :location_source WHERE registration_number = :registration_number",
             params! {
                 "registration_number" => &self.registration_number,
                 "latitude" => latitude,
                 "longitude" => longitude,
                 "last_updated_at" => now,
                 "location_address" => &address_str,
+                "location_source" => source.as_str(),
             },
         )?;
 
@@ -496,6 +572,7 @@ impl Vehicle {
             timestamp: now,
             address: address_str,
         });
+        self.last_location_source = Some(source);
 
         Ok(())
     }
@@ -521,6 +598,7 @@ impl Vehicle {
                 location_address VARCHAR(255) DEFAULT NULL,
                 tracker_key VARCHAR(36) DEFAULT NULL,
                 vehicle_type VARCHAR(20) NOT NULL DEFAULT 'Truck',
+                location_source VARCHAR(20) DEFAULT NULL,
                 CONSTRAINT fk_vehicle_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
             )",
             (),
@@ -528,7 +606,7 @@ impl Vehicle {
         ensure_tracker_key_column(&mut conn)?;
 
         let rows: Vec<VehicleRow> = conn.exec_map(
-            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type FROM Vehicle",
+            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type, location_source FROM Vehicle",
             (),
             |r| r,
         )?;
@@ -542,7 +620,7 @@ impl Vehicle {
         ensure_tracker_key_column(&mut conn)?;
 
         let rows: Vec<VehicleRow> = conn.exec_map(
-            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type FROM Vehicle WHERE org_id = :org_id",
+            "SELECT registration_number, capacity, unit, assigned_driver_id, latitude, longitude, last_updated_at, location_address, tracker_key, vehicle_type, location_source FROM Vehicle WHERE org_id = :org_id",
             params! { "org_id" => org_id.to_string() },
             |r| r,
         )?;

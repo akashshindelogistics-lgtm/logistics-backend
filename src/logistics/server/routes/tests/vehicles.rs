@@ -149,7 +149,7 @@ async fn test_update_vehicle_location_endpoint() {
 
     let req = test::TestRequest::put()
         .uri("/api/vehicles/LOC-VH-1/location")
-        .insert_header(("Authorization", auth))
+        .insert_header(("Authorization", auth.clone()))
         .set_json(&payload)
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -159,6 +159,20 @@ async fn test_update_vehicle_location_endpoint() {
     let loc = body.data.unwrap();
     assert_eq!(loc.latitude, 19.0760);
     assert_eq!(loc.longitude, 72.8777);
+
+    let req = test::TestRequest::get()
+        .uri("/api/vehicles")
+        .insert_header(("Authorization", auth))
+        .to_request();
+    let body: ApiResponse<Vec<Vehicle>> =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let stored = body
+        .data
+        .unwrap()
+        .into_iter()
+        .find(|v| v.registration_number == "LOC-VH-1")
+        .unwrap();
+    assert_eq!(stored.last_location_source, Some(LocationSource::Manual));
 }
 
 #[actix_web::test]
@@ -338,6 +352,10 @@ async fn test_track_endpoint_records_location_with_only_the_tracker_key() {
         .into_iter()
         .find(|v| v.registration_number == "TRK-VH-1")
         .unwrap();
+    assert_eq!(
+        stored.last_location_source,
+        Some(LocationSource::GpsTracker)
+    );
     assert_eq!(stored.location.unwrap().latitude, 18.5204);
 }
 
