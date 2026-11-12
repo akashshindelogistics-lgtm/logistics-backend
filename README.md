@@ -417,7 +417,10 @@ hand an issue to Claude Code, the owner adds `agent:ready`; the agent moves it
 to `agent:working`, then `agent:review` once its draft PR (which closes the
 issue) is open. `claude-agent.yml` needs the Claude GitHub App and its
 `CLAUDE_CODE_OAUTH_TOKEN` secret, set up once with `/install-github-app` in
-Claude Code.
+Claude Code. To keep the project board's Status in step (In Progress while the
+agent works or a PR waits for review, back to Todo if it stops or fails), add a
+classic personal access token with the `project` scope as the `PROJECT_TOKEN`
+secret. Without it the board isn't touched.
 
 ## License
 
