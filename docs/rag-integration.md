@@ -2,7 +2,8 @@
 
 Status: **exploration** (2026-11-02). Where retrieval-augmented generation
 (RAG) already is in the system, what limits it, where else it would earn its
-keep, and a phased plan. Nothing here is built yet.
+keep, and a phased plan. Phase 1 (evaluation and retrieval fixes) is built;
+the rest is not.
 
 ## Summary
 
@@ -45,7 +46,7 @@ separate need, and a vector database doesn't serve it either: they need
 | --- | --- | --- |
 | Chunk index | `src/logistics/ai/chunk.rs`, table `AiChunks` | One row per source `(org_id, kind, source_id)` with a FULLTEXT index on `text`. Write-through: every write to a source row upserts its chunk, best-effort; `reindex_org` backfills. |
 | Indexed kinds | same | `notification`, `vehicle_document`, `vehicle_maintenance`, `dispatch_narrative` (rebuilt whole on every status change), `stock_snapshot`, `org_directory` (customers, godowns, vehicles with their driver) |
-| Retrieval | `chunk::search_by_org` | `MATCH(text) AGAINST (q IN NATURAL LANGUAGE MODE)` filtered by `org_id` (the tenant boundary), top 8 |
+| Retrieval | `chunk::search_by_org`, `ai/query.rs` | The question is expanded (plurals, synonyms, spaced registrations joined) for `MATCH(text) AGAINST (... IN NATURAL LANGUAGE MODE)`; its digit-bearing words also go to an ngram FULLTEXT index on `AiChunks.identifiers` (every registration or number stored as `MH12DM9387`, `MH 12 DM 9387`, `DM9387`, `9387`). Filtered by `org_id` (the tenant boundary), top 8 |
 | Generation | `ai/assistant.rs` | One Claude call: the OpsReport snapshot, then the retrieved facts, then the question, with "answer only from these facts". A canned answer when there's nothing to go on. |
 | API and UI | `POST /api/orgs/{id}/assistant/ask`, `/reindex`, `/digest`; `AssistantWidget` in logistics-frontend | Single question and answer; sources listed as kind, id and excerpt |
 
@@ -59,7 +60,8 @@ microseconds, and no vector index or vector database is needed.
 
 ### What limits it
 
-**Measured FULLTEXT misses** (dev database, natural-language mode):
+**Measured FULLTEXT misses** (dev database, natural-language mode, before
+phase 1; all of these are now questions in `ai/eval.rs` and are found):
 
 | Query | Rows matched | Why |
 | --- | --- | --- |
@@ -95,8 +97,6 @@ Also: words shorter than 3 characters are dropped (`innodb_ft_min_token_size`
   report are not indexed.
 - **No role scoping:** today's chunk kinds are fine for every role, but once
   billing is indexed, warehouse staff shouldn't get invoice answers.
-- **No evaluation:** there's no set of known questions with expected sources,
-  so a change to retrieval can't be measured.
 - **Prompt injection:** retrieved text includes things users typed (notes,
   customer names, notification bodies). The prompt says "answer only from
   these facts" but doesn't mark that text as data.
@@ -184,6 +184,11 @@ and digest do) or a plain query is better.
   old (chunks carry `updated_at`).
 
 ### Evaluation (before changing retrieval)
+
+Built in phase 1: `src/logistics/ai/eval.rs` has a fixture org and about 20
+questions with expected source ids, and `cargo test` fails if recall@8 is below
+100%. Add a question there whenever retrieval misses one. Still to do: follow-ups,
+cross-entity questions, role refusals and the manual answer-quality run.
 
 - A fixture org with realistic data: about 30 questions, each with the source
   ids it should find. Include the measured misses, follow-ups,
@@ -320,7 +325,7 @@ Android work goes in logistics-android.
      CI secret.
    - Add `ai/client.rs` and move all six modules to it.
    - Migrate to `claude-haiku-5-5`, with per-feature `effort`.
-1. **Evaluation and retrieval fixes (option A)**
+1. **Evaluation and retrieval fixes (option A)** (done)
    - The fixture org and the question set; recall@8 in `cargo test`.
    - Identifier normalisation, an ngram index for identifiers, and query
      expansion. Done when every measured miss above is found.

@@ -413,9 +413,11 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             kind VARCHAR(32) NOT NULL,
             source_id VARCHAR(191) NOT NULL,
             text TEXT NOT NULL,
+            identifiers TEXT NULL,
             updated_at BIGINT NOT NULL,
             UNIQUE KEY uq_ai_chunk_source (org_id, kind, source_id),
             FULLTEXT INDEX ft_ai_chunk_text (text),
+            FULLTEXT INDEX ft_ai_chunk_identifiers (identifiers) WITH PARSER ngram,
             CONSTRAINT fk_ai_chunk_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
         )",
     )
