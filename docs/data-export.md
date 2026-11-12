@@ -16,7 +16,9 @@ Responses are `text/csv` with a header row, CRLF line endings and a
 `Content-Disposition: attachment; filename="<dataset>.csv"`. Dates are UTC
 `YYYY-MM-DD`. Fields containing commas, quotes or newlines are quoted; text
 starting with `=`, `+`, `-` or `@` gets a leading `'` so spreadsheets don't
-evaluate it as a formula.
+evaluate it as a formula. This also applies to phone numbers written
+with a leading `+` (for example `+91...`), which appear as `'+91...` in the
+`customers` export.
 
 Implementation: `reports/export.rs`, built from the existing `list_by_org`
 methods (nothing is stored). The route is excluded from chat tools
