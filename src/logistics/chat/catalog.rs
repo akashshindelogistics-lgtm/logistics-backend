@@ -125,6 +125,7 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ),
     ("latest_driver_app", "for the driver's phone"),
     ("download_driver_app", "binary download"),
+    ("export_org_csv", "file download for the dashboard"),
     ("upload_file", "the chat composer uploads files itself"),
     ("get_uploaded_file", "binary download"),
     ("delete_org", "deletes the whole organization"),

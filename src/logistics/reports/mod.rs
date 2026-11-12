@@ -59,7 +59,7 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-fn iso_date_from_epoch_day(day: i64) -> String {
+pub(crate) fn iso_date_from_epoch_day(day: i64) -> String {
     let (y, m, d) = civil_from_days(day);
     format!("{y:04}-{m:02}-{d:02}")
 }
@@ -446,3 +446,5 @@ fn dispatch_volume(dispatches: &[DispatchOrder], now: i64) -> Vec<DispatchVolume
 
 #[cfg(test)]
 mod tests;
+
+pub mod export;
