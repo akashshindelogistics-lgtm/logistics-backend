@@ -11,8 +11,17 @@ Every role may export, like every other read. An unknown dataset is `404`.
 | `stock` | one row per stock item per godown: `godown_id, godown_name, description, category, quantity, volume_in_size, reorder_threshold, below_threshold` |
 | `invoices` | `id, dispatch_id, customer_id, amount, issued_on, due_on, paid_on, status` |
 | `customers` | `id, name, address, phone, email` |
+| `tally-invoices` | Tally XML: one *Sales* voucher per invoice — debit the customer's ledger, credit a `Freight Income` ledger; dated `issued_on`, number = invoice id. Invoices of cancelled dispatches are skipped |
+| `tally-stock` | Tally XML: one *Delivery Note* voucher per dispatch whose stock has left (`LOADED`, `IN_TRANSIT`, `DELIVERED`) with an inventory entry per line item (stock item name = description, qty in `Nos`) |
 
-Responses are `text/csv` with a header row, CRLF line endings and a
+The two `tally-*` datasets are `application/xml` (`<dataset>.xml`) in Tally's
+import envelope (Gateway of Tally → Import Data → Vouchers), so the accountant
+can keep GST books in Tally. Customer and stock-item ledgers/masters, and the
+`Freight Income` ledger, must exist in Tally before importing (or enable
+auto-creation of masters there). Vouchers whose customer no longer exists, or dispatches with no line items, are skipped (logged on the server). GST splits are not exported; `amount` is
+posted as-is.
+
+CSV responses are `text/csv` with a header row, CRLF line endings and a
 `Content-Disposition: attachment; filename="<dataset>.csv"`. Dates are UTC
 `YYYY-MM-DD`. Fields containing commas, quotes or newlines are quoted; text
 starting with `=`, `+`, `-` or `@` gets a leading `'` so spreadsheets don't

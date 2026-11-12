@@ -108,8 +108,8 @@ pub async fn get_ops_report_summary(
     }
 }
 
-/// Download one of the org's datasets as CSV: `dispatches`, `stock`,
-/// `invoices` or `customers`.
+/// Download one of the org's datasets: CSV (`dispatches`, `stock`, `invoices`,
+/// `customers`) or Tally import XML (`tally-invoices`, `tally-stock`).
 #[utoipa::path(
     get,
     path = "/api/orgs/{id}/export/{dataset}",
@@ -117,10 +117,10 @@ pub async fn get_ops_report_summary(
     security(("bearer_auth" = [])),
     params(
         ("id" = Uuid, Path, description = "Organization UUID"),
-        ("dataset" = String, Path, description = "One of dispatches, stock, invoices, customers")
+        ("dataset" = String, Path, description = "One of dispatches, stock, invoices, customers, tally-invoices, tally-stock")
     ),
     responses(
-        (status = 200, description = "CSV file (text/csv) with a header row", body = String, content_type = "text/csv"),
+        (status = 200, description = "CSV file (text/csv) with a header row, or Tally XML (application/xml)", content((String = "text/csv"), (String = "application/xml"))),
         (status = 403, description = "Forbidden", body = EmptyResponse),
         (status = 404, description = "Unknown dataset", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse)
@@ -142,16 +142,20 @@ pub async fn export_org_csv(
     let Some(dataset) = ExportDataset::parse(&dataset) else {
         return HttpResponse::NotFound().json(ApiResponse::<String> {
             success: false,
-            message: "Unknown dataset: use dispatches, stock, invoices or customers".to_string(),
+            message: "Unknown dataset: use dispatches, stock, invoices, customers, tally-invoices or tally-stock".to_string(),
             data: None,
         });
     };
     match dataset.to_csv(org_id) {
         Ok(csv) => HttpResponse::Ok()
-            .content_type("text/csv; charset=utf-8")
+            .content_type(dataset.content_type())
             .insert_header((
                 "Content-Disposition",
-                format!("attachment; filename=\"{}.csv\"", dataset.as_str()),
+                format!(
+                    "attachment; filename=\"{}.{}\"",
+                    dataset.as_str(),
+                    dataset.extension()
+                ),
             ))
             .body(csv),
         Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {

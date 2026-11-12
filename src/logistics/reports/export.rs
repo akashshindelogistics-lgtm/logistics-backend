@@ -6,7 +6,7 @@
 use super::{SECONDS_PER_DAY, iso_date_from_epoch_day};
 use crate::logistics::billing::invoice::Invoice;
 use crate::logistics::customer::customer::Customer;
-use crate::logistics::dispatch::dispatch::DispatchOrder;
+use crate::logistics::dispatch::dispatch::{DispatchOrder, DispatchStatus};
 use crate::logistics::godown::godown::Godown;
 use std::error::Error;
 use uuid::Uuid;
@@ -18,6 +18,10 @@ pub enum ExportDataset {
     Stock,
     Invoices,
     Customers,
+    /// Freight invoices as Tally Sales vouchers (XML).
+    TallyInvoices,
+    /// Dispatched stock as Tally Delivery Note vouchers (XML).
+    TallyStock,
 }
 
 impl ExportDataset {
@@ -27,7 +31,24 @@ impl ExportDataset {
             "stock" => Some(Self::Stock),
             "invoices" => Some(Self::Invoices),
             "customers" => Some(Self::Customers),
+            "tally-invoices" => Some(Self::TallyInvoices),
+            "tally-stock" => Some(Self::TallyStock),
             _ => None,
+        }
+    }
+
+    /// File extension of the download.
+    pub fn extension(&self) -> &'static str {
+        match self {
+            Self::TallyInvoices | Self::TallyStock => "xml",
+            _ => "csv",
+        }
+    }
+
+    pub fn content_type(&self) -> &'static str {
+        match self {
+            Self::TallyInvoices | Self::TallyStock => "application/xml; charset=utf-8",
+            _ => "text/csv; charset=utf-8",
         }
     }
 
@@ -37,6 +58,8 @@ impl ExportDataset {
             Self::Stock => "stock",
             Self::Invoices => "invoices",
             Self::Customers => "customers",
+            Self::TallyInvoices => "tally-invoices",
+            Self::TallyStock => "tally-stock",
         }
     }
 
@@ -47,6 +70,8 @@ impl ExportDataset {
             Self::Stock => stock_csv(org_id),
             Self::Invoices => invoices_csv(org_id),
             Self::Customers => customers_csv(org_id),
+            Self::TallyInvoices => tally_invoices_xml(org_id),
+            Self::TallyStock => tally_stock_xml(org_id),
         }
     }
 }
@@ -202,6 +227,148 @@ fn customers_csv(org_id: Uuid) -> Result<String, Box<dyn Error>> {
     Ok(out)
 }
 
+/// Escape text for XML element content.
+fn xml(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect::<String>()
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// ISO `YYYY-MM-DD` to Tally's `YYYYMMDD`.
+fn tally_date(iso: &str) -> String {
+    iso.replace('-', "")
+}
+
+/// Wrap voucher XML in a Tally import envelope.
+fn tally_envelope(vouchers: &str) -> String {
+    format!(
+        "<ENVELOPE>\n<HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER>\n\
+         <BODY><IMPORTDATA>\n<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC>\n\
+         <REQUESTDATA>\n{vouchers}</REQUESTDATA>\n</IMPORTDATA></BODY>\n</ENVELOPE>\n"
+    )
+}
+
+fn customer_names(org_id: Uuid) -> Result<std::collections::HashMap<Uuid, String>, Box<dyn Error>> {
+    Ok(Customer::list_by_org(org_id)?
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect())
+}
+
+/// Sales vouchers: debit the customer's ledger, credit "Freight Income".
+fn tally_invoices_xml(org_id: Uuid) -> Result<String, Box<dyn Error>> {
+    Ok(tally_invoices_from(
+        &Invoice::list_by_org(org_id)?,
+        &DispatchOrder::list_by_org(org_id)?,
+        &customer_names(org_id)?,
+    ))
+}
+
+/// Skips invoices of cancelled dispatches (no freight was earned) and invoices
+/// whose customer is unknown (Tally cannot post a voucher with no party ledger).
+fn tally_invoices_from(
+    invoices: &[Invoice],
+    dispatches: &[DispatchOrder],
+    customers: &std::collections::HashMap<Uuid, String>,
+) -> String {
+    let cancelled: std::collections::HashSet<Uuid> = dispatches
+        .iter()
+        .filter(|d| d.status == DispatchStatus::Cancelled)
+        .map(|d| d.id)
+        .collect();
+    let mut vouchers = String::new();
+    for i in invoices {
+        if cancelled.contains(&i.dispatch_id) {
+            continue;
+        }
+        let Some(name) = customers.get(&i.customer_id) else {
+            eprintln!("tally export: skipping invoice {}: unknown customer", i.id);
+            continue;
+        };
+        let party = xml(name);
+        vouchers.push_str(&format!(
+            "<TALLYMESSAGE><VOUCHER VCHTYPE=\"Sales\" ACTION=\"Create\">\n\
+             <DATE>{date}</DATE>\n<VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>\n\
+             <VOUCHERNUMBER>{id}</VOUCHERNUMBER>\n<REFERENCE>{dispatch}</REFERENCE>\n\
+             <PARTYLEDGERNAME>{party}</PARTYLEDGERNAME>\n\
+             <NARRATION>Freight for dispatch {dispatch}; due {due}</NARRATION>\n\
+             <ALLLEDGERENTRIES.LIST><LEDGERNAME>{party}</LEDGERNAME>\
+             <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-{amount}</AMOUNT></ALLLEDGERENTRIES.LIST>\n\
+             <ALLLEDGERENTRIES.LIST><LEDGERNAME>Freight Income</LEDGERNAME>\
+             <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>{amount}</AMOUNT></ALLLEDGERENTRIES.LIST>\n\
+             </VOUCHER></TALLYMESSAGE>\n",
+            date = tally_date(&i.issued_on),
+            id = i.id,
+            dispatch = i.dispatch_id,
+            due = xml(&i.due_on),
+            amount = i.amount,
+        ));
+    }
+    tally_envelope(&vouchers)
+}
+
+/// Delivery Note vouchers: one per dispatch, with an inventory entry per line item.
+fn tally_stock_xml(org_id: Uuid) -> Result<String, Box<dyn Error>> {
+    Ok(tally_stock_from(
+        &DispatchOrder::list_by_org(org_id)?,
+        &customer_names(org_id)?,
+    ))
+}
+
+/// Only dispatches whose stock has physically left (loaded, in transit or
+/// delivered) are exported; reserved, cancelled and returned ones are not.
+/// Dispatches with no line items or an unknown customer are skipped too, as
+/// Tally rejects such vouchers.
+fn tally_stock_from(
+    dispatches: &[DispatchOrder],
+    customers: &std::collections::HashMap<Uuid, String>,
+) -> String {
+    let mut vouchers = String::new();
+    for d in dispatches {
+        if !matches!(
+            d.status,
+            DispatchStatus::Loaded | DispatchStatus::InTransit | DispatchStatus::Delivered
+        ) || d.line_items.is_empty()
+        {
+            continue;
+        }
+        let Some(name) = customers.get(&d.customer_id) else {
+            eprintln!("tally export: skipping dispatch {}: unknown customer", d.id);
+            continue;
+        };
+        let party = xml(name);
+        let mut entries = String::new();
+        for l in &d.line_items {
+            entries.push_str(&format!(
+                "<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>{}</STOCKITEMNAME>\
+                 <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>\
+                 <ACTUALQTY>{} Nos</ACTUALQTY><BILLEDQTY>{} Nos</BILLEDQTY></ALLINVENTORYENTRIES.LIST>\n",
+                xml(&l.stock_description),
+                l.quantity,
+                l.quantity
+            ));
+        }
+        vouchers.push_str(&format!(
+            "<TALLYMESSAGE><VOUCHER VCHTYPE=\"Delivery Note\" ACTION=\"Create\">\n\
+             <DATE>{date}</DATE>\n<VOUCHERTYPENAME>Delivery Note</VOUCHERTYPENAME>\n\
+             <VOUCHERNUMBER>{id}</VOUCHERNUMBER>\n<PARTYLEDGERNAME>{party}</PARTYLEDGERNAME>\n\
+             <NARRATION>Dispatch {id} ({status}), vehicle {vehicle}</NARRATION>\n\
+             {entries}</VOUCHER></TALLYMESSAGE>\n",
+            date = tally_date(&date_of(d.dispatched_at)),
+            id = d.id,
+            status = d.status.as_str(),
+            vehicle = xml(&opt(&d.vehicle_registration_number)),
+        ));
+    }
+    tally_envelope(&vouchers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,10 +389,133 @@ mod tests {
     }
 
     #[test]
+    fn xml_escapes_markup() {
+        assert_eq!(xml("A & B <\"c\">"), "A &amp; B &lt;&quot;c&quot;&gt;");
+        assert_eq!(tally_date("2026-11-12"), "20261112");
+    }
+
+    #[test]
     fn parse_round_trips() {
-        for d in ["dispatches", "stock", "invoices", "customers"] {
+        for d in [
+            "dispatches",
+            "stock",
+            "invoices",
+            "customers",
+            "tally-invoices",
+            "tally-stock",
+        ] {
             assert_eq!(ExportDataset::parse(d).unwrap().as_str(), d);
         }
         assert!(ExportDataset::parse("users").is_none());
+    }
+
+    use crate::logistics::billing::invoice::PaymentStatus;
+    use crate::logistics::dispatch::dispatch::DispatchLineItem;
+    use std::collections::HashMap;
+
+    fn dispatch(status: DispatchStatus, customer: Uuid, items: &[&str]) -> DispatchOrder {
+        DispatchOrder {
+            id: Uuid::new_v4(),
+            org_id: Uuid::new_v4(),
+            customer_id: customer,
+            vehicle_registration_number: Some("MH12AB1234".into()),
+            vehicle_source: Default::default(),
+            hire_id: None,
+            line_items: items
+                .iter()
+                .map(|d| DispatchLineItem {
+                    stock_description: d.to_string(),
+                    quantity: 5,
+                    volume_in_size: 1,
+                    category: "c".into(),
+                })
+                .collect(),
+            status,
+            dispatched_at: 0,
+            status_history: vec![],
+            proof_of_delivery: None,
+            trip_id: None,
+            stop_sequence: None,
+            eway_bill_no: None,
+        }
+    }
+
+    fn invoice(dispatch_id: Uuid, customer: Uuid) -> Invoice {
+        Invoice {
+            id: Uuid::new_v4(),
+            org_id: Uuid::new_v4(),
+            dispatch_id,
+            customer_id: customer,
+            amount: 1500,
+            issued_on: "2026-11-12".into(),
+            due_on: "2026-12-12".into(),
+            paid_on: None,
+            status: PaymentStatus::Pending,
+        }
+    }
+
+    fn customers(id: Uuid) -> HashMap<Uuid, String> {
+        HashMap::from([(id, "Smith & <Sons>".to_string())])
+    }
+
+    #[test]
+    fn tally_invoices_amounts_and_escaping() {
+        let c = Uuid::new_v4();
+        let d = dispatch(DispatchStatus::Delivered, c, &["x"]);
+        let out = tally_invoices_from(&[invoice(d.id, c)], &[d], &customers(c));
+        assert!(out.contains("<LEDGERNAME>Smith &amp; &lt;Sons&gt;</LEDGERNAME><ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-1500</AMOUNT>"));
+        assert!(out.contains("<LEDGERNAME>Freight Income</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>1500</AMOUNT>"));
+        assert!(out.contains("<DATE>20261112</DATE>"));
+    }
+
+    #[test]
+    fn tally_invoices_skip_cancelled_dispatch_and_unknown_customer() {
+        let c = Uuid::new_v4();
+        let cancelled = dispatch(DispatchStatus::Cancelled, c, &["x"]);
+        let live = dispatch(DispatchStatus::Delivered, c, &["x"]);
+        let out = tally_invoices_from(
+            &[invoice(cancelled.id, c), invoice(live.id, Uuid::new_v4())],
+            &[cancelled, live],
+            &customers(c),
+        );
+        assert!(!out.contains("<VOUCHER "), "{out}");
+        assert!(!out.contains("<LEDGERNAME></LEDGERNAME>"));
+    }
+
+    #[test]
+    fn tally_stock_only_exports_dispatched_stock() {
+        let c = Uuid::new_v4();
+        let mut all = Vec::new();
+        for s in [
+            DispatchStatus::AwaitingVehicle,
+            DispatchStatus::Pending,
+            DispatchStatus::Confirmed,
+            DispatchStatus::Returned,
+            DispatchStatus::Cancelled,
+        ] {
+            all.push(dispatch(s, c, &["x"]));
+        }
+        assert!(!tally_stock_from(&all, &customers(c)).contains("<VOUCHER "));
+        let sent: Vec<_> = [
+            DispatchStatus::Loaded,
+            DispatchStatus::InTransit,
+            DispatchStatus::Delivered,
+        ]
+        .into_iter()
+        .map(|s| dispatch(s, c, &["Widgets & <Co>"]))
+        .collect();
+        let out = tally_stock_from(&sent, &customers(c));
+        assert_eq!(out.matches("<VOUCHER ").count(), 3);
+        assert!(out.contains("<STOCKITEMNAME>Widgets &amp; &lt;Co&gt;</STOCKITEMNAME>"));
+        assert!(out.contains("<ACTUALQTY>5 Nos</ACTUALQTY>"));
+    }
+
+    #[test]
+    fn tally_stock_skips_empty_line_items_and_unknown_customer() {
+        let c = Uuid::new_v4();
+        let empty = dispatch(DispatchStatus::Delivered, c, &[]);
+        let orphan = dispatch(DispatchStatus::Delivered, Uuid::new_v4(), &["x"]);
+        let out = tally_stock_from(&[empty, orphan], &customers(c));
+        assert!(!out.contains("<VOUCHER "), "{out}");
     }
 }
