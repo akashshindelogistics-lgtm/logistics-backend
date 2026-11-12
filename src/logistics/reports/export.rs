@@ -18,6 +18,10 @@ pub enum ExportDataset {
     Stock,
     Invoices,
     Customers,
+    /// Freight invoices as Tally Sales vouchers (XML).
+    TallyInvoices,
+    /// Dispatched stock as Tally Delivery Note vouchers (XML).
+    TallyStock,
 }
 
 impl ExportDataset {
@@ -27,7 +31,24 @@ impl ExportDataset {
             "stock" => Some(Self::Stock),
             "invoices" => Some(Self::Invoices),
             "customers" => Some(Self::Customers),
+            "tally-invoices" => Some(Self::TallyInvoices),
+            "tally-stock" => Some(Self::TallyStock),
             _ => None,
+        }
+    }
+
+    /// File extension of the download.
+    pub fn extension(&self) -> &'static str {
+        match self {
+            Self::TallyInvoices | Self::TallyStock => "xml",
+            _ => "csv",
+        }
+    }
+
+    pub fn content_type(&self) -> &'static str {
+        match self {
+            Self::TallyInvoices | Self::TallyStock => "application/xml; charset=utf-8",
+            _ => "text/csv; charset=utf-8",
         }
     }
 
@@ -37,6 +58,8 @@ impl ExportDataset {
             Self::Stock => "stock",
             Self::Invoices => "invoices",
             Self::Customers => "customers",
+            Self::TallyInvoices => "tally-invoices",
+            Self::TallyStock => "tally-stock",
         }
     }
 
@@ -47,6 +70,8 @@ impl ExportDataset {
             Self::Stock => stock_csv(org_id),
             Self::Invoices => invoices_csv(org_id),
             Self::Customers => customers_csv(org_id),
+            Self::TallyInvoices => tally_invoices_xml(org_id),
+            Self::TallyStock => tally_stock_xml(org_id),
         }
     }
 }
@@ -202,6 +227,98 @@ fn customers_csv(org_id: Uuid) -> Result<String, Box<dyn Error>> {
     Ok(out)
 }
 
+/// Escape text for XML element content.
+fn xml(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect::<String>()
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// ISO `YYYY-MM-DD` to Tally's `YYYYMMDD`.
+fn tally_date(iso: &str) -> String {
+    iso.replace('-', "")
+}
+
+/// Wrap voucher XML in a Tally import envelope.
+fn tally_envelope(vouchers: &str) -> String {
+    format!(
+        "<ENVELOPE>\n<HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER>\n\
+         <BODY><IMPORTDATA>\n<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC>\n\
+         <REQUESTDATA>\n{vouchers}</REQUESTDATA>\n</IMPORTDATA></BODY>\n</ENVELOPE>\n"
+    )
+}
+
+/// Sales vouchers: debit the customer's ledger, credit "Freight Income".
+fn tally_invoices_xml(org_id: Uuid) -> Result<String, Box<dyn Error>> {
+    let customers: std::collections::HashMap<Uuid, String> = Customer::list_by_org(org_id)?
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect();
+    let mut vouchers = String::new();
+    for i in Invoice::list_by_org(org_id)? {
+        let party = xml(customers.get(&i.customer_id).map_or("", |n| n.as_str()));
+        vouchers.push_str(&format!(
+            "<TALLYMESSAGE><VOUCHER VCHTYPE=\"Sales\" ACTION=\"Create\">\n\
+             <DATE>{date}</DATE>\n<VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>\n\
+             <VOUCHERNUMBER>{id}</VOUCHERNUMBER>\n<REFERENCE>{dispatch}</REFERENCE>\n\
+             <PARTYLEDGERNAME>{party}</PARTYLEDGERNAME>\n\
+             <NARRATION>Freight for dispatch {dispatch}; due {due}</NARRATION>\n\
+             <ALLLEDGERENTRIES.LIST><LEDGERNAME>{party}</LEDGERNAME>\
+             <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><AMOUNT>-{amount}</AMOUNT></ALLLEDGERENTRIES.LIST>\n\
+             <ALLLEDGERENTRIES.LIST><LEDGERNAME>Freight Income</LEDGERNAME>\
+             <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>{amount}</AMOUNT></ALLLEDGERENTRIES.LIST>\n\
+             </VOUCHER></TALLYMESSAGE>\n",
+            date = tally_date(&i.issued_on),
+            id = i.id,
+            dispatch = i.dispatch_id,
+            due = xml(&i.due_on),
+            amount = i.amount,
+        ));
+    }
+    Ok(tally_envelope(&vouchers))
+}
+
+/// Delivery Note vouchers: one per dispatch, with an inventory entry per line item.
+fn tally_stock_xml(org_id: Uuid) -> Result<String, Box<dyn Error>> {
+    let customers: std::collections::HashMap<Uuid, String> = Customer::list_by_org(org_id)?
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect();
+    let mut vouchers = String::new();
+    for d in DispatchOrder::list_by_org(org_id)? {
+        let party = xml(customers.get(&d.customer_id).map_or("", |n| n.as_str()));
+        let mut entries = String::new();
+        for l in &d.line_items {
+            entries.push_str(&format!(
+                "<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>{}</STOCKITEMNAME>\
+                 <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>\
+                 <ACTUALQTY>{} Nos</ACTUALQTY><BILLEDQTY>{} Nos</BILLEDQTY></ALLINVENTORYENTRIES.LIST>\n",
+                xml(&l.stock_description),
+                l.quantity,
+                l.quantity
+            ));
+        }
+        vouchers.push_str(&format!(
+            "<TALLYMESSAGE><VOUCHER VCHTYPE=\"Delivery Note\" ACTION=\"Create\">\n\
+             <DATE>{date}</DATE>\n<VOUCHERTYPENAME>Delivery Note</VOUCHERTYPENAME>\n\
+             <VOUCHERNUMBER>{id}</VOUCHERNUMBER>\n<PARTYLEDGERNAME>{party}</PARTYLEDGERNAME>\n\
+             <NARRATION>Dispatch {id} ({status}), vehicle {vehicle}</NARRATION>\n\
+             {entries}</VOUCHER></TALLYMESSAGE>\n",
+            date = tally_date(&date_of(d.dispatched_at)),
+            id = d.id,
+            status = d.status.as_str(),
+            vehicle = xml(&opt(&d.vehicle_registration_number)),
+        ));
+    }
+    Ok(tally_envelope(&vouchers))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,8 +339,21 @@ mod tests {
     }
 
     #[test]
+    fn xml_escapes_markup() {
+        assert_eq!(xml("A & B <\"c\">"), "A &amp; B &lt;&quot;c&quot;&gt;");
+        assert_eq!(tally_date("2026-11-12"), "20261112");
+    }
+
+    #[test]
     fn parse_round_trips() {
-        for d in ["dispatches", "stock", "invoices", "customers"] {
+        for d in [
+            "dispatches",
+            "stock",
+            "invoices",
+            "customers",
+            "tally-invoices",
+            "tally-stock",
+        ] {
             assert_eq!(ExportDataset::parse(d).unwrap().as_str(), d);
         }
         assert!(ExportDataset::parse("users").is_none());
