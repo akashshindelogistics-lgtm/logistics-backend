@@ -55,7 +55,7 @@ impl Organization {
     /// Create every table an organization read/write may touch, if it does not
     /// already exist. Each entity module also creates its own table lazily on
     /// first write; this guards the read paths that join across all of them.
-    fn ensure_tables(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+    pub(crate) fn ensure_tables(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
         conn.exec_drop(
             "CREATE TABLE IF NOT EXISTS Orgs (
                 id VARCHAR(36) PRIMARY KEY,

@@ -1,6 +1,6 @@
 # New-organisation onboarding (plan)
 
-Status: **planned, not implemented.**
+Status: **planned**; phase 1 (`POST /api/auth/signup`) is implemented. The signup rate limit is in-memory per process, keyed on the socket peer IP (not `X-Forwarded-For`), and `terms_accepted_at` is stored on `OrgUsers`.
 
 Today a new org registers with a name, address and password, is logged in, and
 lands on its detail page (`frontend/src/pages/Register.tsx`). Nothing tells

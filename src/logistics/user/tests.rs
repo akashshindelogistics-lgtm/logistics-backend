@@ -150,3 +150,13 @@ fn deleting_the_org_cascades_to_its_users() {
     org.remove_organization().expect("remove org");
     assert!(OrgUser::list_by_org(org.id).expect("list").is_empty());
 }
+
+#[test]
+fn validate_password_enforces_the_signup_rules() {
+    use crate::logistics::user::user::validate_password;
+    assert!(validate_password("passw0rd1", "a@b.com").is_ok());
+    assert!(validate_password("sh0rt", "a@b.com").is_err());
+    assert!(validate_password("nodigitshere", "a@b.com").is_err());
+    assert!(validate_password("12345678", "a@b.com").is_err());
+    assert!(validate_password(&format!("a1{}", "x".repeat(71)), "a@b.com").is_err());
+}

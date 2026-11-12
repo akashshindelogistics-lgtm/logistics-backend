@@ -13,6 +13,7 @@
 //! Enforcement lives in `require_role` in the server routes.
 
 use crate::logistics::db::connection::DbConnection;
+use crate::logistics::orgs::orgs::Organization;
 use bcrypt::{DEFAULT_COST, hash, verify};
 use mysql::prelude::*;
 use mysql::*;
@@ -111,6 +112,30 @@ pub struct OrgUser {
 
 const SELECT_COLS: &str = "id, org_id, name, email, role, is_active";
 
+/// Password rules for signup: 8–72 characters (bcrypt ignores anything past
+/// 72 bytes), at least one letter and one digit, and not the email address.
+pub fn validate_password(password: &str, email: &str) -> Result<(), UserError> {
+    if password.chars().count() < 8 {
+        return Err(UserError::InvalidInput(
+            "password must be at least 8 characters",
+        ));
+    }
+    if password.len() > 72 {
+        return Err(UserError::InvalidInput("password must be at most 72 bytes"));
+    }
+    if !password.chars().any(|c| c.is_alphabetic()) || !password.chars().any(|c| c.is_numeric()) {
+        return Err(UserError::InvalidInput(
+            "password must contain at least one letter and one digit",
+        ));
+    }
+    if password.eq_ignore_ascii_case(email.trim()) {
+        return Err(UserError::InvalidInput(
+            "password must not be the same as the email address",
+        ));
+    }
+    Ok(())
+}
+
 fn normalise_email(email: &str) -> String {
     email.trim().to_ascii_lowercase()
 }
@@ -127,10 +152,129 @@ impl OrgUser {
                 password_hash VARCHAR(255) NOT NULL,
                 role VARCHAR(32) NOT NULL,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                terms_accepted_at BIGINT DEFAULT NULL,
                 CONSTRAINT fk_org_user_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
             )",
         )?;
+        Self::ensure_terms_column(conn)
+    }
+
+    /// Add `terms_accepted_at` (unix seconds) to an `OrgUsers` table that
+    /// predates it. Existing users stay `NULL`.
+    fn ensure_terms_column(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+        let has_column: Option<i64> = conn.exec_first(
+            "SELECT 1 FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = 'OrgUsers'
+               AND column_name = 'terms_accepted_at'",
+            (),
+        )?;
+        if has_column.is_none() {
+            conn.query_drop("ALTER TABLE OrgUsers ADD COLUMN terms_accepted_at BIGINT NULL")?;
+        }
         Ok(())
+    }
+
+    /// Self-serve signup: create an organisation and its first `Admin` user in
+    /// one transaction, so a failure never leaves an org without an owner.
+    /// `terms_accepted_at` is stamped with the current time.
+    pub fn signup(
+        org_name: &str,
+        address: &str,
+        owner_name: &str,
+        email: &str,
+        password: &str,
+    ) -> Result<(Organization, Self), UserError> {
+        let org_name = org_name.trim();
+        let owner_name = owner_name.trim();
+        let email = normalise_email(email);
+        if org_name.is_empty() || owner_name.is_empty() || address.trim().is_empty() {
+            return Err(UserError::InvalidInput(
+                "org_name, address and owner_name are required",
+            ));
+        }
+        if email.len() < 3 || !email.contains('@') || email.len() > 255 {
+            return Err(UserError::InvalidInput("a valid email address is required"));
+        }
+        validate_password(password, &email)?;
+
+        let mut conn = DbConnection::from_env()
+            .get_connection()
+            .map_err(UserError::from)?;
+        Organization::ensure_tables(&mut conn).map_err(UserError::from)?;
+        Self::ensure_table(&mut conn).map_err(UserError::from)?;
+
+        let password_hash = hash(password, DEFAULT_COST)?;
+        let org = Organization {
+            id: Uuid::new_v4(),
+            name: org_name.to_string(),
+            address: address.trim().to_string(),
+            vehicles: Vec::new(),
+            godowns: Vec::new(),
+            location: None,
+        };
+        let user = OrgUser {
+            id: Uuid::new_v4(),
+            org_id: org.id,
+            name: owner_name.to_string(),
+            email,
+            role: OrgRole::Admin,
+            is_active: true,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        let taken: Option<i64> = tx.exec_first(
+            "SELECT 1 FROM OrgUsers WHERE email = :email",
+            params! { "email" => &user.email },
+        )?;
+        if taken.is_some() {
+            return Err(UserError::EmailTaken);
+        }
+        tx.exec_drop(
+            "INSERT INTO Orgs (id, name, address) VALUES (:id, :name, :address)",
+            params! {
+                "id" => org.id.to_string(),
+                "name" => &org.name,
+                "address" => &org.address,
+            },
+        )?;
+        let inserted = tx.exec_drop(
+            "INSERT INTO OrgUsers (id, org_id, name, email, password_hash, role, is_active, terms_accepted_at)
+             VALUES (:id, :org_id, :name, :email, :password_hash, :role, TRUE, :terms)",
+            params! {
+                "id" => user.id.to_string(),
+                "org_id" => user.org_id.to_string(),
+                "name" => &user.name,
+                "email" => &user.email,
+                "password_hash" => &password_hash,
+                "role" => user.role.as_str(),
+                "terms" => now,
+            },
+        );
+        match inserted {
+            // A concurrent signup won the race on the UNIQUE email index.
+            Err(mysql::Error::MySqlError(ref e)) if e.code == 1062 => {
+                return Err(UserError::EmailTaken);
+            }
+            other => other?,
+        }
+        tx.commit()?;
+        Ok((org, user))
+    }
+
+    /// When the user accepted the terms, as unix seconds (`None` for users
+    /// created by an Admin rather than by signup).
+    pub fn terms_accepted_at(id: Uuid) -> Result<Option<i64>, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        Self::ensure_table(&mut conn)?;
+        let row: Option<Option<i64>> = conn.exec_first(
+            "SELECT terms_accepted_at FROM OrgUsers WHERE id = :id",
+            params! { "id" => id.to_string() },
+        )?;
+        Ok(row.flatten())
     }
 
     fn row_to_user(

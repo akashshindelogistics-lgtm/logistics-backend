@@ -208,3 +208,102 @@ async fn test_user_login_rejects_wrong_password_and_inactive_account() {
         .to_request();
     assert_eq!(test::call_service(&app, after).await.status().as_u16(), 401);
 }
+
+fn signup_body(email: &str, password: &str) -> SignupPayload {
+    SignupPayload {
+        org_name: "Signup Org".to_string(),
+        address: "9 Signup Road".to_string(),
+        owner_name: "Owner".to_string(),
+        email: email.to_string(),
+        password: password.to_string(),
+        accept_terms: true,
+    }
+}
+
+async fn post_signup(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>,
+        Error = actix_web::Error,
+    >,
+    body: &SignupPayload,
+    ip: &str,
+) -> u16 {
+    let req = test::TestRequest::post()
+        .uri("/api/auth/signup")
+        .peer_addr(format!("{ip}:4000").parse().unwrap())
+        .set_json(body)
+        .to_request();
+    test::call_service(app, req).await.status().as_u16()
+}
+
+#[actix_web::test]
+async fn test_signup_creates_org_and_admin_and_logs_in() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let req = test::TestRequest::post()
+        .uri("/api/auth/signup")
+        .peer_addr("10.1.0.1:4000".parse().unwrap())
+        .set_json(signup_body("  Owner@Example.com ", "passw0rd1"))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: ApiResponse<LoginData> = test::read_body_json(resp).await;
+    let data = body.data.unwrap();
+    assert_eq!(data.role, "ADMIN");
+    assert!(!data.token.is_empty());
+
+    let users = OrgUser::list_by_org(data.org_id.parse().unwrap()).unwrap();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0].email, "owner@example.com");
+    assert_eq!(users[0].role, OrgRole::Admin);
+    assert!(OrgUser::terms_accepted_at(users[0].id).unwrap().is_some());
+
+    let req = test::TestRequest::post()
+        .uri("/api/auth/user-login")
+        .set_json(&UserLoginPayload {
+            email: "owner@example.com".to_string(),
+            password: "passw0rd1".to_string(),
+        })
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+}
+
+#[actix_web::test]
+async fn test_signup_duplicate_email_is_409_and_creates_no_org() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let body = signup_body("dup-signup@example.com", "passw0rd1");
+    assert_eq!(post_signup(&app, &body, "10.1.0.2").await, 201);
+    assert_eq!(post_signup(&app, &body, "10.1.0.2").await, 409);
+    assert_eq!(Organization::list_all().unwrap().len(), 1);
+}
+
+#[actix_web::test]
+async fn test_signup_rejects_weak_password_and_missing_terms() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    for pw in ["short1", "allletters", "12345678"] {
+        let body = signup_body("weak@example.com", pw);
+        assert_eq!(post_signup(&app, &body, "10.1.0.3").await, 400, "{pw}");
+    }
+    let mut body = signup_body("terms@example.com", "passw0rd1");
+    body.accept_terms = false;
+    assert_eq!(post_signup(&app, &body, "10.1.0.3").await, 400);
+    assert!(Organization::list_all().unwrap().is_empty());
+}
+
+#[actix_web::test]
+async fn test_signup_is_rate_limited_per_ip() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let limit = super::super::auth::signup_limit();
+    for i in 0..limit {
+        let body = signup_body(&format!("rl{i}@example.com"), "passw0rd1");
+        assert_eq!(post_signup(&app, &body, "10.1.0.4").await, 201);
+    }
+    let body = signup_body("rl-over@example.com", "passw0rd1");
+    assert_eq!(post_signup(&app, &body, "10.1.0.4").await, 429);
+    // another address is unaffected
+    assert_eq!(post_signup(&app, &body, "10.1.0.5").await, 201);
+}
