@@ -120,7 +120,7 @@ pub async fn get_ops_report_summary(
         ("dataset" = String, Path, description = "One of dispatches, stock, invoices, customers, tally-invoices, tally-stock")
     ),
     responses(
-        (status = 200, description = "CSV file (text/csv) with a header row, or Tally XML (application/xml)", body = String, content_type = "text/csv"),
+        (status = 200, description = "CSV file (text/csv) with a header row, or Tally XML (application/xml)", content((String = "text/csv"), (String = "application/xml"))),
         (status = 403, description = "Forbidden", body = EmptyResponse),
         (status = 404, description = "Unknown dataset", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse)

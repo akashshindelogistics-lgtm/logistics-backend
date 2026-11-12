@@ -131,7 +131,8 @@ async fn test_export_tally_xml() {
         let body = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
         assert!(body.starts_with("<ENVELOPE>"), "{dataset}: {body}");
         if dataset == "tally-stock" {
-            assert!(body.contains(&dispatch.id.to_string()));
+            // A freshly created dispatch has not left yet, so is not exported.
+            assert!(!body.contains(&dispatch.id.to_string()), "{body}");
         }
     }
 }
