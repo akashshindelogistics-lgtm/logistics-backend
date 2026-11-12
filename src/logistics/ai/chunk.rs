@@ -145,7 +145,7 @@ fn ensure_identifiers_column(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn
         conn.query("SELECT id, text FROM AiChunks WHERE identifiers IS NULL")?;
     for (id, text) in rows {
         conn.exec_drop(
-            "UPDATE AiChunks SET identifiers = :ids WHERE id = :id",
+            "UPDATE AiChunks SET identifiers = :ids WHERE id = :id AND identifiers IS NULL",
             params! { "ids" => query::identifier_variants(&text), "id" => id },
         )?;
     }
