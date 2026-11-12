@@ -776,3 +776,86 @@ async fn test_dispatch_rejected_when_no_vehicle_has_an_active_driver() {
         body.message
     );
 }
+
+async fn get_challan(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse,
+        Error = actix_web::Error,
+    >,
+    dispatch_id: Uuid,
+    auth: Option<&str>,
+) -> actix_web::dev::ServiceResponse {
+    let mut req =
+        test::TestRequest::get().uri(&format!("/api/dispatches/{dispatch_id}/challan.pdf"));
+    if let Some(auth) = auth {
+        req = req.insert_header(("Authorization", auth.to_string()));
+    }
+    test::call_service(app, req.to_request()).await
+}
+
+#[actix_web::test]
+async fn test_dispatch_challan_is_a_pdf_with_the_dispatch_details() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (_org, dispatch, auth) = setup_dispatch(&app, "Challan Org").await;
+
+    let resp = get_challan(&app, dispatch.id, Some(&auth)).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/pdf"
+    );
+    let short = dispatch.id.to_string()[..8].to_ascii_uppercase();
+    assert_eq!(
+        resp.headers().get("content-disposition").unwrap(),
+        &format!("inline; filename=\"challan-DC-{short}.pdf\"")
+    );
+    let body = test::read_body(resp).await;
+    let text: String = body.iter().map(|&b| b as char).collect();
+    assert!(text.starts_with("%PDF-1.4"));
+    for expected in [
+        format!("(No. DC-{short})"),
+        "(Challan Org)".to_string(),
+        "(Challan Org Customer)".to_string(),
+        "(DISP-VH-001)".to_string(),
+        "(Challan Org Driver)".to_string(),
+        "(DISP-LIC-001)".to_string(),
+        "(Dispatch Test Goods)".to_string(),
+    ] {
+        assert!(text.contains(&expected), "challan is missing {expected}");
+    }
+}
+
+#[actix_web::test]
+async fn test_dispatch_challan_requires_auth_and_the_owning_org() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (_org, dispatch, _auth) = setup_dispatch(&app, "Challan Owner").await;
+    let (_other, other_auth) = setup_org(&app, "Challan Stranger").await;
+
+    let resp = get_challan(&app, dispatch.id, None).await;
+    assert_eq!(resp.status().as_u16(), 401);
+    let resp = get_challan(&app, dispatch.id, Some(&other_auth)).await;
+    assert_eq!(resp.status().as_u16(), 403);
+    let resp = get_challan(&app, Uuid::new_v4(), Some(&other_auth)).await;
+    assert_eq!(resp.status().as_u16(), 404);
+}
+
+#[actix_web::test]
+async fn test_any_role_can_print_a_challan() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, dispatch, auth) = setup_dispatch(&app, "Challan Roles").await;
+    let staff = add_user_and_login(
+        &app,
+        org.id,
+        &auth,
+        "challan-staff@example.com",
+        OrgRole::WarehouseStaff,
+    )
+    .await;
+
+    let resp = get_challan(&app, dispatch.id, Some(&staff)).await;
+    assert_eq!(resp.status().as_u16(), 200);
+}

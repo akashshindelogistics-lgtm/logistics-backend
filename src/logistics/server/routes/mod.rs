@@ -193,6 +193,7 @@ impl Modify for SecurityAddon {
         list_dispatches,
         dispatch_stock,
         update_dispatch_status,
+        dispatch_challan_pdf,
         update_dispatch_eway_bill,
         list_stock_categories,
         set_stock_category_hsn,
@@ -427,6 +428,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(list_dispatches)
             .service(dispatch_stock)
             .service(update_dispatch_status)
+            .service(dispatch_challan_pdf)
             .service(update_dispatch_eway_bill)
             .service(list_stock_categories)
             .service(set_stock_category_hsn)

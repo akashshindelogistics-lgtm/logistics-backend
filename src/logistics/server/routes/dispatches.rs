@@ -3,6 +3,7 @@
 
 use super::common::*;
 use crate::logistics::customer::customer::Customer;
+use crate::logistics::dispatch::challan::Challan;
 use crate::logistics::dispatch::dispatch::{
     DispatchLineItemInput, DispatchOrder, DispatchStatus, ProofOfDeliveryInput, VehicleSource,
 };
@@ -272,6 +273,46 @@ pub async fn update_dispatch_status(
         Err(err) => HttpResponse::BadRequest().json(ApiResponse::<String> {
             success: false,
             message: format!("Status update failed: {}", err),
+            data: None,
+        }),
+    }
+}
+
+/// A PDF file, for OpenAPI: a binary string rather than an array of bytes.
+#[derive(ToSchema)]
+#[schema(value_type = String, format = Binary)]
+pub struct PdfDocument(pub Vec<u8>);
+
+#[utoipa::path(
+    get,
+    path = "/api/dispatches/{id}/challan.pdf",
+    tag = "Dispatch",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Dispatch order UUID")),
+    responses(
+        (status = 200, description = "Printable delivery challan / lorry receipt as an A4 PDF", content_type = "application/pdf", body = PdfDocument),
+        (status = 403, description = "Forbidden", body = EmptyResponse),
+        (status = 404, description = "Dispatch not found", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[get("/dispatches/{id}/challan.pdf")]
+pub async fn dispatch_challan_pdf(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl Responder {
+    let dispatch = match load_owned_dispatch(path.into_inner(), auth.org_id) {
+        Ok(d) => d,
+        Err(resp) => return resp,
+    };
+    match Challan::for_dispatch(&dispatch) {
+        Ok(challan) => HttpResponse::Ok()
+            .content_type("application/pdf")
+            .insert_header((
+                "Content-Disposition",
+                format!("inline; filename=\"{}\"", challan.file_name()),
+            ))
+            .body(challan.render_pdf()),
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to build challan: {}", err),
             data: None,
         }),
     }

@@ -87,6 +87,10 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   signature/photo, uploaded and stored by the backend — see
   [`docs/file-uploads.md`](docs/file-uploads.md)); marking one `RETURNED`
   credits the shipment's stock back into a godown.
+- **Delivery challan** — print any dispatch's challan / lorry receipt (LR,
+  bilty) as an A4 PDF: consignor, consignee, vehicle, driver, line items and
+  signature boxes for the driver and receiver — see
+  [`docs/delivery-challan.md`](docs/delivery-challan.md).
 - **Multi-stop trips** — plan one vehicle to visit several customers in a
   sequence; each stop is a normal dispatch with its own lifecycle, linked
   under a trip whose status is derived from its stops. Optionally
@@ -325,6 +329,7 @@ All routes are served under the `/api` prefix.
 | GET | `/api/trips/{id}` | One trip and its ordered stops; also takes a standalone dispatch's id for its one-stop trip |
 | GET | `/api/dispatches` | List dispatch orders |
 | PUT | `/api/dispatches/{id}/status` | Advance a dispatch's lifecycle status |
+| GET | `/api/dispatches/{id}/challan.pdf` | Printable delivery challan / lorry receipt (LR, bilty) as an A4 PDF, see [docs/delivery-challan.md](docs/delivery-challan.md) |
 | GET | `/api/dispatches/{id}/summary` | AI-generated summary of a dispatch |
 | GET | `/api/dispatches/{id}/notifications` | Customer, driver and org-admin notifications recorded for a dispatch |
 | GET | `/api/public/track/{token}` | Customer tracking link: order status, timeline and the vehicle's last position while in transit — no login, the token is the credential (see `docs/customer-tracking.md`) |
