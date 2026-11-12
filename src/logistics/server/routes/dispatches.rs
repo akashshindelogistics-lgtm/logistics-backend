@@ -154,6 +154,7 @@ pub async fn dispatch_stock(
         vehicles: Vec::new(),
         godowns: Vec::new(),
         location: None,
+        gstin: None,
     };
 
     let customer = match Customer::get_by_id(payload.customer_id) {
@@ -271,6 +272,64 @@ pub async fn update_dispatch_status(
         Err(err) => HttpResponse::BadRequest().json(ApiResponse::<String> {
             success: false,
             message: format!("Status update failed: {}", err),
+            data: None,
+        }),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct UpdateEwayBillPayload {
+    /// The 12-digit e-way bill number. `null` or empty clears it.
+    pub eway_bill_no: Option<String>,
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/dispatches/{id}/eway-bill",
+    tag = "Dispatch",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Dispatch order UUID")),
+    request_body = UpdateEwayBillPayload,
+    responses(
+        (status = 200, description = "E-way bill number saved", body = DispatchOrderResponse),
+        (status = 400, description = "Malformed number, or the dispatch is already delivered", body = EmptyResponse),
+        (status = 403, description = "Forbidden", body = EmptyResponse),
+        (status = 404, description = "Dispatch not found", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[put("/dispatches/{id}/eway-bill")]
+pub async fn update_dispatch_eway_bill(
+    path: web::Path<Uuid>,
+    payload: web::Json<UpdateEwayBillPayload>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
+    let mut dispatch = match load_owned_dispatch(path.into_inner(), auth.org_id) {
+        Ok(d) => d,
+        Err(resp) => return resp,
+    };
+    // `set_eway_bill_no` rejects a delivered dispatch and a malformed number
+    // before touching the database, so any error it returns that isn't a
+    // database failure is the caller's to fix.
+    let invalid = dispatch.status == DispatchStatus::Delivered
+        || crate::logistics::gst::normalize_eway_bill_no(payload.eway_bill_no.clone()).is_err();
+    match dispatch.set_eway_bill_no(payload.eway_bill_no.clone()) {
+        Ok(()) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: "E-way bill number saved".to_string(),
+            data: Some(dispatch),
+        }),
+        Err(err) if invalid => HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message: err.to_string(),
+            data: None,
+        }),
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to save e-way bill number: {}", err),
             data: None,
         }),
     }

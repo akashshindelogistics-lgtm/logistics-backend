@@ -211,6 +211,7 @@ impl OrgUser {
             vehicles: Vec::new(),
             godowns: Vec::new(),
             location: None,
+            gstin: None,
         };
         let user = OrgUser {
             id: Uuid::new_v4(),

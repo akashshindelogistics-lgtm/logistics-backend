@@ -19,6 +19,10 @@ pub struct CreateOrgPayload {
 pub struct UpdateOrgPayload {
     pub name: String,
     pub address: String,
+    /// The organization's GSTIN (15 letters/digits, stored upper-case). Leave
+    /// it out to keep the current one; send an empty string to clear it.
+    #[serde(default)]
+    pub gstin: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -145,6 +149,7 @@ pub async fn create_org(payload: web::Json<CreateOrgPayload>) -> impl Responder 
     request_body = UpdateOrgPayload,
     responses(
         (status = 200, description = "Organization updated successfully", body = OrgResponse),
+        (status = 400, description = "Malformed GSTIN", body = EmptyResponse),
         (status = 403, description = "Forbidden", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse)
     )
@@ -170,9 +175,26 @@ pub async fn update_org(
         vehicles: Vec::new(),
         godowns: Vec::new(),
         location: None,
+        gstin: None,
     };
+    if let Err(msg) = crate::logistics::gst::normalize_gstin(payload.gstin.clone()) {
+        return HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message: msg,
+            data: None,
+        });
+    }
 
-    match org.update_organization(&payload.name, &payload.address) {
+    let result = org
+        .update_organization(&payload.name, &payload.address)
+        .and_then(|_| match &payload.gstin {
+            Some(g) => org.set_gstin(Some(g.clone())),
+            None => {
+                org.gstin = Organization::get_by_id(org_id)?.and_then(|o| o.gstin);
+                Ok(())
+            }
+        });
+    match result {
         Ok(_) => HttpResponse::Ok().json(ApiResponse {
             success: true,
             message: "Organization updated successfully".to_string(),
@@ -220,6 +242,7 @@ pub async fn update_org_location(
         vehicles: Vec::new(),
         godowns: Vec::new(),
         location: None,
+        gstin: None,
     };
 
     match org.update_location(payload.latitude, payload.longitude, payload.address.clone()) {
@@ -268,6 +291,7 @@ pub async fn delete_org(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl R
         vehicles: Vec::new(),
         godowns: Vec::new(),
         location: None,
+        gstin: None,
     };
 
     match org.remove_organization() {

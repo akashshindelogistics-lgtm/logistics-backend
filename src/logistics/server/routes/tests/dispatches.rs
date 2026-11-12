@@ -736,6 +736,7 @@ async fn test_dispatch_rejected_when_no_vehicle_has_an_active_driver() {
             location_address: None,
             phone: None,
             email: None,
+            gstin: None,
         })
         .to_request();
     let customer: ApiResponse<Customer> =

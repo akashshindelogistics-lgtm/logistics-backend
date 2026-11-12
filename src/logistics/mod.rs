@@ -10,6 +10,7 @@ pub mod driver;
 pub mod driver_app;
 pub mod events;
 pub mod godown;
+pub mod gst;
 pub mod http;
 pub mod notification;
 pub mod orgs;

@@ -89,14 +89,8 @@ impl VendorInput {
         if phone.is_empty() {
             return Err(VendorError::InvalidInput("vendor phone is required".into()));
         }
-        let gstin = clean_optional(self.gstin).map(|g| g.to_ascii_uppercase());
-        if let Some(g) = &gstin
-            && (g.len() != 15 || !g.chars().all(|c| c.is_ascii_alphanumeric()))
-        {
-            return Err(VendorError::InvalidInput(
-                "GSTIN must be 15 letters and digits".into(),
-            ));
-        }
+        let gstin = crate::logistics::gst::normalize_gstin(self.gstin)
+            .map_err(VendorError::InvalidInput)?;
         Ok(VendorInput {
             name,
             contact_person: clean_optional(self.contact_person),

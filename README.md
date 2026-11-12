@@ -74,6 +74,10 @@ logistics-android. See [docs/repo-split.md](docs/repo-split.md).
   [`docs/stock-categories.md`](docs/stock-categories.md).
 - **Customers** — manage customer records and their delivery locations. Each
   customer belongs to one organization and is never shared between orgs.
+- **GST and e-way bills** — a GSTIN on the organization and on each customer,
+  an HSN code per stock category, and a manually entered 12-digit e-way bill
+  number on each dispatch. The backend only stores and returns them (the
+  dashboard prints) — see [`docs/gst.md`](docs/gst.md).
 - **Dispatches** — create dispatch orders that move one or more stock line
   items from an organization to a customer, and advance each one through a
   lifecycle (`PENDING → CONFIRMED → LOADED → IN_TRANSIT → DELIVERED`/
@@ -312,6 +316,10 @@ All routes are served under the `/api` prefix.
 | GET | `/api/orgs/{id}/vehicle-maintenance` | Whole-fleet maintenance list, soonest date-based due date first |
 | GET/POST | `/api/customers`, `/api/orgs/{id}/customers` | List the org's customers / add one (optionally with an initial `latitude`/`longitude`) |
 | PUT/DELETE | `/api/customers/{id}/location`, `/api/customers/{id}` | Update a customer's location / delete the customer |
+| PUT | `/api/customers/{id}/gstin` | Set or clear a customer's GSTIN (see `docs/gst.md`) |
+| GET | `/api/stock-categories` | The org's stock categories that have an HSN code |
+| PUT/DELETE | `/api/stock-categories/{name}/hsn` | Set or remove the HSN code for a stock category |
+| PUT | `/api/dispatches/{id}/eway-bill` | Set or clear a dispatch's e-way bill number (locked once `DELIVERED`) |
 | POST | `/api/orgs/{id}/dispatch` | Dispatch stock from an org to one of its customers (`vehicle_source: HIRED` + `vendor_id` to hire the truck) |
 | POST/GET | `/api/orgs/{id}/trips` | Plan a multi-stop trip (one vehicle, several customers; can also be hired) / list the org's trips, including standalone dispatches as one-stop trips |
 | GET | `/api/trips/{id}` | One trip and its ordered stops; also takes a standalone dispatch's id for its one-stop trip |
