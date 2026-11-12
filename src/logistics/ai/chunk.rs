@@ -20,6 +20,7 @@
 //! `docs/async-events.md` for why), and
 //! never allowed to fail the write it's attached to.
 
+use crate::logistics::ai::query;
 use crate::logistics::customer::customer::Customer;
 use crate::logistics::db::connection::DbConnection;
 use crate::logistics::dispatch::dispatch::DispatchOrder;
@@ -91,8 +92,12 @@ pub struct AiChunk {
     pub updated_at: i64,
 }
 
-/// Create the `AiChunks` table if it does not exist. Kept in sync with
-/// `test_support::migrate`.
+/// Create the `AiChunks` table if it does not exist, and bring an older one
+/// up to date. Kept in sync with `test_support::migrate`.
+///
+/// `identifiers` holds the variants of every registration or number in
+/// `text` (see [`query::identifier_variants`]) and has its own FULLTEXT index
+/// using the `ngram` parser, so a partial identifier such as `9387` matches.
 pub fn ensure_table(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
     conn.exec_drop(
         "CREATE TABLE IF NOT EXISTS AiChunks (
@@ -101,14 +106,61 @@ pub fn ensure_table(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> 
             kind VARCHAR(32) NOT NULL,
             source_id VARCHAR(191) NOT NULL,
             text TEXT NOT NULL,
+            identifiers TEXT NULL,
             updated_at BIGINT NOT NULL,
             UNIQUE KEY uq_ai_chunk_source (org_id, kind, source_id),
             FULLTEXT INDEX ft_ai_chunk_text (text),
+            FULLTEXT INDEX ft_ai_chunk_identifiers (identifiers) WITH PARSER ngram,
             CONSTRAINT fk_ai_chunk_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
         )",
         (),
     )?;
-    Ok(())
+    ensure_identifiers_column(conn)
+}
+
+/// Add and backfill `identifiers` on an `AiChunks` table that predates it.
+/// Each step is checked on its own, so a run interrupted part-way is finished
+/// by the next call. The index goes on last and marks the migration done:
+/// once it exists this is two `information_schema` reads.
+fn ensure_identifiers_column(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+    let has_column: Option<i64> = conn.exec_first(
+        "SELECT 1 FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = 'AiChunks'
+           AND column_name = 'identifiers'",
+        (),
+    )?;
+    if has_column.is_none() {
+        ignore_duplicate(conn.query_drop("ALTER TABLE AiChunks ADD COLUMN identifiers TEXT NULL"))?;
+    }
+    let has_index: Option<i64> = conn.exec_first(
+        "SELECT 1 FROM information_schema.statistics
+         WHERE table_schema = DATABASE() AND table_name = 'AiChunks'
+           AND index_name = 'ft_ai_chunk_identifiers' LIMIT 1",
+        (),
+    )?;
+    if has_index.is_some() {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> =
+        conn.query("SELECT id, text FROM AiChunks WHERE identifiers IS NULL")?;
+    for (id, text) in rows {
+        conn.exec_drop(
+            "UPDATE AiChunks SET identifiers = :ids WHERE id = :id",
+            params! { "ids" => query::identifier_variants(&text), "id" => id },
+        )?;
+    }
+    ignore_duplicate(conn.query_drop(
+        "ALTER TABLE AiChunks ADD FULLTEXT INDEX ft_ai_chunk_identifiers (identifiers) WITH PARSER ngram",
+    ))
+}
+
+/// Treat "duplicate column" (1060) / "duplicate key name" (1061) as success:
+/// a concurrent caller already ran the same `ALTER TABLE`.
+fn ignore_duplicate(result: mysql::Result<()>) -> Result<(), Box<dyn Error>> {
+    match result {
+        Err(mysql::Error::MySqlError(e)) if e.code == 1060 || e.code == 1061 => Ok(()),
+        other => Ok(other?),
+    }
 }
 
 /// Build or refresh the chunk for one source row. Idempotent — re-indexing
@@ -122,15 +174,17 @@ pub fn upsert(
     let mut conn = DbConnection::from_env().get_connection()?;
     ensure_table(&mut conn)?;
     conn.exec_drop(
-        "INSERT INTO AiChunks (id, org_id, kind, source_id, text, updated_at)
-         VALUES (:id, :org_id, :kind, :source_id, :text, :updated_at)
-         ON DUPLICATE KEY UPDATE text = VALUES(text), updated_at = VALUES(updated_at)",
+        "INSERT INTO AiChunks (id, org_id, kind, source_id, text, identifiers, updated_at)
+         VALUES (:id, :org_id, :kind, :source_id, :text, :identifiers, :updated_at)
+         ON DUPLICATE KEY UPDATE text = VALUES(text), identifiers = VALUES(identifiers),
+                                 updated_at = VALUES(updated_at)",
         params! {
             "id" => Uuid::new_v4().to_string(),
             "org_id" => org_id.to_string(),
             "kind" => kind.as_str(),
             "source_id" => source_id,
             "text" => &text,
+            "identifiers" => query::identifier_variants(&text),
             "updated_at" => now_unix(),
         },
     )?;
@@ -164,7 +218,10 @@ pub fn delete_by_source_best_effort(kind: ChunkKind, source_id: &str) {
     }
 }
 
-/// The org's chunks that lexically match `query`, most relevant first.
+/// The org's chunks that lexically match `query`, most relevant first. The
+/// question is expanded (plurals, synonyms, spaced registrations joined) for
+/// the `text` index, and its identifier-like words are also looked up, as
+/// partial matches, in the `identifiers` ngram index — see [`query`].
 /// `org_id` is the tenant-isolation boundary here — the same role it plays
 /// in every other `list_by_org`.
 pub fn search_by_org(
@@ -179,12 +236,15 @@ pub fn search_by_org(
         "SELECT id, org_id, kind, source_id, text, updated_at
          FROM AiChunks
          WHERE org_id = :org_id
-           AND MATCH(text) AGAINST (:query IN NATURAL LANGUAGE MODE)
-         ORDER BY MATCH(text) AGAINST (:query IN NATURAL LANGUAGE MODE) DESC
+           AND (MATCH(text) AGAINST (:query IN NATURAL LANGUAGE MODE)
+                OR MATCH(identifiers) AGAINST (:id_query IN BOOLEAN MODE))
+         ORDER BY MATCH(text) AGAINST (:query IN NATURAL LANGUAGE MODE)
+                + MATCH(identifiers) AGAINST (:id_query IN BOOLEAN MODE) DESC
          LIMIT :limit",
         params! {
             "org_id" => org_id.to_string(),
-            "query" => query,
+            "query" => query::expand_query(query),
+            "id_query" => query::identifier_query(query),
             "limit" => limit,
         },
     )?;
@@ -928,6 +988,42 @@ mod tests {
             "{results:?}"
         );
         let _ = customer;
+    }
+
+    #[test]
+    fn ensure_table_finishes_a_migration_interrupted_before_the_index() {
+        let _db = TestDb::create();
+        let org = Organization::create_organization("Half Migrated", "5 Rd").unwrap();
+        let mut conn = DbConnection::from_env().get_connection().expect("connect");
+        ensure_table(&mut conn).expect("ensure table");
+        // Partial state: column added, rows not backfilled, index never created.
+        // Two rows: an ngram index built by ALTER over exactly one row scores
+        // it 0 and MySQL 8.0 then fails the ORDER BY sum with ERROR 1690.
+        conn.query_drop("ALTER TABLE AiChunks DROP INDEX ft_ai_chunk_identifiers")
+            .expect("drop index");
+        conn.exec_drop(
+            "INSERT INTO AiChunks (id, org_id, kind, source_id, text, identifiers, updated_at)
+             VALUES (UUID(), :org_id, 'notification', 'n1', 'Vehicle MH12DM9387 is late', NULL, 0),
+                    (UUID(), :org_id, 'notification', 'n2', 'Godown stock is low', NULL, 0)",
+            params! { "org_id" => org.id.to_string() },
+        )
+        .expect("insert");
+
+        ensure_table(&mut conn).expect("finish migration");
+        ensure_table(&mut conn).expect("second run is a no-op");
+
+        let has_index: Option<i64> = conn
+            .exec_first(
+                "SELECT 1 FROM information_schema.statistics
+                 WHERE table_schema = DATABASE() AND table_name = 'AiChunks'
+                   AND index_name = 'ft_ai_chunk_identifiers' LIMIT 1",
+                (),
+            )
+            .expect("probe");
+        assert!(has_index.is_some());
+        let results = search_by_org(org.id, "9387", 8).unwrap();
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].source_id, "n1");
     }
 
     /// Test-only helper: delete every chunk for an org, standing in for an

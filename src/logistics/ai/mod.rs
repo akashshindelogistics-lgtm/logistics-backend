@@ -1,7 +1,10 @@
 pub mod assistant;
 pub mod chunk;
 pub mod digest;
+#[cfg(test)]
+mod eval;
 pub mod notification_copy;
+pub mod query;
 pub mod reorder;
 pub mod report;
 pub mod status;
