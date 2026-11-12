@@ -136,7 +136,8 @@ impl Challan {
 
         for (i, item) in self.line_items.iter().enumerate() {
             let desc = pdf::wrap(&item.stock_description, BODY, Font::Regular, COL_DESC_W);
-            let row_h = (desc.len().max(1) as f32) * LINE + 6.0;
+            let cat = pdf::wrap(&item.category, BODY, Font::Regular, COL_CAT_W);
+            let row_h = (desc.len().max(cat.len()).max(1) as f32) * LINE + 6.0;
             if y + row_h > CONTENT_BOTTOM {
                 pages.push(std::mem::take(&mut page));
                 y = draw_table_header(&mut page, MARGIN + 10.0);
@@ -146,7 +147,9 @@ impl Challan {
             for (j, l) in desc.iter().enumerate() {
                 page.text(COL_DESC_X, base + j as f32 * LINE, BODY, Font::Regular, l);
             }
-            page.text(COL_CAT_X, base, BODY, Font::Regular, &item.category);
+            for (j, l) in cat.iter().enumerate() {
+                page.text(COL_CAT_X, base + j as f32 * LINE, BODY, Font::Regular, l);
+            }
             page.text_right(
                 COL_SIZE_R,
                 base,
@@ -189,7 +192,9 @@ impl Challan {
 
     fn draw_header(&self, page: &mut Page) -> f32 {
         let mut y = MARGIN + 16.0;
-        page.text(MARGIN, y, 16.0, Font::Bold, &self.consignor.name);
+        // The full name is in the FROM box; here it only has to clear the title.
+        let name = pdf::wrap(&self.consignor.name, 16.0, Font::Bold, 300.0);
+        page.text(MARGIN, y, 16.0, Font::Bold, name.first().map_or("", |s| s));
         for l in pdf::wrap(&self.consignor.address, BODY, Font::Regular, 300.0) {
             y += LINE;
             page.text(MARGIN, y, BODY, Font::Regular, &l);
@@ -247,25 +252,32 @@ impl Challan {
 
     fn draw_parties(&self, page: &mut Page, top: f32) -> f32 {
         let half = (RIGHT - MARGIN - 12.0) / 2.0;
+        let names = |p: &ChallanParty| pdf::wrap(&p.name, BODY, Font::Bold, half - 16.0);
+        let (left_name, right_name) = (names(&self.consignor), names(&self.consignee));
         let left = self.party_lines(&self.consignor, half - 16.0);
         let right = self.party_lines(&self.consignee, half - 16.0);
-        let h = 30.0 + left.len().max(right.len()) as f32 * LINE;
-        for (x, label, party, lines) in [
-            (MARGIN, "FROM (CONSIGNOR)", &self.consignor, &left),
-            (
-                MARGIN + half + 12.0,
-                "TO (CONSIGNEE)",
-                &self.consignee,
-                &right,
-            ),
+        let rows = |n: &Vec<String>, l: &Vec<String>| n.len().max(1) - 1 + l.len();
+        let h = 30.0 + rows(&left_name, &left).max(rows(&right_name, &right)) as f32 * LINE;
+        for (x, label, name, lines) in [
+            (MARGIN, "FROM (CONSIGNOR)", &left_name, &left),
+            (MARGIN + half + 12.0, "TO (CONSIGNEE)", &right_name, &right),
         ] {
             page.rect(x, top, half, h, 0.6);
             page.text(x + 8.0, top + 13.0, SMALL, Font::Bold, label);
-            page.text(x + 8.0, top + 13.0 + LINE, BODY, Font::Bold, &party.name);
+            for (i, l) in name.iter().enumerate() {
+                page.text(
+                    x + 8.0,
+                    top + 13.0 + LINE * (i as f32 + 1.0),
+                    BODY,
+                    Font::Bold,
+                    l,
+                );
+            }
+            let skip = name.len().max(1) - 1;
             for (i, l) in lines.iter().enumerate() {
                 page.text(
                     x + 8.0,
-                    top + 13.0 + LINE * (i as f32 + 2.0),
+                    top + 13.0 + LINE * ((skip + i) as f32 + 2.0),
                     BODY,
                     Font::Regular,
                     l,
@@ -399,6 +411,8 @@ const COL_DESC_X: f32 = MARGIN + 30.0;
 const COL_DESC_W: f32 = 230.0;
 const COL_CAT_X: f32 = MARGIN + 270.0;
 const COL_SIZE_R: f32 = MARGIN + 440.0;
+/// Leaves room for the right-aligned size figure before `COL_SIZE_R`.
+const COL_CAT_W: f32 = COL_SIZE_R - COL_CAT_X - 40.0;
 const COL_QTY_R: f32 = RIGHT - 6.0;
 
 /// The line-items table's shaded header row; returns the y below it.
@@ -562,5 +576,67 @@ mod tests {
         assert_eq!(text.matches("(DESCRIPTION OF GOODS)").count(), 3);
         assert_eq!(text.matches("(Driver's signature)").count(), 1);
         assert!(text.contains(&format!("({})", (1..=80).sum::<i64>())));
+    }
+
+    /// Every `Tj` on the page as (left x, right x, baseline y, font size).
+    fn drawn_spans(text: &str) -> Vec<(f32, f32, f32, f32)> {
+        text.lines()
+            .filter_map(|l| {
+                let rest = l.strip_prefix("BT /")?;
+                let (head, s) = rest.split_once(" Td (")?;
+                let s = s.strip_suffix(") Tj ET")?;
+                let f: Vec<&str> = head.split(' ').collect();
+                let font = if f[0] == "F2" {
+                    Font::Bold
+                } else {
+                    Font::Regular
+                };
+                let (size, x, y): (f32, f32, f32) =
+                    (f[1].parse().ok()?, f[3].parse().ok()?, f[4].parse().ok()?);
+                let s = s
+                    .replace("\\(", "(")
+                    .replace("\\)", ")")
+                    .replace("\\\\", "\\");
+                Some((
+                    x,
+                    x + pdf::text_width(&s, size, font),
+                    PAGE_HEIGHT - y,
+                    size,
+                ))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_long_category_org_and_party_names_stay_in_their_columns() {
+        let mut it = item("6 inch block", 10);
+        it.category = "AAC Blocks 600x200x150 mm (Siporex) ".repeat(3)[..100].to_string();
+        let mut c = sample(vec![it]);
+        c.consignor.name =
+            "Shree Mauli Brickvision Industries Private Limited, Pune Ltd".to_string();
+        assert_eq!(c.consignor.name.len(), 60);
+        c.consignee.name =
+            "Patil Constructions and Infrastructure Developers LLP Hinjewadi".to_string();
+        let pdf = c.render_pdf();
+        let spans = drawn_spans(&text_of(&pdf));
+        assert!(spans.len() > 30, "parsed the content stream");
+
+        for &(x0, x1, y, size) in &spans {
+            assert!(x1 <= RIGHT + 0.5, "text at y={y} runs past the margin");
+            if x0 == COL_CAT_X && size == BODY {
+                assert!(
+                    x1 <= COL_CAT_X + COL_CAT_W + 0.5,
+                    "category too wide at y={y}"
+                );
+            }
+        }
+        // No two pieces of text on (about) the same line overlap.
+        for (i, a) in spans.iter().enumerate() {
+            for b in &spans[i + 1..] {
+                if (a.2 - b.2).abs() < a.3.min(b.3) {
+                    assert!(a.1 <= b.0 || b.1 <= a.0, "{a:?} overlaps {b:?}");
+                }
+            }
+        }
     }
 }
