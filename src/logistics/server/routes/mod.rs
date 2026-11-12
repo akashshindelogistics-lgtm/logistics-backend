@@ -203,6 +203,7 @@ impl Modify for SecurityAddon {
         get_customer_billing,
         get_ops_report,
         get_ops_report_summary,
+        export_org_csv,
         list_dispatch_notifications,
         list_org_notifications,
         get_agent_settings,
@@ -429,6 +430,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(get_customer_billing)
             .service(get_ops_report)
             .service(get_ops_report_summary)
+            .service(export_org_csv)
             .service(list_dispatch_notifications)
             .service(list_org_notifications)
             .service(get_agent_settings)

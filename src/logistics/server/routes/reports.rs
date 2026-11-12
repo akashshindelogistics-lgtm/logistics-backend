@@ -2,6 +2,7 @@
 
 use super::common::*;
 use crate::logistics::reports::OpsReport;
+use crate::logistics::reports::export::ExportDataset;
 use actix_web::{HttpResponse, Responder, get, web};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -102,6 +103,60 @@ pub async fn get_ops_report_summary(
         Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
             success: false,
             message: format!("Failed to generate summary: {}", err),
+            data: None,
+        }),
+    }
+}
+
+/// Download one of the org's datasets as CSV: `dispatches`, `stock`,
+/// `invoices` or `customers`.
+#[utoipa::path(
+    get,
+    path = "/api/orgs/{id}/export/{dataset}",
+    tag = "Reports",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = Uuid, Path, description = "Organization UUID"),
+        ("dataset" = String, Path, description = "One of dispatches, stock, invoices, customers")
+    ),
+    responses(
+        (status = 200, description = "CSV file (text/csv) with a header row", body = String, content_type = "text/csv"),
+        (status = 403, description = "Forbidden", body = EmptyResponse),
+        (status = 404, description = "Unknown dataset", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[get("/orgs/{id}/export/{dataset}")]
+pub async fn export_org_csv(
+    path: web::Path<(Uuid, String)>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
+    let (org_id, dataset) = path.into_inner();
+    if org_id != auth.org_id {
+        return HttpResponse::Forbidden().json(ApiResponse::<String> {
+            success: false,
+            message: "Access denied: you can only export your own organization's data".to_string(),
+            data: None,
+        });
+    }
+    let Some(dataset) = ExportDataset::parse(&dataset) else {
+        return HttpResponse::NotFound().json(ApiResponse::<String> {
+            success: false,
+            message: "Unknown dataset: use dispatches, stock, invoices or customers".to_string(),
+            data: None,
+        });
+    };
+    match dataset.to_csv(org_id) {
+        Ok(csv) => HttpResponse::Ok()
+            .content_type("text/csv; charset=utf-8")
+            .insert_header((
+                "Content-Disposition",
+                format!("attachment; filename=\"{}.csv\"", dataset.as_str()),
+            ))
+            .body(csv),
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to export {}: {}", dataset.as_str(), err),
             data: None,
         }),
     }

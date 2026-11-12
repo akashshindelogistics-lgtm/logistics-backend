@@ -1,0 +1,23 @@
+# CSV data export
+
+`GET /api/orgs/{id}/export/{dataset}` (bearer auth, must be your own org —
+`403` otherwise) downloads one of the org's datasets as a CSV file, so the data
+can always be taken out of the system (a data-handover promise for pilots).
+Every role may export, like every other read. An unknown dataset is `404`.
+
+| `dataset` | Columns |
+| --- | --- |
+| `dispatches` | `id, customer_id, status, vehicle_registration_number, vehicle_source, dispatched_date, total_quantity, line_items, delivered_date, trip_id, stop_sequence` |
+| `stock` | one row per stock item per godown: `godown_id, godown_name, description, category, quantity, volume_in_size, reorder_threshold, below_threshold` |
+| `invoices` | `id, dispatch_id, customer_id, amount, issued_on, due_on, paid_on, status` |
+| `customers` | `id, name, address, phone, email` |
+
+Responses are `text/csv` with a header row, CRLF line endings and a
+`Content-Disposition: attachment; filename="<dataset>.csv"`. Dates are UTC
+`YYYY-MM-DD`. Fields containing commas, quotes or newlines are quoted; text
+starting with `=`, `+`, `-` or `@` gets a leading `'` so spreadsheets don't
+evaluate it as a formula.
+
+Implementation: `reports/export.rs`, built from the existing `list_by_org`
+methods (nothing is stored). The route is excluded from chat tools
+(`chat/catalog.rs`). The dashboard download buttons live in the frontend repo.
