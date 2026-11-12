@@ -34,6 +34,9 @@ services:
       DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}
       # Required — the release binary refuses to start without it.
       JWT_SECRET: ${JWT_SECRET}
+      # Caddy fronts the API: key the signup rate limit on the client IP it
+      # appends to X-Forwarded-For, not on Caddy's own address.
+      TRUSTED_PROXY: "1"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ANTHROPIC_WORKSPACE_ID: ${ANTHROPIC_WORKSPACE_ID:-}
       # Optional — without these, notifications are recorded but stay QUEUED

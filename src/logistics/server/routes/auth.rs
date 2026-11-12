@@ -51,6 +51,28 @@ pub(crate) fn signup_limit() -> usize {
         .unwrap_or(5)
 }
 
+/// The address the signup limit keys on. Behind a reverse proxy
+/// (`TRUSTED_PROXY=1`) it is the rightmost `X-Forwarded-For` entry, the one
+/// the proxy appended; entries left of it, and `realip_remote_addr()`, are
+/// client-supplied and forgeable. Otherwise, or without the header, the socket
+/// peer.
+fn signup_client_ip(req: &actix_web::HttpRequest) -> String {
+    let forwarded = std::env::var("TRUSTED_PROXY")
+        .is_ok_and(|v| matches!(v.trim(), "1" | "true"))
+        .then(|| req.headers().get("x-forwarded-for")?.to_str().ok())
+        .flatten()
+        .and_then(|v| v.rsplit(',').next())
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty());
+    match forwarded {
+        Some(ip) => ip.to_string(),
+        None => req
+            .peer_addr()
+            .map(|a| a.ip().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+    }
+}
+
 const SIGNUP_WINDOW: Duration = Duration::from_secs(3600);
 
 /// Record a signup attempt from `key`; `false` when it is over the limit.
@@ -252,12 +274,7 @@ pub async fn signup(
             "you must accept the terms and privacy policy".to_string(),
         );
     }
-    // The socket peer, not X-Forwarded-For, which a client could forge to
-    // dodge the limit.
-    let ip = req
-        .peer_addr()
-        .map(|a| a.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let ip = signup_client_ip(&req);
     if !signup_allowed(&ip) {
         return fail(
             actix_web::http::StatusCode::TOO_MANY_REQUESTS,

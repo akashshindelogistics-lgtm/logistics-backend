@@ -3,6 +3,9 @@ Description=Logistics API (ngrok deployment)
 
 [Service]
 EnvironmentFile=%h/.config/logistics-ngrok/api.env
+# ngrok -> vite preview -> API: key the signup rate limit on the client IP in
+# X-Forwarded-For, which ngrok sets and vite passes through unchanged.
+Environment=TRUSTED_PROXY=1
 WorkingDirectory=%h/logistics-ngrok/autodeploy/repos/logistics-backend
 ExecStart=%h/logistics-ngrok/autodeploy/current-backend/logistics-system
 # Also covers boot, when MySQL may not be accepting connections yet.

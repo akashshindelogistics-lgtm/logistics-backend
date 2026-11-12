@@ -192,6 +192,15 @@ impl OrgUser {
                 "org_name, address and owner_name are required",
             ));
         }
+        // VARCHAR(255) columns; longer input would be a database error (500).
+        if [org_name, owner_name, address.trim()]
+            .iter()
+            .any(|f| f.chars().count() > 255)
+        {
+            return Err(UserError::InvalidInput(
+                "org_name, address and owner_name must be at most 255 characters",
+            ));
+        }
         if email.len() < 3 || !email.contains('@') || email.len() > 255 {
             return Err(UserError::InvalidInput("a valid email address is required"));
         }
