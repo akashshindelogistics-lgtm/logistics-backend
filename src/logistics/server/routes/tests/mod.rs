@@ -25,7 +25,7 @@ use crate::logistics::upload::upload::MAX_UPLOAD_BYTES;
 use crate::logistics::user::user::{OrgRole, OrgUser};
 use crate::logistics::vehicle::document::{ComplianceDocType, ComplianceStatus, VehicleDocument};
 use crate::logistics::vehicle::maintenance::{MaintenanceStatus, VehicleMaintenance};
-use crate::logistics::vehicle::vehicle::{Location, Unit, Vehicle};
+use crate::logistics::vehicle::vehicle::{Location, LocationSource, Unit, Vehicle};
 use crate::logistics::vendor::hire::{HireStatus, VehicleHire, VendorPayment};
 use crate::logistics::vendor::vendor::VehicleVendor;
 use actix_web::{App, test};

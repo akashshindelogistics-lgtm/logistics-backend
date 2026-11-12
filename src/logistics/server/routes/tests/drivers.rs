@@ -275,14 +275,17 @@ async fn test_driver_location_moves_the_assigned_vehicle_using_only_the_device_t
         .to_request();
     let body: ApiResponse<Vec<Vehicle>> =
         test::read_body_json(test::call_service(&app, req).await).await;
-    let loc = body
+    let stored = body
         .data
         .unwrap()
         .into_iter()
         .find(|v| v.registration_number == "PH-VH-1")
-        .unwrap()
-        .location
         .unwrap();
+    assert_eq!(
+        stored.last_location_source,
+        Some(LocationSource::DriverPhone)
+    );
+    let loc = stored.location.unwrap();
     assert_eq!(loc.latitude, 18.5204);
     assert_eq!(loc.timestamp, t);
 }
