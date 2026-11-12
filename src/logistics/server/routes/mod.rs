@@ -188,6 +188,7 @@ impl Modify for SecurityAddon {
         list_dispatches,
         dispatch_stock,
         update_dispatch_status,
+        dispatch_challan_pdf,
         get_dispatch_summary,
         public_track_dispatch,
         ask_assistant,
@@ -414,6 +415,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(list_dispatches)
             .service(dispatch_stock)
             .service(update_dispatch_status)
+            .service(dispatch_challan_pdf)
             .service(get_dispatch_summary)
             .service(ask_assistant)
             .service(reindex_assistant)
