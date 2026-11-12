@@ -84,6 +84,9 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: --max-turns 100 --allowedTools Bash,Read,Edit,Write,Glob,Grep
+          # Prints every message and tool result into this public log, so only for issues the
+          # owner labels `agent:debug`; delete the run's logs after reading them.
+          show_full_output: ${{ contains(github.event.issue.labels.*.name, 'agent:debug') }}
           prompt: |
             You are working on GitHub issue #${{ github.event.issue.number }} in ${{ github.repository }}.
             Read it first with `gh issue view ${{ github.event.issue.number }} --comments`, plus its parent
