@@ -56,6 +56,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The PAT goes to the board steps only, never to the agent below.
+      - name: Show the issue as In Progress on the board
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: bash .github/scripts/board-status.sh "$ISSUE" "In Progress"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -101,3 +108,18 @@ jobs:
         run: |
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent:working
           gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "The agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      # A draft PR waiting for review stays In Progress; a question or a failure goes back to Todo.
+      # Done comes from the board's own "item closed" rule when the PR merges and closes the issue.
+      - name: Update the board after the run
+        if: always()
+        continue-on-error: true
+        env:
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          if gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx agent:review; then
+            status="In Progress"
+          else
+            status=Todo
+          fi
+          GH_TOKEN=$PROJECT_TOKEN bash .github/scripts/board-status.sh "$ISSUE" "$status"
