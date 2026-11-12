@@ -25,10 +25,14 @@ pub struct Customer {
     pub phone: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
+    /// The customer's GSTIN (15 characters, upper-case), for invoices and
+    /// e-way bills. See `docs/gst.md`.
+    #[serde(default)]
+    pub gstin: Option<String>,
 }
 
 /// `SELECT id, org_id, name, address, latitude, longitude, last_updated_at,
-/// location_address, phone, email` as it comes back from MySQL.
+/// location_address, phone, email, gstin` as it comes back from MySQL.
 type CustomerRow = (
     String,
     String,
@@ -40,9 +44,10 @@ type CustomerRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
-/// Add the `phone` / `email` columns to a `Customers` table that predates
+/// Add the `phone` / `email` / `gstin` columns to a `Customers` table that predates
 /// them. Fresh databases get the columns in `CREATE TABLE`; this is only for
 /// a long-lived local database from before dispatch notifications landed.
 fn ensure_contact_columns(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
@@ -58,6 +63,15 @@ fn ensure_contact_columns(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Er
                 "ALTER TABLE Customers ADD COLUMN {col} VARCHAR(255) DEFAULT NULL"
             ))?;
         }
+    }
+    let has_gstin: Option<i64> = conn.exec_first(
+        "SELECT 1 FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = 'Customers'
+           AND column_name = 'gstin'",
+        (),
+    )?;
+    if has_gstin.is_none() {
+        conn.query_drop("ALTER TABLE Customers ADD COLUMN gstin VARCHAR(15) DEFAULT NULL")?;
     }
     Ok(())
 }
@@ -101,6 +115,7 @@ impl Customer {
                 location_address VARCHAR(255) DEFAULT NULL,
                 phone VARCHAR(255) DEFAULT NULL,
                 email VARCHAR(255) DEFAULT NULL,
+                gstin VARCHAR(15) DEFAULT NULL,
                 CONSTRAINT fk_customer_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
             )",
         )?;
@@ -125,6 +140,7 @@ impl Customer {
             location: None,
             phone: None,
             email: None,
+            gstin: None,
         };
 
         conn.exec_drop(
@@ -170,6 +186,21 @@ impl Customer {
         Ok(())
     }
 
+    /// Set (or clear, with `None` or a blank string) the customer's GSTIN.
+    /// A malformed GSTIN is rejected with an `Err` and nothing is saved.
+    pub fn set_gstin(&mut self, gstin: Option<String>) -> Result<(), Box<dyn Error>> {
+        let gstin = crate::logistics::gst::normalize_gstin(gstin)?;
+        let db_connection = DbConnection::from_env();
+        let mut conn = db_connection.get_connection()?;
+        Self::ensure_table(&mut conn)?;
+        conn.exec_drop(
+            "UPDATE Customers SET gstin = :gstin WHERE id = :id",
+            params! { "id" => self.id.to_string(), "gstin" => &gstin },
+        )?;
+        self.gstin = gstin;
+        Ok(())
+    }
+
     pub fn update_location(
         &mut self,
         latitude: f64,
@@ -212,7 +243,7 @@ impl Customer {
     }
 
     fn row_to_customer(
-        (id_str, org_id_str, name, address, lat, lng, ts, addr, phone, email): CustomerRow,
+        (id_str, org_id_str, name, address, lat, lng, ts, addr, phone, email, gstin): CustomerRow,
     ) -> Self {
         let location = lat.map(|latitude| Location {
             latitude,
@@ -228,6 +259,7 @@ impl Customer {
             location,
             phone,
             email,
+            gstin,
         }
     }
 
@@ -237,7 +269,7 @@ impl Customer {
         Self::ensure_table(&mut conn)?;
 
         let row: Option<CustomerRow> = conn.exec_first(
-            "SELECT id, org_id, name, address, latitude, longitude, last_updated_at, location_address, phone, email FROM Customers WHERE id = :id",
+            "SELECT id, org_id, name, address, latitude, longitude, last_updated_at, location_address, phone, email, gstin FROM Customers WHERE id = :id",
             params! { "id" => id.to_string() },
         )?;
 
@@ -250,7 +282,7 @@ impl Customer {
         Self::ensure_table(&mut conn)?;
 
         let rows: Vec<CustomerRow> = conn.exec(
-            "SELECT id, org_id, name, address, latitude, longitude, last_updated_at, location_address, phone, email FROM Customers WHERE org_id = :org_id ORDER BY name",
+            "SELECT id, org_id, name, address, latitude, longitude, last_updated_at, location_address, phone, email, gstin FROM Customers WHERE org_id = :org_id ORDER BY name",
             params! { "org_id" => org_id.to_string() },
         )?;
 

@@ -49,13 +49,30 @@ pub struct Organization {
     /// Warehouses owned by this organization, each carrying its own stock.
     pub godowns: Vec<Godown>,
     pub location: Option<Location>,
+    /// The organization's GSTIN (15 characters, upper-case), for invoices and
+    /// e-way bills. See `docs/gst.md`.
+    #[serde(default)]
+    pub gstin: Option<String>,
 }
 
 impl Organization {
     /// Create every table an organization read/write may touch, if it does not
     /// already exist. Each entity module also creates its own table lazily on
     /// first write; this guards the read paths that join across all of them.
-    fn ensure_tables(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+    /// Add `gstin` to an `Orgs` table that predates GST support.
+    fn ensure_gstin_column(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+        let present: Option<i64> = conn.exec_first(
+            "SELECT 1 FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = 'Orgs' AND column_name = 'gstin'",
+            (),
+        )?;
+        if present.is_none() {
+            conn.query_drop("ALTER TABLE Orgs ADD COLUMN gstin VARCHAR(15) DEFAULT NULL")?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_tables(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
         conn.exec_drop(
             "CREATE TABLE IF NOT EXISTS Orgs (
                 id VARCHAR(36) PRIMARY KEY,
@@ -64,10 +81,12 @@ impl Organization {
                 latitude DOUBLE DEFAULT NULL,
                 longitude DOUBLE DEFAULT NULL,
                 last_updated_at BIGINT DEFAULT NULL,
-                location_address VARCHAR(255) DEFAULT NULL
+                location_address VARCHAR(255) DEFAULT NULL,
+                gstin VARCHAR(15) DEFAULT NULL
             )",
             (),
         )?;
+        Self::ensure_gstin_column(conn)?;
         Driver::ensure_table(conn)?;
         conn.exec_drop(
             "CREATE TABLE IF NOT EXISTS Vehicle (
@@ -108,6 +127,7 @@ impl Organization {
             vehicles: Vec::new(),
             godowns: Vec::new(),
             location: None,
+            gstin: None,
         };
 
         conn.exec_drop(
@@ -118,10 +138,13 @@ impl Organization {
                 latitude DOUBLE DEFAULT NULL,
                 longitude DOUBLE DEFAULT NULL,
                 last_updated_at BIGINT DEFAULT NULL,
-                location_address VARCHAR(255) DEFAULT NULL
+                location_address VARCHAR(255) DEFAULT NULL,
+                gstin VARCHAR(15) DEFAULT NULL
             )",
             (),
         )?;
+
+        Self::ensure_gstin_column(&mut conn)?;
 
         // Insert organization into MySQL database
         conn.exec_drop(
@@ -158,6 +181,20 @@ impl Organization {
 
         self.name = new_name;
         self.address = new_address;
+        Ok(())
+    }
+
+    /// Set (or clear, with `None` or a blank string) the organization's GSTIN.
+    /// A malformed GSTIN is rejected with an `Err` and nothing is saved.
+    pub fn set_gstin(&mut self, gstin: Option<String>) -> Result<(), Box<dyn Error>> {
+        let gstin = crate::logistics::gst::normalize_gstin(gstin)?;
+        let mut conn = DbConnection::from_env().get_connection()?;
+        Self::ensure_gstin_column(&mut conn)?;
+        conn.exec_drop(
+            "UPDATE Orgs SET gstin = :gstin WHERE id = :id",
+            params! { "id" => self.id.to_string(), "gstin" => &gstin },
+        )?;
+        self.gstin = gstin;
         Ok(())
     }
 
@@ -283,6 +320,7 @@ impl Organization {
             proof_of_delivery: None,
             trip_id: None,
             stop_sequence: None,
+            eway_bill_no: None,
         };
         dispatch_order.save_in(&mut tx)?;
         if let (Some(hire_id), Some(vendor_id)) = (hire_id, hire_vendor) {
@@ -533,6 +571,7 @@ impl Organization {
                 proof_of_delivery: None,
                 trip_id: Some(trip_id),
                 stop_sequence: Some(i as i64 + 1),
+                eway_bill_no: None,
             };
             order.save_in(&mut tx)?;
             // A hired trip's notifications go out when its truck is assigned.
@@ -829,20 +868,23 @@ impl Organization {
                 latitude DOUBLE DEFAULT NULL,
                 longitude DOUBLE DEFAULT NULL,
                 last_updated_at BIGINT DEFAULT NULL,
-                location_address VARCHAR(255) DEFAULT NULL
+                location_address VARCHAR(255) DEFAULT NULL,
+                gstin VARCHAR(15) DEFAULT NULL
             )",
             (),
         )?;
 
-        let rows: Vec<(String, String, String, Option<f64>, Option<f64>, Option<i64>, Option<String>)> = conn.exec_map(
-            "SELECT id, name, address, latitude, longitude, last_updated_at, location_address FROM Orgs",
+        Self::ensure_gstin_column(&mut conn)?;
+
+        let rows: Vec<(String, String, String, Option<f64>, Option<f64>, Option<i64>, Option<String>, Option<String>)> = conn.exec_map(
+            "SELECT id, name, address, latitude, longitude, last_updated_at, location_address, gstin FROM Orgs",
             (),
-            |(id, name, address, lat, lng, ts, addr)| (id, name, address, lat, lng, ts, addr),
+            |(id, name, address, lat, lng, ts, addr, gstin)| (id, name, address, lat, lng, ts, addr, gstin),
         )?;
 
         let orgs = rows
             .into_iter()
-            .map(|(id, name, address, lat, lng, ts, addr)| {
+            .map(|(id, name, address, lat, lng, ts, addr, gstin)| {
                 let location = lat.map(|latitude| Location {
                     latitude,
                     longitude: lng.unwrap_or(0.0),
@@ -856,6 +898,7 @@ impl Organization {
                     vehicles: Vec::new(),
                     godowns: Vec::new(),
                     location,
+                    gstin,
                 }
             })
             .collect();
@@ -885,13 +928,13 @@ impl Organization {
         // the SELECTs below fail with "table doesn't exist" and surface as a 500.
         Self::ensure_tables(&mut conn)?;
 
-        let row: Option<(String, String, String, Option<f64>, Option<f64>, Option<i64>, Option<String>)> = conn
+        let row: Option<(String, String, String, Option<f64>, Option<f64>, Option<i64>, Option<String>, Option<String>)> = conn
             .exec_first(
-                "SELECT id, name, address, latitude, longitude, last_updated_at, location_address FROM Orgs WHERE id = :id",
+                "SELECT id, name, address, latitude, longitude, last_updated_at, location_address, gstin FROM Orgs WHERE id = :id",
                 params! { "id" => id.to_string() },
             )?;
 
-        let (org_id_str, name, address, lat, lng, ts, addr) = match row {
+        let (org_id_str, name, address, lat, lng, ts, addr, gstin) = match row {
             Some(r) => r,
             None => return Ok(None),
         };
@@ -918,6 +961,7 @@ impl Organization {
             vehicles,
             godowns,
             location,
+            gstin,
         }))
     }
 
@@ -1678,6 +1722,7 @@ mod tests {
                 proof_of_delivery: None,
                 trip_id: None,
                 stop_sequence: None,
+                eway_bill_no: None,
             }
             .save()
             .expect("dispatch");

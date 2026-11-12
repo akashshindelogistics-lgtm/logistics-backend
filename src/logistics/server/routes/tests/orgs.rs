@@ -119,6 +119,7 @@ async fn test_update_org_endpoint() {
     let update_payload = UpdateOrgPayload {
         name: "Updated Org Name".to_string(),
         address: "456 Updated Ave, New City".to_string(),
+        gstin: None,
     };
     let req = test::TestRequest::put()
         .uri(&format!("/api/orgs/{}", org.id))
@@ -271,6 +272,7 @@ async fn test_update_org_returns_403_for_different_org() {
     let payload = UpdateOrgPayload {
         name: "Hacked Name".to_string(),
         address: "Hacked Address".to_string(),
+        gstin: None,
     };
     let req = test::TestRequest::put()
         .uri(&format!("/api/orgs/{}", target_org_id))

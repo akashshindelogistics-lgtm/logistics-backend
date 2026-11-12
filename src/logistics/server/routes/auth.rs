@@ -6,9 +6,12 @@ use crate::logistics::auth::auth::{
     OrgCredentials, OrgSummary, generate_token, generate_user_token,
 };
 use crate::logistics::orgs::orgs::Organization;
-use crate::logistics::user::user::OrgUser;
+use crate::logistics::user::user::{OrgUser, UserError};
 use actix_web::{HttpResponse, Responder, get, post, web};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -24,6 +27,51 @@ pub struct LoginPayload {
 pub struct UserLoginPayload {
     pub email: String,
     pub password: String,
+}
+
+/// Body for `POST /api/auth/signup`.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct SignupPayload {
+    pub org_name: String,
+    pub address: String,
+    pub owner_name: String,
+    pub email: String,
+    /// 8–72 characters with at least one letter and one digit.
+    pub password: String,
+    /// Must be `true`: the owner accepts the terms and privacy policy. The
+    /// time is stored as `terms_accepted_at`.
+    pub accept_terms: bool,
+}
+
+/// Signups allowed per client IP per window (`SIGNUP_RATE_LIMIT`, default 5).
+pub(crate) fn signup_limit() -> usize {
+    std::env::var("SIGNUP_RATE_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5)
+}
+
+const SIGNUP_WINDOW: Duration = Duration::from_secs(3600);
+
+/// Record a signup attempt from `key`; `false` when it is over the limit.
+/// In-memory and per process, so a restart resets it.
+fn signup_allowed(key: &str) -> bool {
+    static HITS: OnceLock<Mutex<HashMap<String, Vec<Instant>>>> = OnceLock::new();
+    let mut hits = HITS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    hits.retain(|_, v| {
+        v.retain(|t| now.duration_since(*t) < SIGNUP_WINDOW);
+        !v.is_empty()
+    });
+    let entry = hits.entry(key.to_string()).or_default();
+    if entry.len() >= signup_limit() {
+        return false;
+    }
+    entry.push(now);
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -171,6 +219,93 @@ pub async fn user_login(payload: web::Json<UserLoginPayload>) -> impl Responder 
             message: format!("Failed to generate token: {}", err),
             data: None,
         }),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/signup",
+    tag = "Auth",
+    request_body = SignupPayload,
+    responses(
+        (status = 201, description = "Organization and its first Admin user created; returns a user-scoped JWT like user-login", body = OrgResponse),
+        (status = 400, description = "Missing field, weak password or terms not accepted", body = EmptyResponse),
+        (status = 409, description = "Email already registered", body = EmptyResponse),
+        (status = 429, description = "Too many signups from this address", body = EmptyResponse)
+    )
+)]
+#[post("/auth/signup")]
+pub async fn signup(
+    req: actix_web::HttpRequest,
+    payload: web::Json<SignupPayload>,
+) -> impl Responder {
+    let fail = |status: actix_web::http::StatusCode, message: String| {
+        HttpResponse::build(status).json(ApiResponse::<String> {
+            success: false,
+            message,
+            data: None,
+        })
+    };
+    if !payload.accept_terms {
+        return fail(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "you must accept the terms and privacy policy".to_string(),
+        );
+    }
+    // The socket peer, not X-Forwarded-For, which a client could forge to
+    // dodge the limit.
+    let ip = req
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if !signup_allowed(&ip) {
+        return fail(
+            actix_web::http::StatusCode::TOO_MANY_REQUESTS,
+            "too many signups from this address, try again later".to_string(),
+        );
+    }
+
+    let (org, user) = match OrgUser::signup(
+        &payload.org_name,
+        &payload.address,
+        &payload.owner_name,
+        &payload.email,
+        &payload.password,
+    ) {
+        Ok(v) => v,
+        Err(UserError::EmailTaken) => {
+            return fail(
+                actix_web::http::StatusCode::CONFLICT,
+                UserError::EmailTaken.to_string(),
+            );
+        }
+        Err(UserError::InvalidInput(why)) => {
+            return fail(actix_web::http::StatusCode::BAD_REQUEST, why.to_string());
+        }
+        Err(err) => {
+            return fail(
+                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Signup failed: {err}"),
+            );
+        }
+    };
+
+    match generate_user_token(org.id, &org.name, Some(user.id), user.role.as_str()) {
+        Ok(token) => HttpResponse::Created().json(ApiResponse {
+            success: true,
+            message: "Organization created".to_string(),
+            data: Some(LoginData {
+                token,
+                org_id: org.id.to_string(),
+                org_name: org.name,
+                role: user.role.as_str().to_string(),
+                user_name: Some(user.name),
+            }),
+        }),
+        Err(err) => fail(
+            actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to generate token: {err}"),
+        ),
     }
 }
 

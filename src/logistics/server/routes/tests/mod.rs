@@ -41,6 +41,7 @@ mod dispatches;
 mod driver_app;
 mod drivers;
 mod godowns;
+mod gst;
 mod health;
 mod hires;
 mod maintenance;
@@ -156,6 +157,7 @@ async fn setup_dispatch(
             location_address: None,
             phone: None,
             email: None,
+            gstin: None,
         })
         .to_request();
     let body: ApiResponse<Customer> =
@@ -214,6 +216,7 @@ async fn create_customer_via_api(
             location_address: None,
             phone: None,
             email: None,
+            gstin: None,
         })
         .to_request();
     let resp = test::call_service(app, req).await;

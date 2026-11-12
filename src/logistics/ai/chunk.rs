@@ -640,6 +640,7 @@ mod tests {
             location: None,
             phone: None,
             email: None,
+            gstin: None,
         }
     }
 
@@ -664,6 +665,7 @@ mod tests {
             proof_of_delivery: None,
             trip_id: None,
             stop_sequence: None,
+            eway_bill_no: None,
         }
     }
 

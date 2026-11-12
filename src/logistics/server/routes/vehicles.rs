@@ -109,6 +109,7 @@ pub async fn add_vehicle(
         vehicles: Vec::new(),
         godowns: Vec::new(),
         location: None,
+        gstin: None,
     };
 
     let unit = Unit::from_str(&payload.unit);

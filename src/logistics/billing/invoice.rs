@@ -477,6 +477,7 @@ mod tests {
             proof_of_delivery: None,
             trip_id: None,
             stop_sequence: None,
+            eway_bill_no: None,
         };
         dispatch.save().expect("save dispatch");
         (org, customer, dispatch)
@@ -597,6 +598,7 @@ mod tests {
                 proof_of_delivery: None,
                 trip_id: None,
                 stop_sequence: None,
+                eway_bill_no: None,
             };
             d.save().unwrap();
             ids.push(d.id);

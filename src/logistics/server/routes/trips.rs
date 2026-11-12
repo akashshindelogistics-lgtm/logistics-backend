@@ -132,6 +132,7 @@ pub async fn create_trip(
         vehicles: Vec::new(),
         godowns: Vec::new(),
         location: None,
+        gstin: None,
     };
     let stops_ref: Vec<(&Customer, &[DispatchLineItemInput])> =
         resolved.iter().map(|(c, l)| (c, l.as_slice())).collect();

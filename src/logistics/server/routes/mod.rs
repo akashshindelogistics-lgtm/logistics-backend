@@ -29,6 +29,7 @@ use crate::logistics::reports::{
     CategoryUnits, DeliveryPerformance, DispatchVolumePoint, GodownInventory, HireMargin,
     HiredTransport, OpsReport, VehicleUtilization, VendorSpend,
 };
+use crate::logistics::stock::category::StockCategory;
 use crate::logistics::stock::stock::Stock;
 use crate::logistics::user::user::{OrgRole, OrgUser};
 use crate::logistics::vehicle::document::{ComplianceDocType, ComplianceStatus, VehicleDocument};
@@ -59,6 +60,7 @@ mod maintenance;
 mod notifications;
 mod orgs;
 mod reports;
+mod stock_categories;
 mod tracking;
 mod trips;
 mod uploads;
@@ -84,6 +86,7 @@ pub use maintenance::*;
 pub use notifications::*;
 pub use orgs::*;
 pub use reports::*;
+pub use stock_categories::*;
 pub use tracking::*;
 pub use trips::*;
 pub use uploads::*;
@@ -121,6 +124,7 @@ impl Modify for SecurityAddon {
         auth_orgs,
         auth_login,
         user_login,
+        signup,
         auth_me,
         list_org_users,
         add_org_user,
@@ -184,11 +188,16 @@ impl Modify for SecurityAddon {
         list_customers,
         add_customer,
         update_customer_location,
+        update_customer_gstin,
         delete_customer,
         list_dispatches,
         dispatch_stock,
         update_dispatch_status,
         dispatch_challan_pdf,
+        update_dispatch_eway_bill,
+        list_stock_categories,
+        set_stock_category_hsn,
+        delete_stock_category_hsn,
         get_dispatch_summary,
         public_track_dispatch,
         ask_assistant,
@@ -254,7 +263,8 @@ impl Modify for SecurityAddon {
             VehicleDocumentResponse, VehicleDocumentListResponse,
             StockResponse, GodownResponse, GodownListResponse,
             StockTransferResponse, StockTransferListResponse,
-            CustomerResponse, CustomerListResponse,
+            CustomerResponse, CustomerListResponse, CustomerGstinPayload,
+            UpdateEwayBillPayload, SetHsnPayload, StockCategory, StockCategoryResponse, StockCategoryListResponse,
             DriverResponse, DriverListResponse,
             DriverLocationFix, DriverLocationPayload, DriverLocationResult, DriverLocationResultResponse,
             DriverDeviceToken, DriverDeviceTokenResponse, DevicePairing, DevicePairingResponse,
@@ -347,6 +357,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(auth_orgs)
             .service(auth_login)
             .service(user_login)
+            .service(signup)
             .service(auth_me)
             .service(list_org_users)
             .service(add_org_user)
@@ -411,11 +422,16 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(list_customers)
             .service(add_customer)
             .service(update_customer_location)
+            .service(update_customer_gstin)
             .service(delete_customer)
             .service(list_dispatches)
             .service(dispatch_stock)
             .service(update_dispatch_status)
             .service(dispatch_challan_pdf)
+            .service(update_dispatch_eway_bill)
+            .service(list_stock_categories)
+            .service(set_stock_category_hsn)
+            .service(delete_stock_category_hsn)
             .service(get_dispatch_summary)
             .service(ask_assistant)
             .service(reindex_assistant)
