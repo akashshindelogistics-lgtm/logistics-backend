@@ -424,7 +424,10 @@ Work is tracked as GitHub issues: `priority:A|B|C` labels, phases as
 sub-issues. Items migrated from the old `todo.org` carry `from-todo-org`. To
 hand an issue to Claude Code, the owner adds `agent:ready`; the agent moves it
 to `agent:working`, then `agent:review` once its draft PR (which closes the
-issue) is open. `claude-agent.yml` needs the Claude GitHub App and its
+issue) is open. Every hour the same workflow also starts the next `agent:ready`
+issue on its own (priority A, B, C, then unlabelled; oldest first), one at a
+time: it skips the hour while any issue is `agent:working`. Use *Run workflow*
+on the Actions tab to start the next one immediately. `claude-agent.yml` needs the Claude GitHub App and its
 `CLAUDE_CODE_OAUTH_TOKEN` secret, set up once with `/install-github-app` in
 Claude Code. To keep the project board's Status in step (In Progress while the
 agent works or a PR waits for review, back to Todo if it stops or fails), add a
