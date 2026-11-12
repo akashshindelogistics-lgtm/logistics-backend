@@ -40,6 +40,7 @@ async fn test_create_customer_returns_403_for_different_org() {
             location_address: None,
             phone: None,
             email: None,
+            gstin: None,
         })
         .to_request();
     assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
@@ -62,6 +63,7 @@ async fn test_create_customer_with_location_locates_it() {
             location_address: None,
             phone: None,
             email: None,
+            gstin: None,
         })
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -101,6 +103,7 @@ async fn test_create_customer_without_coordinates_has_no_location() {
             location_address: None,
             phone: None,
             email: None,
+            gstin: None,
         })
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -280,6 +283,7 @@ async fn test_create_customer_with_contact_details() {
             location_address: None,
             phone: Some("+91 90000 00000".to_string()),
             email: Some("ops@reachable.example".to_string()),
+            gstin: None,
         })
         .to_request();
     let resp = test::call_service(&app, req).await;

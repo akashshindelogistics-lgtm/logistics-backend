@@ -63,13 +63,30 @@ fn ensure_dispatches_table(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn E
             stop_sequence BIGINT DEFAULT NULL,
             vehicle_source VARCHAR(10) NOT NULL DEFAULT 'OWN',
             hire_id VARCHAR(36) DEFAULT NULL,
-            tracking_token VARCHAR(36) DEFAULT NULL UNIQUE
+            tracking_token VARCHAR(36) DEFAULT NULL UNIQUE,
+            eway_bill_no VARCHAR(12) DEFAULT NULL
         )",
         (),
     )?;
     ensure_trip_columns(conn)?;
     ensure_hire_columns(conn)?;
     ensure_tracking_token_column(conn)?;
+    ensure_eway_bill_column(conn)?;
+    Ok(())
+}
+
+/// Add `eway_bill_no` to a `Dispatches` table that predates GST support.
+/// Existing dispatches keep `NULL`. See `docs/gst.md`.
+pub(crate) fn ensure_eway_bill_column(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+    let present: Option<i64> = conn.exec_first(
+        "SELECT 1 FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = 'Dispatches'
+           AND column_name = 'eway_bill_no'",
+        (),
+    )?;
+    if present.is_none() {
+        conn.query_drop("ALTER TABLE Dispatches ADD COLUMN eway_bill_no VARCHAR(12) DEFAULT NULL")?;
+    }
     Ok(())
 }
 
@@ -554,6 +571,10 @@ pub struct DispatchOrder {
     /// `trip_id` is set.
     #[serde(default)]
     pub stop_sequence: Option<i64>,
+    /// The 12-digit e-way bill number for this consignment, entered by hand
+    /// (see `docs/gst.md`). `None` until set.
+    #[serde(default)]
+    pub eway_bill_no: Option<String>,
 }
 
 /// A dispatch is expected to reach `DELIVERED` within this many hours of
@@ -931,13 +952,34 @@ impl DispatchOrder {
         Ok(())
     }
 
+    /// Set (or clear, with `None` or a blank string) the e-way bill number.
+    /// Must be 12 digits, and is locked once the dispatch is `DELIVERED`.
+    /// On an `Err` nothing is saved and `self` is untouched.
+    pub fn set_eway_bill_no(&mut self, eway_bill_no: Option<String>) -> Result<(), Box<dyn Error>> {
+        if self.status == DispatchStatus::Delivered {
+            return Err(
+                "e-way bill number cannot be changed once the dispatch is delivered".into(),
+            );
+        }
+        let eway_bill_no = crate::logistics::gst::normalize_eway_bill_no(eway_bill_no)?;
+        let db_connection = DbConnection::from_env();
+        let mut conn = db_connection.get_connection()?;
+        ensure_tables(&mut conn)?;
+        conn.exec_drop(
+            "UPDATE Dispatches SET eway_bill_no = :n WHERE id = :id",
+            params! { "id" => self.id.to_string(), "n" => &eway_bill_no },
+        )?;
+        self.eway_bill_no = eway_bill_no;
+        Ok(())
+    }
+
     pub fn get_by_id(id: Uuid) -> Result<Option<Self>, Box<dyn Error>> {
         let db_connection = DbConnection::from_env();
         let mut conn = db_connection.get_connection()?;
         ensure_tables(&mut conn)?;
 
         let row: Option<DispatchRow> = conn.exec_first(
-            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id FROM Dispatches WHERE id = :id",
+            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id, eway_bill_no FROM Dispatches WHERE id = :id",
             params! { "id" => id.to_string() },
         )?;
 
@@ -986,7 +1028,7 @@ impl DispatchOrder {
         ensure_tables(&mut conn)?;
 
         let rows: Vec<DispatchRow> = conn.exec(
-            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id FROM Dispatches",
+            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id, eway_bill_no FROM Dispatches",
             (),
         )?;
 
@@ -1003,7 +1045,7 @@ impl DispatchOrder {
         ensure_tables(&mut conn)?;
 
         let rows: Vec<DispatchRow> = conn.exec(
-            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id
+            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id, eway_bill_no
              FROM Dispatches WHERE status = 'IN_TRANSIT'",
             (),
         )?;
@@ -1017,7 +1059,7 @@ impl DispatchOrder {
         ensure_tables(&mut conn)?;
 
         let rows: Vec<DispatchRow> = conn.exec(
-            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id FROM Dispatches WHERE org_id = :org_id",
+            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id, eway_bill_no FROM Dispatches WHERE org_id = :org_id",
             params! { "org_id" => org_id.to_string() },
         )?;
 
@@ -1031,7 +1073,7 @@ impl DispatchOrder {
         ensure_tables(&mut conn)?;
 
         let rows: Vec<DispatchRow> = conn.exec(
-            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id FROM Dispatches WHERE org_id = :org_id AND trip_id IS NULL",
+            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id, eway_bill_no FROM Dispatches WHERE org_id = :org_id AND trip_id IS NULL",
             params! { "org_id" => org_id.to_string() },
         )?;
 
@@ -1045,7 +1087,7 @@ impl DispatchOrder {
         ensure_tables(&mut conn)?;
 
         let rows: Vec<DispatchRow> = conn.exec(
-            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id
+            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id, eway_bill_no
              FROM Dispatches WHERE trip_id = :trip_id ORDER BY stop_sequence ASC",
             params! { "trip_id" => trip_id.to_string() },
         )?;
@@ -1070,6 +1112,7 @@ impl DispatchOrder {
             stop_sequence,
             source,
             hire_id,
+            eway_bill_no,
         ) = row;
         DispatchOrder {
             id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::new_v4()),
@@ -1085,6 +1128,7 @@ impl DispatchOrder {
             proof_of_delivery,
             trip_id: trip_id.and_then(|t| Uuid::parse_str(&t).ok()),
             stop_sequence,
+            eway_bill_no,
         }
     }
 
@@ -1110,7 +1154,7 @@ impl DispatchOrder {
 
 /// One raw `Dispatches` row: `(id, org_id, customer_id,
 /// vehicle_registration_number, status, dispatched_at, trip_id,
-/// stop_sequence, vehicle_source, hire_id)`.
+/// stop_sequence, vehicle_source, hire_id, eway_bill_no)`.
 type DispatchRow = (
     String,
     String,
@@ -1121,6 +1165,7 @@ type DispatchRow = (
     Option<String>,
     Option<i64>,
     String,
+    Option<String>,
     Option<String>,
 );
 
@@ -1178,6 +1223,7 @@ mod tests {
             proof_of_delivery: None,
             trip_id: None,
             stop_sequence: None,
+            eway_bill_no: None,
         };
         order.save().expect("save dispatch");
         (org, godown.id, order)
@@ -1198,6 +1244,7 @@ mod tests {
             proof_of_delivery: None,
             trip_id: None,
             stop_sequence: None,
+            eway_bill_no: None,
         }
     }
 
@@ -1479,6 +1526,7 @@ mod tests {
             proof_of_delivery: None,
             trip_id: None,
             stop_sequence: None,
+            eway_bill_no: None,
         };
         order.save().expect("save dispatch");
 
@@ -1534,6 +1582,7 @@ mod tests {
             proof_of_delivery: None,
             trip_id: None,
             stop_sequence: None,
+            eway_bill_no: None,
         };
         order.save().expect("save");
 
@@ -1677,7 +1726,7 @@ mod tests {
         ensure_tables(&mut conn).unwrap();
         conn.query_drop(
             "ALTER TABLE Dispatches DROP COLUMN vehicle_source, DROP COLUMN hire_id,
-             DROP COLUMN tracking_token,
+             DROP COLUMN tracking_token, DROP COLUMN eway_bill_no,
              MODIFY vehicle_registration_number VARCHAR(255) NOT NULL",
         )
         .unwrap();

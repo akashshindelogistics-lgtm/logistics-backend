@@ -28,6 +28,15 @@ pub struct CreateCustomerPayload {
     pub phone: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
+    /// The customer's GSTIN: 15 letters/digits, stored upper-case.
+    #[serde(default)]
+    pub gstin: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct CustomerGstinPayload {
+    /// 15 letters/digits, stored upper-case. `null` or empty clears it.
+    pub gstin: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -108,6 +117,7 @@ pub async fn list_customers(auth: AuthenticatedOrg) -> impl Responder {
     request_body = CreateCustomerPayload,
     responses(
         (status = 201, description = "Customer created successfully", body = CustomerResponse),
+        (status = 400, description = "Malformed GSTIN", body = EmptyResponse),
         (status = 403, description = "Forbidden", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse)
     )
@@ -124,6 +134,13 @@ pub async fn add_customer(
             success: false,
             message: "Access denied: you can only add customers to your own organization"
                 .to_string(),
+            data: None,
+        });
+    }
+    if let Err(msg) = crate::logistics::gst::normalize_gstin(payload.gstin.clone()) {
+        return HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message: msg,
             data: None,
         });
     }
@@ -151,6 +168,15 @@ pub async fn add_customer(
                         "Customer created but saving contact details failed: {}",
                         err
                     ),
+                    data: None,
+                });
+            }
+            if payload.gstin.is_some()
+                && let Err(err) = customer.set_gstin(payload.gstin.clone())
+            {
+                return HttpResponse::InternalServerError().json(ApiResponse::<String> {
+                    success: false,
+                    message: format!("Customer created but saving the GSTIN failed: {}", err),
                     data: None,
                 });
             }
@@ -202,6 +228,55 @@ pub async fn update_customer_location(
         Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
             success: false,
             message: format!("Failed to update customer location: {}", err),
+            data: None,
+        }),
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/customers/{id}/gstin",
+    tag = "Customers",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Customer UUID")),
+    request_body = CustomerGstinPayload,
+    responses(
+        (status = 200, description = "Customer GSTIN updated", body = CustomerResponse),
+        (status = 400, description = "Malformed GSTIN", body = EmptyResponse),
+        (status = 403, description = "Forbidden", body = EmptyResponse),
+        (status = 404, description = "Customer not found", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[put("/customers/{id}/gstin")]
+pub async fn update_customer_gstin(
+    path: web::Path<Uuid>,
+    payload: web::Json<CustomerGstinPayload>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
+    let mut customer = match load_owned_customer(path.into_inner(), auth.org_id) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if let Err(msg) = crate::logistics::gst::normalize_gstin(payload.gstin.clone()) {
+        return HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message: msg,
+            data: None,
+        });
+    }
+    match customer.set_gstin(payload.gstin.clone()) {
+        Ok(()) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: "Customer GSTIN updated".to_string(),
+            data: Some(customer),
+        }),
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to update customer GSTIN: {}", err),
             data: None,
         }),
     }

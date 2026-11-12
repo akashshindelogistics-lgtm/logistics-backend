@@ -45,7 +45,8 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             latitude DOUBLE DEFAULT NULL,
             longitude DOUBLE DEFAULT NULL,
             last_updated_at BIGINT DEFAULT NULL,
-            location_address VARCHAR(255) DEFAULT NULL
+            location_address VARCHAR(255) DEFAULT NULL,
+            gstin VARCHAR(15) DEFAULT NULL
         )",
     )
     .expect("migrate: create Orgs");
@@ -238,6 +239,7 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             location_address VARCHAR(255) DEFAULT NULL,
             phone VARCHAR(255) DEFAULT NULL,
             email VARCHAR(255) DEFAULT NULL,
+            gstin VARCHAR(15) DEFAULT NULL,
             CONSTRAINT fk_customer_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
         )",
     )
@@ -283,10 +285,22 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             stop_sequence BIGINT DEFAULT NULL,
             vehicle_source VARCHAR(10) NOT NULL DEFAULT 'OWN',
             hire_id VARCHAR(36) DEFAULT NULL,
-            tracking_token VARCHAR(36) DEFAULT NULL UNIQUE
+            tracking_token VARCHAR(36) DEFAULT NULL UNIQUE,
+            eway_bill_no VARCHAR(12) DEFAULT NULL
         )",
     )
     .expect("migrate: create Dispatches");
+
+    conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS StockCategories (
+            org_id VARCHAR(36) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            hsn_code VARCHAR(8) NOT NULL,
+            PRIMARY KEY (org_id, name),
+            CONSTRAINT fk_stock_category_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
+        )",
+    )
+    .expect("migrate: create StockCategories");
 
     conn.query_drop(
         "CREATE TABLE IF NOT EXISTS Trips (
