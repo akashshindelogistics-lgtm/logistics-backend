@@ -290,6 +290,9 @@ async fn test_signup_rejects_weak_password_and_missing_terms() {
     let mut body = signup_body("terms@example.com", "passw0rd1");
     body.accept_terms = false;
     assert_eq!(post_signup(&app, &body, "10.1.0.3").await, 400);
+    let mut body = signup_body("long@example.com", "passw0rd1");
+    body.org_name = "x".repeat(256);
+    assert_eq!(post_signup(&app, &body, "10.1.0.3").await, 400);
     assert!(Organization::list_all().unwrap().is_empty());
 }
 
@@ -306,4 +309,46 @@ async fn test_signup_is_rate_limited_per_ip() {
     assert_eq!(post_signup(&app, &body, "10.1.0.4").await, 429);
     // another address is unaffected
     assert_eq!(post_signup(&app, &body, "10.1.0.5").await, 201);
+}
+
+#[actix_web::test]
+async fn test_signup_limit_keys_on_rightmost_forwarded_ip_only_behind_trusted_proxy() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let limit = super::super::auth::signup_limit();
+    let post = |n: String, xff: &'static str| {
+        let app = &app;
+        async move {
+            let req = test::TestRequest::post()
+                .uri("/api/auth/signup")
+                .peer_addr("10.1.0.6:4000".parse().unwrap())
+                .insert_header(("X-Forwarded-For", xff))
+                .set_json(signup_body(&format!("xff{n}@example.com"), "passw0rd1"))
+                .to_request();
+            test::call_service(app, req).await.status().as_u16()
+        }
+    };
+    // Only this test touches TRUSTED_PROXY, and every other signup test
+    // sends no X-Forwarded-For, so flipping it here cannot affect them.
+    // SAFETY: as in the notification tests that set and clear env keys.
+    unsafe { std::env::set_var("TRUSTED_PROXY", "1") };
+    for i in 0..limit {
+        // The forged leftmost entry varies; the proxy-appended one does not.
+        let xff = if i % 2 == 0 {
+            "1.1.1.1, 203.0.113.1"
+        } else {
+            "2.2.2.2, 203.0.113.1"
+        };
+        assert_eq!(post(format!("a{i}"), xff).await, 201);
+    }
+    assert_eq!(post("a-over".into(), "203.0.113.1").await, 429);
+    // Same peer, different forwarded client: its own bucket.
+    assert_eq!(post("b".into(), "203.0.113.2").await, 201);
+
+    // With the setting off the header is ignored and the peer is the key.
+    unsafe { std::env::remove_var("TRUSTED_PROXY") };
+    for i in 0..limit {
+        assert_eq!(post(format!("c{i}"), "203.0.113.3").await, 201);
+    }
+    assert_eq!(post("c-over".into(), "203.0.113.4").await, 429);
 }

@@ -61,6 +61,10 @@ spec:
               value: "8080"
             - name: UPLOAD_DIR
               value: /app/uploads
+            # The frontend nginx fronts /api: key the signup rate limit on the
+            # client IP it appends to X-Forwarded-For.
+            - name: TRUSTED_PROXY
+              value: "1"
             - name: MYSQL_PASSWORD
               valueFrom:
                 secretKeyRef:
