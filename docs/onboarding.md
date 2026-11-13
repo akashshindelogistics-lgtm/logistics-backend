@@ -172,7 +172,7 @@ convention.
 3. **Email verification and existing-org upgrade:** mail transport, verify and
    resend routes, banner, and the "create your first Admin user" prompt for
    pre-existing orgs.
-4. **CSV import:** the four import kinds, dry run, templates, UI.
+4. **CSV import:** the four import kinds, dry run, templates, UI. Backend: see [data-import.md](data-import.md).
 5. **Optional:** sample data, address geocoding.
 
 ## Tests
