@@ -247,6 +247,7 @@ mod tests {
             godown_inventory: Vec::new(),
             dispatch_volume: Vec::new(),
             hired_transport: Default::default(),
+            trip_costs: Default::default(),
         }
     }
 

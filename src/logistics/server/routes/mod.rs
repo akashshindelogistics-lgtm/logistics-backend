@@ -27,12 +27,13 @@ use crate::logistics::notification::notification::{
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::reports::{
     CategoryUnits, DeliveryPerformance, DispatchVolumePoint, GodownInventory, HireMargin,
-    HiredTransport, OpsReport, VehicleUtilization, VendorSpend,
+    HiredTransport, OpsReport, TripCost, TripCosts, VehicleUtilization, VendorSpend,
 };
 use crate::logistics::stock::category::StockCategory;
 use crate::logistics::stock::stock::Stock;
 use crate::logistics::user::user::{OrgRole, OrgUser};
 use crate::logistics::vehicle::document::{ComplianceDocType, ComplianceStatus, VehicleDocument};
+use crate::logistics::vehicle::expense::{ExpenseType, VehicleExpense};
 use crate::logistics::vehicle::maintenance::{MaintenanceStatus, VehicleMaintenance};
 use crate::logistics::vehicle::vehicle::{Location, Unit, Vehicle, VehicleType};
 use crate::logistics::vendor::hire::{HireStatus, VehicleHire, VendorPayment};
@@ -66,6 +67,7 @@ mod trips;
 mod uploads;
 mod users;
 mod vehicle_documents;
+mod vehicle_expenses;
 mod vehicles;
 mod vendors;
 
@@ -92,6 +94,7 @@ pub use trips::*;
 pub use uploads::*;
 pub use users::*;
 pub use vehicle_documents::*;
+pub use vehicle_expenses::*;
 pub use vehicles::*;
 pub use vendors::*;
 
@@ -174,6 +177,10 @@ impl Modify for SecurityAddon {
         record_vehicle_maintenance_mileage,
         delete_vehicle_maintenance,
         list_org_vehicle_maintenance,
+        list_vehicle_expenses,
+        add_vehicle_expense,
+        delete_vehicle_expense,
+        list_org_vehicle_expenses,
         list_godowns,
         create_godown,
         get_godown,
@@ -254,6 +261,8 @@ impl Modify for SecurityAddon {
             Organization, Vehicle, Unit, VehicleType, Location, Stock, Godown, StockTransfer, Customer, Driver,
             VehicleDocument, ComplianceDocType, ComplianceStatus,
             VehicleMaintenance, MaintenanceStatus, VehicleMaintenanceResponse, VehicleMaintenanceListResponse,
+            VehicleExpense, ExpenseType, VehicleExpensePayload, VehicleExpenseResponse, VehicleExpenseListResponse,
+            TripCost, TripCosts,
             DispatchOrder, DispatchLineItem, DispatchStatus, DispatchStatusEvent, ProofOfDelivery,
             Invoice, PaymentStatus, CustomerBillingSummary,
             OpsReport, VehicleUtilization, DeliveryPerformance, GodownInventory, CategoryUnits, DispatchVolumePoint,
@@ -308,6 +317,7 @@ impl Modify for SecurityAddon {
         (name = "Vehicle vendors", description = "Transporters and brokers the organization hires vehicles from, and the trucks hired from them"),
         (name = "Vehicle compliance", description = "Vehicle paperwork (insurance, RC, permit, PUC, fitness) and expiry tracking"),
         (name = "Vehicle maintenance", description = "Preventive maintenance scheduling by due date and/or odometer mileage, with alerts"),
+        (name = "Vehicle expenses", description = "Fuel fills, tolls, driver advances and other per-vehicle costs, tagged to trips for cost-per-trip reporting"),
         (name = "Godowns", description = "Warehouse (godown) and stock management"),
         (name = "Customers", description = "Customer management"),
         (name = "Dispatch", description = "Stock dispatch"),
@@ -409,6 +419,10 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(record_vehicle_maintenance_mileage)
             .service(delete_vehicle_maintenance)
             .service(list_org_vehicle_maintenance)
+            .service(list_vehicle_expenses)
+            .service(add_vehicle_expense)
+            .service(delete_vehicle_expense)
+            .service(list_org_vehicle_expenses)
             .service(list_godowns)
             .service(create_godown)
             .service(get_godown)
