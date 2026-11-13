@@ -53,7 +53,13 @@ and books a "market truck" for the trip. This plan adds that path.
   there are any. UI: an Outstanding column and a Vehicle Hires table (Record
   payment, payment history) on the Vendors page, and a Hired transport
   section on the Reports page.
-- Phase 4: not started.
+- **Phase 4 (optional extras): delay alert done**; vendor rate cards and
+  the per-hire GPS tracker key are not started (they ship as separate PRs).
+  A hired dispatch still `AWAITING_VEHICLE` more than
+  `AWAITING_VEHICLE_ALERT_HOURS` (4, fleet-wide) after creation emails the
+  org's active ADMIN users once (`VEHICLE_AWAITED_TOO_LONG`). It is internal:
+  the customer is not told. It runs in the same 15-minute scan as the
+  running-late alert; see [delay-alerts.md](delay-alerts.md).
 
 ## Decisions
 

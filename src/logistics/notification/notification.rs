@@ -51,6 +51,10 @@ pub enum NotificationEvent {
     /// it was created. Recorded by
     /// [`crate::logistics::notification::delay_alerts::scan_and_alert`].
     DispatchRunningLate,
+    /// A hired dispatch has sat in `AWAITING_VEHICLE` past
+    /// [`crate::logistics::dispatch::dispatch::AWAITING_VEHICLE_ALERT_HOURS`].
+    /// Internal: email to the org's admins only, never the customer.
+    VehicleAwaitedTooLong,
     /// A freight invoice was raised against the dispatch. Email only: there
     /// is no DLT template for it, so a customer with just a phone is skipped.
     InvoiceRaised,
@@ -62,6 +66,7 @@ impl NotificationEvent {
             NotificationEvent::DispatchCreated => "DISPATCH_CREATED",
             NotificationEvent::DispatchDelivered => "DISPATCH_DELIVERED",
             NotificationEvent::DispatchRunningLate => "DISPATCH_RUNNING_LATE",
+            NotificationEvent::VehicleAwaitedTooLong => "VEHICLE_AWAITED_TOO_LONG",
             NotificationEvent::InvoiceRaised => "INVOICE_RAISED",
         }
     }
@@ -73,6 +78,7 @@ impl NotificationEvent {
             NotificationEvent::DispatchCreated => "Your order is on its way",
             NotificationEvent::DispatchDelivered => "Your order has been delivered",
             NotificationEvent::DispatchRunningLate => "Your order is running behind schedule",
+            NotificationEvent::VehicleAwaitedTooLong => "A hired dispatch has no truck yet",
             NotificationEvent::InvoiceRaised => "Your invoice is ready",
         }
     }
@@ -231,6 +237,7 @@ impl Notification {
             event: match event.as_str() {
                 "DISPATCH_DELIVERED" => NotificationEvent::DispatchDelivered,
                 "DISPATCH_RUNNING_LATE" => NotificationEvent::DispatchRunningLate,
+                "VEHICLE_AWAITED_TOO_LONG" => NotificationEvent::VehicleAwaitedTooLong,
                 "INVOICE_RAISED" => NotificationEvent::InvoiceRaised,
                 _ => NotificationEvent::DispatchCreated,
             },
@@ -325,7 +332,7 @@ impl Notification {
             NotificationEvent::DispatchCreated => Some(SmsTemplate::DispatchCreatedCustomer),
             NotificationEvent::DispatchDelivered => Some(SmsTemplate::DispatchDelivered),
             NotificationEvent::DispatchRunningLate => Some(SmsTemplate::DispatchRunningLate),
-            NotificationEvent::InvoiceRaised => None,
+            NotificationEvent::InvoiceRaised | NotificationEvent::VehicleAwaitedTooLong => None,
         }
     }
 
@@ -334,7 +341,12 @@ impl Notification {
     pub(crate) fn email_subject(&self) -> String {
         if self.recipient_kind == ORG_ADMIN {
             let short_id = &self.dispatch_id.to_string()[..8];
-            return format!("Dispatch {short_id} is running late");
+            return match self.event {
+                NotificationEvent::VehicleAwaitedTooLong => {
+                    format!("Dispatch {short_id} still has no truck")
+                }
+                _ => format!("Dispatch {short_id} is running late"),
+            };
         }
         self.event.email_subject().to_string()
     }
@@ -544,6 +556,53 @@ impl Notification {
                 admin_body.clone(),
             ));
         }
+        Self::insert_all(tx, &notifs)?;
+        Ok(Some(notifs))
+    }
+
+    /// Record the internal "no truck assigned yet" email to the org's admins
+    /// and publish its event, at most once per dispatch (the event's unique
+    /// dedupe key decides). Returns `None` if already published. The customer
+    /// isn't told: the truck is the org's problem to solve.
+    pub fn enqueue_vehicle_awaited_too_long(
+        tx: &mut Transaction<'_>,
+        org_id: Uuid,
+        dispatch_id: Uuid,
+        customer: &Customer,
+        hours_waiting: i64,
+    ) -> Result<Option<Vec<Notification>>, Box<dyn Error>> {
+        let published = events::queue::publish(
+            tx,
+            org_id,
+            EventType::VehicleAwaitedTooLong,
+            serde_json::json!({
+                "dispatch_id": dispatch_id,
+                "customer_name": customer.name,
+                "hours_waiting": hours_waiting,
+            }),
+            Some(&format!("dispatch.awaiting_vehicle_delayed:{dispatch_id}")),
+        )?;
+        if !published {
+            return Ok(None);
+        }
+        let short_id = &dispatch_id.to_string()[..8];
+        let body = format!(
+            "Dispatch {short_id} to {} has been waiting {hours_waiting}h for a hired truck. Assign a vehicle or cancel the dispatch.",
+            customer.name
+        );
+        let notifs: Vec<Notification> = Self::org_admin_targets(org_id)?
+            .into_iter()
+            .map(|target| {
+                Self::build(
+                    org_id,
+                    dispatch_id,
+                    NotificationEvent::VehicleAwaitedTooLong,
+                    ORG_ADMIN,
+                    Some(target),
+                    body.clone(),
+                )
+            })
+            .collect();
         Self::insert_all(tx, &notifs)?;
         Ok(Some(notifs))
     }

@@ -41,7 +41,52 @@ pub async fn scan_and_alert() -> Result<usize, Box<dyn Error>> {
             Err(err) => eprintln!("delay-alert scan: dispatch {}: {err}", dispatch.id),
         }
     }
+
+    let waiting: Vec<DispatchOrder> = DispatchOrder::list_awaiting_vehicle()?
+        .into_iter()
+        .filter(|d| d.is_awaiting_vehicle_too_long())
+        .collect();
+    for dispatch in &waiting {
+        match alert_awaiting_vehicle(dispatch).await {
+            Ok(true) => sent += 1,
+            Ok(false) => {}
+            Err(err) => eprintln!("delay-alert scan: dispatch {}: {err}", dispatch.id),
+        }
+    }
     Ok(sent)
+}
+
+/// Email the org's admins that a hired dispatch still has no truck. Once per
+/// dispatch. Returns whether a new alert was queued.
+async fn alert_awaiting_vehicle(dispatch: &DispatchOrder) -> Result<bool, Box<dyn Error>> {
+    let already_alerted = Notification::list_by_dispatch(dispatch.id)?
+        .iter()
+        .any(|n| n.event == NotificationEvent::VehicleAwaitedTooLong);
+    if already_alerted {
+        return Ok(false);
+    }
+    let Some(customer) = Customer::get_by_id(dispatch.customer_id)? else {
+        return Ok(false);
+    };
+
+    let mut conn = DbConnection::from_env().get_connection()?;
+    Notification::prepare_tables(&mut conn)?;
+    let mut tx = conn.start_transaction(TxOpts::default())?;
+    let Some(notifs) = Notification::enqueue_vehicle_awaited_too_long(
+        &mut tx,
+        dispatch.org_id,
+        dispatch.id,
+        &customer,
+        dispatch.hours_waiting(),
+    )?
+    else {
+        return Ok(false);
+    };
+    tx.commit()?;
+
+    Notification::index_best_effort(&notifs);
+    worker::wake();
+    Ok(true)
 }
 
 /// Alert on one dispatch, unless it's already been alerted on or its
