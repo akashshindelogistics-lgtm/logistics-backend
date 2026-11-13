@@ -352,3 +352,118 @@ async fn test_signup_limit_keys_on_rightmost_forwarded_ip_only_behind_trusted_pr
     }
     assert_eq!(post("c-over".into(), "203.0.113.4").await, 429);
 }
+
+fn bearer_for(auth: &LoginData) -> (&'static str, String) {
+    ("Authorization", format!("Bearer {}", auth.token))
+}
+
+#[actix_web::test]
+async fn test_verify_email_flow_and_session_banner_state() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (_, user, token) = OrgUser::signup(
+        "Banner Org",
+        "1 St",
+        "Owner",
+        "banner@example.com",
+        "passw0rd1",
+    )
+    .unwrap();
+    let login = test::TestRequest::post()
+        .uri("/api/auth/user-login")
+        .set_json(&UserLoginPayload {
+            email: "banner@example.com".into(),
+            password: "passw0rd1".into(),
+        })
+        .to_request();
+    let login: ApiResponse<LoginData> =
+        test::read_body_json(test::call_service(&app, login).await).await;
+    let login = login.data.unwrap();
+
+    macro_rules! session {
+        () => {{
+            let req = test::TestRequest::get()
+                .uri("/api/auth/session")
+                .insert_header(bearer_for(&login))
+                .to_request();
+            let resp = test::call_service(&app, req).await;
+            assert_eq!(resp.status().as_u16(), 200);
+            let body: ApiResponse<SessionData> = test::read_body_json(resp).await;
+            body.data.unwrap()
+        }};
+    }
+    let s = session!();
+    assert!(!s.email_verified);
+    assert!(!s.needs_admin_user, "the owner is an Admin user");
+    assert_eq!(s.email.as_deref(), Some("banner@example.com"));
+
+    // Just signed up: a resend is rate limited.
+    let req = test::TestRequest::post()
+        .uri("/api/auth/resend-verification")
+        .insert_header(bearer_for(&login))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 429);
+
+    for (t, want) in [("nope", 400), (token.as_str(), 200), (token.as_str(), 400)] {
+        let req = test::TestRequest::post()
+            .uri("/api/auth/verify-email")
+            .set_json(&VerifyEmailPayload { token: t.into() })
+            .to_request();
+        assert_eq!(test::call_service(&app, req).await.status().as_u16(), want);
+    }
+    assert!(session!().email_verified);
+    let req = test::TestRequest::post()
+        .uri("/api/auth/resend-verification")
+        .insert_header(bearer_for(&login))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 400);
+    let _ = user;
+}
+
+#[actix_web::test]
+async fn test_org_without_admin_user_is_prompted_then_creates_one() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, admin) = setup_org(&app, "Legacy Session Org").await;
+
+    let get_session = || {
+        test::TestRequest::get()
+            .uri("/api/auth/session")
+            .insert_header(("Authorization", admin.clone()))
+            .to_request()
+    };
+    let body: ApiResponse<SessionData> =
+        test::read_body_json(test::call_service(&app, get_session()).await).await;
+    let s = body.data.unwrap();
+    assert!(s.needs_admin_user);
+    assert!(
+        s.email_verified,
+        "org-password login has no email to verify"
+    );
+    assert!(s.user_id.is_none());
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/orgs/{}/users", org.id))
+        .insert_header(("Authorization", admin.clone()))
+        .set_json(&CreateUserPayload {
+            name: "First Admin".into(),
+            email: "first-admin@example.com".into(),
+            password: "passw0rd1".into(),
+            role: OrgRole::Admin,
+        })
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 201);
+    let body: ApiResponse<SessionData> =
+        test::read_body_json(test::call_service(&app, get_session()).await).await;
+    assert!(!body.data.unwrap().needs_admin_user);
+}
+
+#[actix_web::test]
+async fn test_session_requires_a_token() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let req = test::TestRequest::get()
+        .uri("/api/auth/session")
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 401);
+}

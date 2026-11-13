@@ -136,6 +136,39 @@ pub fn validate_password(password: &str, email: &str) -> Result<(), UserError> {
     Ok(())
 }
 
+/// How long a verification token stays valid.
+pub const VERIFICATION_TTL_SECS: i64 = 24 * 3600;
+/// Minimum gap between two verification emails to the same user.
+pub const RESEND_COOLDOWN_SECS: i64 = 60;
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 244 random bits as hex (two v4 UUIDs, `-` removed).
+fn new_verification_token() -> String {
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+fn hash_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(token.trim().as_bytes()))
+}
+
+/// Why [`OrgUser::resend_verification`] issued no token.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResendOutcome {
+    /// A fresh token to mail.
+    Issued(String),
+    /// Already verified (or never required); nothing to send.
+    NotPending,
+    /// A token was issued less than [`RESEND_COOLDOWN_SECS`] ago.
+    TooSoon,
+}
+
 fn normalise_email(email: &str) -> String {
     email.trim().to_ascii_lowercase()
 }
@@ -153,10 +186,35 @@ impl OrgUser {
                 role VARCHAR(32) NOT NULL,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 terms_accepted_at BIGINT DEFAULT NULL,
+                email_verified_at BIGINT DEFAULT NULL,
+                email_verification_hash VARCHAR(64) DEFAULT NULL,
+                email_verification_expires_at BIGINT DEFAULT NULL,
                 CONSTRAINT fk_org_user_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
             )",
         )?;
-        Self::ensure_terms_column(conn)
+        Self::ensure_terms_column(conn)?;
+        Self::ensure_verification_columns(conn)
+    }
+
+    /// Add the email-verification columns to an `OrgUsers` table that predates
+    /// them. Existing users stay `NULL`, which means "no verification pending".
+    fn ensure_verification_columns(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Error>> {
+        for (column, ddl) in [
+            ("email_verified_at", "BIGINT NULL"),
+            ("email_verification_hash", "VARCHAR(64) NULL"),
+            ("email_verification_expires_at", "BIGINT NULL"),
+        ] {
+            let has_column: Option<i64> = conn.exec_first(
+                "SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = DATABASE() AND table_name = 'OrgUsers'
+                   AND column_name = :column",
+                params! { "column" => column },
+            )?;
+            if has_column.is_none() {
+                conn.query_drop(format!("ALTER TABLE OrgUsers ADD COLUMN {column} {ddl}"))?;
+            }
+        }
+        Ok(())
     }
 
     /// Add `terms_accepted_at` (unix seconds) to an `OrgUsers` table that
@@ -176,14 +234,15 @@ impl OrgUser {
 
     /// Self-serve signup: create an organisation and its first `Admin` user in
     /// one transaction, so a failure never leaves an org without an owner.
-    /// `terms_accepted_at` is stamped with the current time.
+    /// `terms_accepted_at` is stamped with the current time. The third value is
+    /// the email-verification token to mail to the owner; only its hash is stored.
     pub fn signup(
         org_name: &str,
         address: &str,
         owner_name: &str,
         email: &str,
         password: &str,
-    ) -> Result<(Organization, Self), UserError> {
+    ) -> Result<(Organization, Self, String), UserError> {
         let org_name = org_name.trim();
         let owner_name = owner_name.trim();
         let email = normalise_email(email);
@@ -230,11 +289,9 @@ impl OrgUser {
             role: OrgRole::Admin,
             is_active: true,
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        let now = now_secs();
 
+        let token = new_verification_token();
         let mut tx = conn.start_transaction(TxOpts::default())?;
         let taken: Option<i64> = tx.exec_first(
             "SELECT 1 FROM OrgUsers WHERE email = :email",
@@ -252,8 +309,9 @@ impl OrgUser {
             },
         )?;
         let inserted = tx.exec_drop(
-            "INSERT INTO OrgUsers (id, org_id, name, email, password_hash, role, is_active, terms_accepted_at)
-             VALUES (:id, :org_id, :name, :email, :password_hash, :role, TRUE, :terms)",
+            "INSERT INTO OrgUsers (id, org_id, name, email, password_hash, role, is_active, terms_accepted_at,
+                                   email_verification_hash, email_verification_expires_at)
+             VALUES (:id, :org_id, :name, :email, :password_hash, :role, TRUE, :terms, :vhash, :vexpires)",
             params! {
                 "id" => user.id.to_string(),
                 "org_id" => user.org_id.to_string(),
@@ -262,6 +320,8 @@ impl OrgUser {
                 "password_hash" => &password_hash,
                 "role" => user.role.as_str(),
                 "terms" => now,
+                "vhash" => hash_token(&token),
+                "vexpires" => now + VERIFICATION_TTL_SECS,
             },
         );
         match inserted {
@@ -272,7 +332,106 @@ impl OrgUser {
             other => other?,
         }
         tx.commit()?;
-        Ok((org, user))
+        Ok((org, user, token))
+    }
+
+    /// `true` unless the user signed up and has not yet clicked the link.
+    /// Users created by an Admin, and users that predate verification, count
+    /// as verified.
+    pub fn email_verified(id: Uuid) -> Result<bool, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        Self::ensure_table(&mut conn)?;
+        let row: Option<Option<String>> = conn.exec_first(
+            "SELECT email_verification_hash FROM OrgUsers WHERE id = :id",
+            params! { "id" => id.to_string() },
+        )?;
+        Ok(row.is_none_or(|h| h.is_none()))
+    }
+
+    /// Ids of the org's users whose email is still unverified.
+    pub fn unverified_ids(org_id: Uuid) -> Result<Vec<Uuid>, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        Self::ensure_table(&mut conn)?;
+        let ids: Vec<String> = conn.exec(
+            "SELECT id FROM OrgUsers WHERE org_id = :org_id AND email_verification_hash IS NOT NULL",
+            params! { "org_id" => org_id.to_string() },
+        )?;
+        Ok(ids.iter().filter_map(|i| Uuid::parse_str(i).ok()).collect())
+    }
+
+    /// Whether the org has an active Admin team member. Orgs that predate
+    /// user accounts only have the shared org password and should be prompted
+    /// to create one.
+    pub fn org_has_admin(org_id: Uuid) -> Result<bool, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        Self::ensure_table(&mut conn)?;
+        let row: Option<i64> = conn.exec_first(
+            "SELECT 1 FROM OrgUsers WHERE org_id = :org_id AND role = 'ADMIN' AND is_active = TRUE LIMIT 1",
+            params! { "org_id" => org_id.to_string() },
+        )?;
+        Ok(row.is_some())
+    }
+
+    /// Consume a verification token: marks the user verified and returns
+    /// them. `None` when the token is unknown, expired or already used.
+    pub fn verify_email(token: &str) -> Result<Option<Self>, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        Self::ensure_table(&mut conn)?;
+        let hash = hash_token(token);
+        let now = now_secs();
+        let row: Option<(String, String, String, String, String, bool)> = conn.exec_first(
+            format!(
+                "SELECT {SELECT_COLS} FROM OrgUsers
+                 WHERE email_verification_hash = :hash AND email_verification_expires_at > :now"
+            ),
+            params! { "hash" => &hash, "now" => now },
+        )?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        // The UPDATE re-checks the hash, so two racing requests cannot both win.
+        conn.exec_drop(
+            "UPDATE OrgUsers SET email_verified_at = :now, email_verification_hash = NULL,
+                    email_verification_expires_at = NULL
+             WHERE id = :id AND email_verification_hash = :hash",
+            params! { "now" => now, "id" => &row.0, "hash" => &hash },
+        )?;
+        if conn.affected_rows() == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Self::row_to_user(row)))
+    }
+
+    /// Issue a new verification token for a user whose email is pending,
+    /// replacing the old one.
+    pub fn resend_verification(id: Uuid) -> Result<ResendOutcome, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        Self::ensure_table(&mut conn)?;
+        let row: Option<(Option<String>, Option<i64>)> = conn.exec_first(
+            "SELECT email_verification_hash, email_verification_expires_at FROM OrgUsers WHERE id = :id",
+            params! { "id" => id.to_string() },
+        )?;
+        let now = now_secs();
+        let Some((Some(_), expires)) = row else {
+            return Ok(ResendOutcome::NotPending);
+        };
+        // The token was issued at `expires - TTL`.
+        if let Some(expires) = expires
+            && now - (expires - VERIFICATION_TTL_SECS) < RESEND_COOLDOWN_SECS
+        {
+            return Ok(ResendOutcome::TooSoon);
+        }
+        let token = new_verification_token();
+        conn.exec_drop(
+            "UPDATE OrgUsers SET email_verification_hash = :hash, email_verification_expires_at = :expires
+             WHERE id = :id",
+            params! {
+                "id" => id.to_string(),
+                "hash" => hash_token(&token),
+                "expires" => now + VERIFICATION_TTL_SECS,
+            },
+        )?;
+        Ok(ResendOutcome::Issued(token))
     }
 
     /// When the user accepted the terms, as unix seconds (`None` for users
