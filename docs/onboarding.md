@@ -1,6 +1,6 @@
 # New-organisation onboarding (plan)
 
-Status: **planned**; phase 1 (`POST /api/auth/signup`) is implemented. The signup rate limit is in-memory per process, keyed on the socket peer IP, or with `TRUSTED_PROXY=1` on the rightmost `X-Forwarded-For` entry (the one the proxy appends), and `terms_accepted_at` is stored on `OrgUsers`.
+Status: **planned**; phase 1 (`POST /api/auth/signup`) and the phase 2 checklist API (`GET /api/orgs/{id}/onboarding`, `PUT .../onboarding/dismiss`) are implemented; the frontend half of phase 2 is not. The signup rate limit is in-memory per process, keyed on the socket peer IP, or with `TRUSTED_PROXY=1` on the rightmost `X-Forwarded-For` entry (the one the proxy appends), and `terms_accepted_at` is stored on `OrgUsers`.
 
 Today a new org registers with a name, address and password, is logged in, and
 lands on its detail page (`frontend/src/pages/Register.tsx`). Nothing tells

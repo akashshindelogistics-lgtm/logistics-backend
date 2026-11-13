@@ -2,6 +2,7 @@
 
 use super::common::*;
 use crate::logistics::auth::auth::OrgCredentials;
+use crate::logistics::orgs::onboarding::OnboardingStatus;
 use crate::logistics::orgs::orgs::Organization;
 use actix_web::{HttpResponse, Responder, delete, get, post, put, web};
 use serde::{Deserialize, Serialize};
@@ -303,6 +304,106 @@ pub async fn delete_org(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl R
         Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
             success: false,
             message: format!("Failed to delete organization: {}", err),
+            data: None,
+        }),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct OnboardingResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<OnboardingStatus>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/orgs/{id}/onboarding",
+    tag = "Organizations",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Organization UUID")),
+    responses(
+        (status = 200, description = "Setup checklist, derived from the org's data", body = OnboardingResponse),
+        (status = 403, description = "Forbidden", body = EmptyResponse),
+        (status = 404, description = "Organization not found", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[get("/orgs/{id}/onboarding")]
+pub async fn get_onboarding(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl Responder {
+    let org_id = path.into_inner();
+    if org_id != auth.org_id {
+        return HttpResponse::Forbidden().json(ApiResponse::<String> {
+            success: false,
+            message: "Access denied: you can only view your own organization".to_string(),
+            data: None,
+        });
+    }
+    match Organization::onboarding_status(org_id) {
+        Ok(status) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: "Onboarding status retrieved successfully".to_string(),
+            data: Some(status),
+        }),
+        Err(err) if err.to_string() == "Organization not found" => {
+            HttpResponse::NotFound().json(ApiResponse::<String> {
+                success: false,
+                message: "Organization not found".to_string(),
+                data: None,
+            })
+        }
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to retrieve onboarding status: {}", err),
+            data: None,
+        }),
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/orgs/{id}/onboarding/dismiss",
+    tag = "Organizations",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Organization UUID")),
+    responses(
+        (status = 200, description = "Checklist hidden; returns the updated status", body = OnboardingResponse),
+        (status = 403, description = "Forbidden (Admin only)", body = EmptyResponse),
+        (status = 404, description = "Organization not found", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[put("/orgs/{id}/onboarding/dismiss")]
+pub async fn dismiss_onboarding(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl Responder {
+    if let Err(resp) = auth.require_role(&ADMIN_ONLY) {
+        return resp;
+    }
+    let org_id = path.into_inner();
+    if org_id != auth.org_id {
+        return HttpResponse::Forbidden().json(ApiResponse::<String> {
+            success: false,
+            message: "Access denied: you can only update your own organization".to_string(),
+            data: None,
+        });
+    }
+    match Organization::dismiss_onboarding(org_id)
+        .and_then(|_| Organization::onboarding_status(org_id))
+    {
+        Ok(status) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: "Onboarding checklist dismissed".to_string(),
+            data: Some(status),
+        }),
+        Err(err) if err.to_string() == "Organization not found" => {
+            HttpResponse::NotFound().json(ApiResponse::<String> {
+                success: false,
+                message: "Organization not found".to_string(),
+                data: None,
+            })
+        }
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to dismiss onboarding: {}", err),
             data: None,
         }),
     }

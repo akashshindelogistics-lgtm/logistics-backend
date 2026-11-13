@@ -53,6 +53,8 @@ pub const EXPOSED: &[&str] = &[
     "get_godown",
     "get_ops_report",
     "get_ops_report_summary",
+    "dismiss_onboarding",
+    "get_onboarding",
     "get_org",
     "get_reorder_suggestions",
     "get_trip",
