@@ -1,5 +1,6 @@
 use crate::logistics::db::connection::DbConnection;
 use crate::logistics::orgs::orgs::Organization;
+use crate::logistics::vehicle::location_history;
 use mysql::prelude::*;
 use mysql::*;
 use serde::{Deserialize, Serialize};
@@ -565,6 +566,16 @@ impl Vehicle {
                 "location_source" => source.as_str(),
             },
         )?;
+
+        location_history::record_best_effort(
+            &self.registration_number,
+            source.as_str(),
+            latitude,
+            longitude,
+            now,
+            None,
+            None,
+        );
 
         self.location = Some(Location {
             latitude,

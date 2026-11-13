@@ -120,6 +120,10 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ("driver_me", "for the driver's phone"),
     ("track_vehicle_location", "for GPS trackers"),
     (
+        "vehicle_location_history",
+        "thousands of map points, for the trip map",
+    ),
+    (
         "public_track_dispatch",
         "for customers holding a tracking link",
     ),

@@ -1024,3 +1024,122 @@ async fn test_device_pairing_access_rules() {
         device_pairing_request(&app, actix_http::Method::GET, Uuid::new_v4(), &auth).await;
     assert_eq!(unknown.status().as_u16(), 404);
 }
+
+async fn get_history(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse,
+        Error = actix_web::Error,
+    >,
+    auth: &str,
+    reg: &str,
+    query: &str,
+) -> actix_web::dev::ServiceResponse {
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/vehicles/{reg}/location-history{query}"))
+        .insert_header(("Authorization", auth.to_string()))
+        .to_request();
+    test::call_service(app, req).await
+}
+
+#[actix_web::test]
+async fn test_location_history_keeps_every_fix_from_every_source() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth) = setup_org(&app, "History Org").await;
+    let (_d, token) = pair_driver_phone(&app, org.id, &auth, Some("HIST-1")).await;
+    let token = token.to_string();
+    let now = unix_now();
+
+    // A batch, then a late one older than the vehicle's position: all kept.
+    let resp = post_driver_fixes(
+        &app,
+        Some(&token),
+        vec![fix(2.0, 2.0, now - 100), fix(3.0, 3.0, now - 50)],
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let resp = post_driver_fixes(&app, Some(&token), vec![fix(1.0, 1.0, now - 200)]).await;
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // A manual update.
+    let req = test::TestRequest::put()
+        .uri("/api/vehicles/HIST-1/location")
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(&LocationPayload {
+            latitude: 4.0,
+            longitude: 4.0,
+            address: None,
+        })
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+
+    let resp = get_history(&app, &auth, "HIST-1", &format!("?from={}", now - 1000)).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let points = test::read_body_json::<LocationHistoryResponse, _>(resp)
+        .await
+        .data
+        .unwrap();
+    let lats: Vec<f64> = points.iter().map(|p| p.latitude).collect();
+    assert_eq!(lats, [1.0, 2.0, 3.0, 4.0], "oldest first");
+    assert_eq!(points[0].source, "driver_phone");
+    assert_eq!(points[0].accuracy_m, Some(8.0));
+    assert_eq!(points[3].source, "manual");
+
+    // The range narrows the answer.
+    let resp = get_history(
+        &app,
+        &auth,
+        "HIST-1",
+        &format!("?from={}&to={}", now - 120, now - 60),
+    )
+    .await;
+    let points = test::read_body_json::<LocationHistoryResponse, _>(resp)
+        .await
+        .data
+        .unwrap();
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].latitude, 2.0);
+}
+
+#[actix_web::test]
+async fn test_location_history_checks_ownership_range_and_existence() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth) = setup_org(&app, "History Own Org").await;
+    register_vehicle(&app, org.id, &auth, "HIST-2").await;
+    let (_other, other_auth) = setup_org(&app, "History Other Org").await;
+
+    assert_eq!(
+        get_history(&app, &other_auth, "HIST-2", "")
+            .await
+            .status()
+            .as_u16(),
+        403
+    );
+    assert_eq!(
+        get_history(&app, &auth, "NOPE", "").await.status().as_u16(),
+        404
+    );
+    assert_eq!(
+        get_history(&app, &auth, "HIST-2", "?from=10&to=5")
+            .await
+            .status()
+            .as_u16(),
+        400
+    );
+    let req = test::TestRequest::get()
+        .uri("/api/vehicles/HIST-2/location-history")
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 401);
+    // No fixes yet: an empty trail, not an error.
+    let resp = get_history(&app, &auth, "HIST-2", "").await;
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(
+        test::read_body_json::<LocationHistoryResponse, _>(resp)
+            .await
+            .data
+            .unwrap()
+            .is_empty()
+    );
+}
