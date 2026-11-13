@@ -322,9 +322,9 @@ Android work goes in logistics-android.
 
 0. **Prerequisites**
    - Set `ANTHROPIC_API_KEY` on the deployed backend and as logistics-frontend's
-     CI secret.
-   - Add `ai/client.rs` and move all six modules to it.
-   - Migrate to `claude-haiku-5-5`, with per-feature `effort`.
+     CI secret. (still open: needs credits and a person)
+   - Add `ai/client.rs` and move all six modules to it. (done: `complete(prompt, Effort)`; the assistant uses `medium`, the rest `low`)
+   - Migrate to `claude-haiku-5-5`, with per-feature `effort`. (done)
 1. **Evaluation and retrieval fixes (option A)** (done)
    - The fixture org and the question set; recall@8 in `cargo test`.
    - Identifier normalisation, an ngram index for identifiers, and query
