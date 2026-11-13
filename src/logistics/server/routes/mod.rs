@@ -25,6 +25,7 @@ use crate::logistics::notification::notification::{
     Notification, NotificationChannel, NotificationEvent, NotificationStatus,
 };
 use crate::logistics::orgs::orgs::Organization;
+use crate::logistics::orgs::sample_data::SampleDataSummary;
 use crate::logistics::reports::{
     CategoryUnits, DeliveryPerformance, DispatchVolumePoint, GodownInventory, HireMargin,
     HiredTransport, OpsReport, VehicleUtilization, VendorSpend,
@@ -60,6 +61,7 @@ mod maintenance;
 mod notifications;
 mod orgs;
 mod reports;
+mod sample_data;
 mod stock_categories;
 mod tracking;
 mod trips;
@@ -86,6 +88,7 @@ pub use maintenance::*;
 pub use notifications::*;
 pub use orgs::*;
 pub use reports::*;
+pub use sample_data::*;
 pub use stock_categories::*;
 pub use tracking::*;
 pub use trips::*;
@@ -195,6 +198,9 @@ impl Modify for SecurityAddon {
         update_dispatch_status,
         dispatch_challan_pdf,
         update_dispatch_eway_bill,
+        get_sample_data_status,
+        load_sample_data,
+        remove_sample_data,
         list_stock_categories,
         set_stock_category_hsn,
         delete_stock_category_hsn,
@@ -266,6 +272,7 @@ impl Modify for SecurityAddon {
             StockTransferResponse, StockTransferListResponse,
             CustomerResponse, CustomerListResponse, CustomerGstinPayload,
             UpdateEwayBillPayload, SetHsnPayload, StockCategory, StockCategoryResponse, StockCategoryListResponse,
+            SampleDataStatus, SampleDataStatusResponse, SampleDataSummary, SampleDataSummaryResponse,
             DriverResponse, DriverListResponse,
             DriverLocationFix, DriverLocationPayload, DriverLocationResult, DriverLocationResultResponse,
             DriverDeviceToken, DriverDeviceTokenResponse, DevicePairing, DevicePairingResponse,
@@ -430,6 +437,9 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(update_dispatch_status)
             .service(dispatch_challan_pdf)
             .service(update_dispatch_eway_bill)
+            .service(get_sample_data_status)
+            .service(load_sample_data)
+            .service(remove_sample_data)
             .service(list_stock_categories)
             .service(set_stock_category_hsn)
             .service(delete_stock_category_hsn)

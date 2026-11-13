@@ -48,6 +48,7 @@ mod maintenance;
 mod notifications;
 mod orgs;
 mod reports;
+mod sample_data;
 mod tracking;
 mod trips;
 mod uploads;

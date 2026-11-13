@@ -323,6 +323,7 @@ All routes are served under the `/api` prefix.
 | PUT | `/api/customers/{id}/gstin` | Set or clear a customer's GSTIN (see `docs/gst.md`) |
 | GET | `/api/stock-categories` | The org's stock categories that have an HSN code |
 | PUT/DELETE | `/api/stock-categories/{name}/hsn` | Set or remove the HSN code for a stock category |
+| GET/POST/DELETE | `/api/orgs/{id}/sample-data` | Whether demo data is loaded; load it (Admin); remove exactly it (Admin). See [`docs/onboarding.md`](docs/onboarding.md) |
 | PUT | `/api/dispatches/{id}/eway-bill` | Set or clear a dispatch's e-way bill number (locked once `DELIVERED`) |
 | POST | `/api/orgs/{id}/dispatch` | Dispatch stock from an org to one of its customers (`vehicle_source: HIRED` + `vendor_id` to hire the truck) |
 | POST/GET | `/api/orgs/{id}/trips` | Plan a multi-stop trip (one vehicle, several customers; can also be hired) / list the org's trips, including standalone dispatches as one-stop trips |
