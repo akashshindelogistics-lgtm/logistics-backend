@@ -125,6 +125,9 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The `next` job re-dispatches this workflow with github.token, so those runs' actor is
+          # github-actions[bot]; the action rejects bot actors unless listed here.
+          allowed_bots: github-actions
           claude_args: --max-turns 100 --allowedTools Bash,Read,Edit,Write,Glob,Grep
           # Prints every message and tool result into this public log, so only for issues the
           # owner labels `agent:debug`; delete the run's logs after reading them.
