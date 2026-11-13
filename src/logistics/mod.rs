@@ -12,6 +12,7 @@ pub mod events;
 pub mod godown;
 pub mod gst;
 pub mod http;
+pub mod import;
 pub mod notification;
 pub mod orgs;
 pub mod reports;
