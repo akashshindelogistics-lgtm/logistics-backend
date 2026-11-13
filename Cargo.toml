@@ -26,6 +26,7 @@ edition = "2024"
  # SMTP client for Gmail. rustls + bundled roots to match reqwest's TLS setup;
  # default features would pull in native-tls/OpenSSL.
  lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots"] }
+base64 = "0.23.1"
 
 [dev-dependencies]
  actix-http = "3"

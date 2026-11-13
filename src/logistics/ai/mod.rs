@@ -4,6 +4,7 @@ pub mod digest;
 #[cfg(test)]
 mod eval;
 pub mod notification_copy;
+pub mod pod_check;
 pub mod query;
 pub mod reorder;
 pub mod report;

@@ -2,12 +2,14 @@
 //! through its status lifecycle (with proof of delivery).
 
 use super::common::*;
+use crate::logistics::ai::pod_check::{self, PodVerdict};
 use crate::logistics::customer::customer::Customer;
 use crate::logistics::dispatch::challan::Challan;
 use crate::logistics::dispatch::dispatch::{
     DispatchLineItemInput, DispatchOrder, DispatchStatus, ProofOfDeliveryInput, VehicleSource,
 };
 use crate::logistics::orgs::orgs::Organization;
+use crate::logistics::upload::upload::UploadedFile;
 use actix_web::{HttpResponse, Responder, get, post, put, web};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -263,6 +265,25 @@ pub async fn update_dispatch_status(
             receiver_name: p.receiver_name.clone(),
             signature_or_photo_url: p.signature_or_photo_url.clone(),
         });
+
+    // Vision check on an uploaded proof photo before marking DELIVERED. Fails
+    // open: only a clear "not a signature/photo" verdict blocks the delivery.
+    if payload.status == DispatchStatus::Delivered
+        && let Some(file) = proof
+            .as_ref()
+            .and_then(|p| pod_check::upload_id_from_url(&p.signature_or_photo_url))
+            .and_then(|id| UploadedFile::get_by_id(id).ok().flatten())
+        && file.org_id == auth.org_id
+        && let Ok(PodVerdict::NotProof) = pod_check::check_upload(&file).await
+    {
+        return HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message: "Status update failed: the proof-of-delivery file doesn't look like a \
+                signature or a photo of the delivered goods; upload a clearer one"
+                .to_string(),
+            data: None,
+        });
+    }
 
     match dispatch.transition_to(payload.status, proof, payload.return_to_godown_id) {
         Ok(()) => HttpResponse::Ok().json(ApiResponse {
