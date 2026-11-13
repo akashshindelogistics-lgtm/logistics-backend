@@ -431,7 +431,13 @@ hand an issue to Claude Code, the owner adds `agent:ready`; the agent moves it
 to `agent:working`, then `agent:review` once its draft PR (which closes the
 issue) is open. Every hour the same workflow also starts the next `agent:ready`
 issue on its own (priority A, B, C, then unlabelled; oldest first), one at a
-time: it skips the hour while any issue is `agent:working`. Use *Run workflow*
+time: it skips the hour while any issue is `agent:working`. Each successful
+run starts the next `agent:ready` issue straight away, so the queue drains
+without waiting for the schedule. When an issue is vague or needs a product
+decision, the agent builds the approach it recommends, explains each choice
+under *Decisions made* in the PR, and labels the PR `agent:decided`; it only
+stops to ask when it needs secrets, real customer data, the live deployment or
+a destructive data change. Use *Run workflow*
 on the Actions tab to start the next one immediately. `claude-agent.yml` needs the Claude GitHub App and its
 `CLAUDE_CODE_OAUTH_TOKEN` secret, set up once with `/install-github-app` in
 Claude Code. To keep the project board's Status in step (In Progress while the
