@@ -24,6 +24,7 @@ use crate::logistics::test_support::TestDb;
 use crate::logistics::upload::upload::MAX_UPLOAD_BYTES;
 use crate::logistics::user::user::{OrgRole, OrgUser};
 use crate::logistics::vehicle::document::{ComplianceDocType, ComplianceStatus, VehicleDocument};
+use crate::logistics::vehicle::expense::{ExpenseType, VehicleExpense};
 use crate::logistics::vehicle::maintenance::{MaintenanceStatus, VehicleMaintenance};
 use crate::logistics::vehicle::vehicle::{Location, LocationSource, Unit, Vehicle};
 use crate::logistics::vendor::hire::{HireStatus, VehicleHire, VendorPayment};
@@ -53,6 +54,7 @@ mod trips;
 mod uploads;
 mod users;
 mod vehicle_documents;
+mod vehicle_expenses;
 mod vehicles;
 mod vendors;
 
