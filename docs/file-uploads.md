@@ -109,3 +109,15 @@ where its own API lives — `uploadedFileHref()` in `src/api/uploads.ts`:
   signature/photo" link and fetch it directly to confirm it resolves to the
   uploaded bytes with the right content type. `npm run test:e2e:demo:uploads`
   is the standalone headed walkthrough (`file-uploads.demo.ts`).
+
+## Photo verification
+
+When a dispatch is moved to `DELIVERED` with a proof whose
+`signature_or_photo_url` is one of this backend's uploads
+(`/api/uploads/{id}`, same org), a vision call to Claude
+(`ai::pod_check`) checks the image is plausibly a signature or a photo of the
+delivered goods. A clear "no" returns `400` and the dispatch stays put.
+
+The check **fails open**: no `ANTHROPIC_API_KEY`, an API/network error, an
+unclear reply, or an external URL / `data:` URI (never fetched) all let the
+delivery through — a flaky third party must not block deliveries.
