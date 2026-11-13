@@ -60,7 +60,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      actions: write
       contents: write
       pull-requests: write
       issues: write
@@ -185,10 +184,20 @@ jobs:
           fi
           GH_TOKEN=$PROJECT_TOKEN bash .github/scripts/board-status.sh "$ISSUE" "$status"
 
-      # GitHub's hourly schedule is often late or skipped, so after a successful run start the
-      # next `agent:ready` issue straight away. workflow_dispatch is one of the few events the
-      # workflow's own token may trigger. The chain stops when `pick` finds nothing ready, and it
-      # does not continue after a failure, so a broken setup can't strip the label off every issue.
+  # GitHub's hourly schedule is often late or skipped, so after a successful run start the
+  # next `agent:ready` issue straight away. workflow_dispatch is one of the few events the
+  # workflow's own token may trigger. The chain stops when `pick` finds nothing ready, and it
+  # does not continue after a failure, so a broken setup can't strip the label off every issue.
+  # This is its own job so that `actions: write` never reaches the agent's token in `work`.
+  # `always()` stops a skipped `pick` (label events) from skipping this job too.
+  next:
+    needs: work
+    if: always() && needs.work.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
       - name: Start the next issue
-        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: gh workflow run claude-agent.yml -R "$GITHUB_REPOSITORY" --ref master
