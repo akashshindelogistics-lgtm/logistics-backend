@@ -430,9 +430,9 @@ sub-issues. Items migrated from the old `todo.org` carry `from-todo-org`. To
 hand an issue to Claude Code, the owner adds `agent:ready`; the agent moves it
 to `agent:working`, then `agent:review` once its draft PR (which closes the
 issue) is open. Every hour the same workflow also starts the next `agent:ready`
-issue on its own (priority A, B, C, then unlabelled; oldest first), one at a
-time: it skips the hour while any issue is `agent:working`. Each successful
-run starts the next `agent:ready` issue straight away, so the queue drains
+issues on its own (priority A, B, C, then unlabelled; oldest first), up to
+four at once: it only fills the slots left while issues are `agent:working`.
+Each successful run starts the next `agent:ready` issues straight away, so the queue drains
 without waiting for the schedule. When an issue is vague or needs a product
 decision, the agent builds the approach it recommends, explains each choice
 under *Decisions made* in the PR, and labels the PR `agent:decided`; it only
