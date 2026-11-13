@@ -24,6 +24,7 @@ use crate::logistics::godown::transfer::StockTransfer;
 use crate::logistics::notification::notification::{
     Notification, NotificationChannel, NotificationEvent, NotificationStatus,
 };
+use crate::logistics::orgs::onboarding::{OnboardingStatus, OnboardingStep};
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::reports::{
     CategoryUnits, DeliveryPerformance, DispatchVolumePoint, GodownInventory, HireMargin,
@@ -135,6 +136,8 @@ impl Modify for SecurityAddon {
         create_org,
         update_org,
         update_org_location,
+        get_onboarding,
+        dismiss_onboarding,
         delete_org,
         list_vehicles,
         add_vehicle,
@@ -260,7 +263,7 @@ impl Modify for SecurityAddon {
             Notification, NotificationEvent, NotificationChannel, NotificationStatus,
             Trip, TripStatus,
             OrgSummary,
-            OrgResponse, OrgListResponse, VehicleResponse, VehicleListResponse,
+            OrgResponse, OrgListResponse, OnboardingResponse, OnboardingStatus, OnboardingStep, VehicleResponse, VehicleListResponse,
             VehicleDocumentResponse, VehicleDocumentListResponse,
             StockResponse, GodownResponse, GodownListResponse,
             StockTransferResponse, StockTransferListResponse,
@@ -369,6 +372,8 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(create_org)
             .service(update_org)
             .service(update_org_location)
+            .service(get_onboarding)
+            .service(dismiss_onboarding)
             .service(delete_org)
             .service(list_vehicles)
             .service(add_vehicle)

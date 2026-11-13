@@ -285,6 +285,8 @@ All routes are served under the `/api` prefix.
 | GET/POST | `/api/orgs` | List / create organizations |
 | GET/PUT/DELETE | `/api/orgs/{id}` | Get, update, or delete an organization |
 | PUT | `/api/orgs/{id}/location` | Update an organization's location |
+| GET | `/api/orgs/{id}/onboarding` | New-org setup checklist (`{steps: [{key, required, done}], dismissed}`), derived from the org's real data; any member |
+| PUT | `/api/orgs/{id}/onboarding/dismiss` | Hide the setup checklist (Admin only); returns the updated status |
 | GET/POST | `/api/orgs/{id}/godowns` | List / create an organization's godowns (warehouses) |
 | GET/PUT/DELETE | `/api/godowns/{gid}` | Get, rename/re-address, or delete a godown |
 | PUT | `/api/godowns/{gid}/location` | Update a godown's location |
