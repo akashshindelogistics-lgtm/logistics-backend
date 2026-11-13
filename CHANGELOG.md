@@ -4,6 +4,13 @@ All notable changes to this project are documented here. From v0.1.1 on, this
 file is maintained automatically by [release-please](https://github.com/googleapis/release-please)
 from the conventional-commit history.
 
+## [1.1.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v1.0.0...v1.1.0) (2026-11-13)
+
+
+### Features
+
+* **godowns:** production plan endpoint for manufacturers ([#339](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/339)) ([9aac25f](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/9aac25f9e9cb6322d75822cad2c43b5eb039ac3f))
+
 ## [1.0.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.19.0...v1.0.0) (2026-11-13)
 
 
