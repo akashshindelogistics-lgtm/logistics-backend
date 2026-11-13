@@ -355,6 +355,7 @@ fn event_types_round_trip_and_all_have_subscribers() {
         EventType::DispatchCreated,
         EventType::DispatchDelivered,
         EventType::DispatchRunningLate,
+        EventType::VehicleAwaitedTooLong,
     ] {
         assert_eq!(EventType::parse(t.as_str()), Some(t));
         assert!(!t.subscribers().is_empty());

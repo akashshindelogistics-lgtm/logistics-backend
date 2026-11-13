@@ -473,3 +473,42 @@ async fn invoice_raised_skips_a_customer_with_only_a_phone() {
 
     assert_eq!(rows[0].status, NotificationStatus::Skipped);
 }
+
+#[test]
+fn awaiting_vehicle_alert_goes_to_admins_only_once() {
+    use crate::logistics::user::user::{OrgRole, OrgUser};
+    let _db = TestDb::create();
+    let org = org();
+    OrgUser::create(
+        org.id,
+        "Owner",
+        "owner@example.com",
+        "password1",
+        OrgRole::Admin,
+    )
+    .expect("admin");
+    let customer = customer_with(org.id, None, Some("meera@example.com"));
+    let dispatch_id = Uuid::new_v4();
+
+    let rows = in_tx(|tx| {
+        Notification::enqueue_vehicle_awaited_too_long(tx, org.id, dispatch_id, &customer, 6)
+    })
+    .expect("enqueue")
+    .expect("first alert");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].recipient_kind, "org_admin");
+    assert_eq!(rows[0].recipient, "owner@example.com");
+    assert!(rows[0].body.contains("6h"), "{}", rows[0].body);
+    assert_eq!(rows[0].sms_template(), None);
+    let short_id = &dispatch_id.to_string()[..8];
+    assert_eq!(
+        rows[0].email_subject(),
+        format!("Dispatch {short_id} still has no truck")
+    );
+
+    let again = in_tx(|tx| {
+        Notification::enqueue_vehicle_awaited_too_long(tx, org.id, dispatch_id, &customer, 7)
+    })
+    .expect("enqueue again");
+    assert!(again.is_none());
+}

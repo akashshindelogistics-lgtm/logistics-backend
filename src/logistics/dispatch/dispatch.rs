@@ -585,6 +585,11 @@ pub struct DispatchOrder {
 /// customer whose shipment has overrun it while still `IN_TRANSIT`.
 pub const PROMISED_DELIVERY_HOURS: f64 = 72.0;
 
+/// How long a hired dispatch may sit in `AWAITING_VEHICLE` before the org's
+/// admins are alerted that nobody has assigned a truck yet. Fleet-wide, like
+/// [`PROMISED_DELIVERY_HOURS`].
+pub const AWAITING_VEHICLE_ALERT_HOURS: i64 = 4;
+
 impl DispatchOrder {
     /// Total units across every line item — the old single `quantity` field's
     /// closest equivalent, for summaries and display.
@@ -608,6 +613,18 @@ impl DispatchOrder {
     pub fn is_running_late(&self) -> bool {
         self.status == DispatchStatus::InTransit
             && now_unix() - self.dispatched_at > (PROMISED_DELIVERY_HOURS * 3600.0) as i64
+    }
+
+    /// Whether this dispatch has been `AWAITING_VEHICLE` for more than
+    /// [`AWAITING_VEHICLE_ALERT_HOURS`] since it was created.
+    pub fn is_awaiting_vehicle_too_long(&self) -> bool {
+        self.status == DispatchStatus::AwaitingVehicle
+            && now_unix() - self.dispatched_at > AWAITING_VEHICLE_ALERT_HOURS * 3600
+    }
+
+    /// Whole hours this dispatch has been waiting since it was created.
+    pub fn hours_waiting(&self) -> i64 {
+        (now_unix() - self.dispatched_at) / 3600
     }
 
     /// How many hours past [`PROMISED_DELIVERY_HOURS`] this dispatch is,
@@ -1053,6 +1070,22 @@ impl DispatchOrder {
         Self::rows_to_orders(&mut conn, rows)
     }
 
+    /// Every `AWAITING_VEHICLE` dispatch across every org: the candidate set
+    /// for the "no truck assigned yet" alert.
+    pub fn list_awaiting_vehicle() -> Result<Vec<Self>, Box<dyn Error>> {
+        let db_connection = DbConnection::from_env();
+        let mut conn = db_connection.get_connection()?;
+        ensure_tables(&mut conn)?;
+
+        let rows: Vec<DispatchRow> = conn.exec(
+            "SELECT id, org_id, customer_id, vehicle_registration_number, status, dispatched_at, trip_id, stop_sequence, vehicle_source, hire_id, eway_bill_no
+             FROM Dispatches WHERE status = 'AWAITING_VEHICLE'",
+            (),
+        )?;
+
+        Self::rows_to_orders(&mut conn, rows)
+    }
+
     pub fn list_by_org(org_id: Uuid) -> Result<Vec<Self>, Box<dyn Error>> {
         let db_connection = DbConnection::from_env();
         let mut conn = db_connection.get_connection()?;
@@ -1279,6 +1312,16 @@ mod tests {
         for status in [Delivered, Returned, Cancelled] {
             let order = order_with_status_and_age(status, 500);
             assert!(!order.is_running_late(), "{status:?} should never be late");
+        }
+    }
+
+    #[test]
+    fn awaiting_vehicle_is_flagged_only_past_the_alert_window() {
+        assert!(order_with_status_and_age(AwaitingVehicle, 5).is_awaiting_vehicle_too_long());
+        assert!(!order_with_status_and_age(AwaitingVehicle, 1).is_awaiting_vehicle_too_long());
+        // Once a truck is assigned (or the dispatch ends) it is never flagged.
+        for status in [Pending, InTransit, Cancelled] {
+            assert!(!order_with_status_and_age(status, 500).is_awaiting_vehicle_too_long());
         }
     }
 

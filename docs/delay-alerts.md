@@ -53,6 +53,18 @@ VM (see `docs/file-uploads.md`), so an in-process loop needs no new
 infrastructure. There is no user-facing route for it; nothing calls it
 except that loop and the tests below.
 
+## Awaiting-vehicle alert
+
+The same scan also loads every `AWAITING_VEHICLE` dispatch
+(`DispatchOrder::list_awaiting_vehicle`) and keeps those older than
+`AWAITING_VEHICLE_ALERT_HOURS` (4h, `is_awaiting_vehicle_too_long`). For each
+that has no `VEHICLE_AWAITED_TOO_LONG` notification yet, it queues an email to
+every active ADMIN of the org (never the customer) and publishes
+`dispatch.awaiting_vehicle_delayed`, deduped per dispatch like the late alert.
+The alert stops mattering once a truck is assigned or the dispatch is
+cancelled, because the dispatch leaves `AWAITING_VEHICLE`. See
+[vehicle-vendors.md](vehicle-vendors.md).
+
 ## Frontend
 
 No new API call. `frontend/src/lib/dispatchLifecycle.ts`'s `isRunningLate()`
