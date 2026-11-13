@@ -4,6 +4,46 @@ All notable changes to this project are documented here. From v0.1.1 on, this
 file is maintained automatically by [release-please](https://github.com/googleapis/release-please)
 from the conventional-commit history.
 
+## [1.0.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.19.0...v1.0.0) (2026-11-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **notifications:** TWILIO_* variables are no longer read. Set MSG91_AUTH_KEY and the MSG91_TEMPLATE_* IDs, see docs/notifications.md.
+
+### Features
+
+* **ai:** retrieval evaluation fixture and FULLTEXT fixes (phase 1) ([#322](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/322)) ([3ecce36](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/3ecce36a9d705a461f40e4440b227204a05549e5))
+* **ai:** switch AI features from Claude Haiku 4.5 to Haiku 5.5 ([#124](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/124)) ([7c8de1e](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/7c8de1e15c0ae4b080bb861c9751b55059e2d09b))
+* **auth:** add POST /api/auth/signup for self-serve org + Admin creation ([af96e30](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/af96e3037f8c5ad6cfe40a1203adb3f3105f354f))
+* **auth:** POST /api/auth/signup (org + Admin atomically) ([a31f2ee](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/a31f2eee2c92cfe3b6c371b23cea21b4be98749d))
+* **deploy:** auto-deploy master to the local kind cluster ([#319](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/319)) ([c13695e](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/c13695e58274ac092cf6ca6c042cb76afd7c5f4a))
+* **deploy:** kind cluster with Prometheus and Grafana monitoring ([f531170](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/f5311708ef94bd8b81df4958e87405916b4e16a0))
+* **dispatch:** printable delivery challan / LR PDF per dispatch ([#320](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/320)) ([b6221ab](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/b6221ab4dd3ec987eb2c3e6cc5b5e908706ceb26))
+* **export:** CSV export of dispatches, stock, invoices and customers ([#329](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/329)) ([3f3b5de](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/3f3b5ded73e6279179ffac929f0f77271b3e9ee7))
+* **export:** Tally XML export of freight invoices and dispatched stock ([#333](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/333)) ([1bb753f](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/1bb753f1cb1e81d8703dad3200007e23bb7c4c7b))
+* **gst:** GSTIN, HSN per stock category and e-way bill number ([0f549ab](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/0f549abb268c6459d5a0642dab23413a3b279d6c))
+* **gst:** store GSTIN, HSN codes per stock category and e-way bill numbers ([dca0af2](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/dca0af2f0d864bf9415383ad3a775d893d4aa974))
+* **monitoring:** Grafana alert rules for the kind cluster ([#122](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/122)) ([20b48ca](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/20b48ca5c0dbc597d283e8fcc819c880be063e19))
+* **monitoring:** Prometheus and Grafana dashboards on the kind cluster ([ea571f5](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/ea571f58ab05fe9c9253a52f1c04377d49d4a4ba))
+* **notifications:** email org admins on late dispatches and customers on new invoices ([#318](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/318)) ([b27e4da](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/b27e4dac849d7a22a23c03d57d405c1038a78cd1))
+* **notifications:** send SMS through MSG91 instead of Twilio ([#108](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/108)) ([5933064](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/59330640045f9c22c2cc5bf419bacebddbdcfccf))
+* **tracking:** send customers a public tracking link ([#118](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/118)) ([62d035b](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/62d035b476b5404ff078aae4d91a0e87fbfb59d9))
+* **vehicle:** record and return the source of the last location fix ([#330](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/330)) ([536074e](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/536074e75d7c8dfc4ea143633b9cb2c89460c12e))
+
+
+### Bug Fixes
+
+* **ai:** only backfill identifiers still NULL; docs: CSV phone-number note ([#332](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/332)) ([f4f9a14](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/f4f9a14ad1b98f4ec2f0921e22e2e51aaca5b8b0))
+* **auth:** per-client signup rate limit behind proxy; cap org field lengths ([#326](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/326)) ([de37753](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/de377535f47a4157a12f839c3b6cc7044a99773c))
+* **vehicles:** only the owning org can move or delete a vehicle ([75a186e](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/75a186e27bdd5301d454238d66ea5b6b5d172bc1))
+* **vehicles:** only the owning org can move or delete a vehicle ([93fbde2](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/93fbde26e4bd6ac9f3a0442d1e101775e8b54d01))
+
+
+### Documentation
+
+* **rag:** MCP server for outside AI agents ([#119](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/119)) ([43b64ae](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/43b64aede9d340ce41dece2ed8a9bc77ca7cf8fa))
+
 ## [0.19.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.18.0...v0.19.0) (2026-11-09)
 
 
