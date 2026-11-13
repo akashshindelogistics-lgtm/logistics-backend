@@ -465,6 +465,7 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
     )
     .expect("migrate: create UploadedFiles");
 
+    crate::logistics::orgs::sample_data::ensure_table(conn).expect("migrate: create SampleData");
     crate::logistics::agent::store::ensure_tables(conn).expect("migrate: create agent tables");
     crate::logistics::chat::store::ensure_tables(conn).expect("migrate: create chat tables");
 }
