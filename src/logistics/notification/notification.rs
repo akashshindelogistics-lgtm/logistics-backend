@@ -344,9 +344,12 @@ impl Notification {
     fn org_admin_targets(
         org_id: Uuid,
     ) -> Result<Vec<(NotificationChannel, String)>, Box<dyn Error>> {
+        // Emails to an address its owner hasn't verified yet are held.
+        let unverified = OrgUser::unverified_ids(org_id)?;
         Ok(OrgUser::list_by_org(org_id)?
             .into_iter()
             .filter(|u| u.is_active && u.role == OrgRole::Admin && !u.email.is_empty())
+            .filter(|u| !unverified.contains(&u.id))
             .map(|u| (NotificationChannel::Email, u.email))
             .collect())
     }

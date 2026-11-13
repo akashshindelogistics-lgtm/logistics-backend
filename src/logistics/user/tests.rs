@@ -1,4 +1,4 @@
-use super::user::{OrgRole, OrgUser, UserError};
+use super::user::{OrgRole, OrgUser, ResendOutcome, UserError};
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::test_support::TestDb;
 
@@ -159,4 +159,83 @@ fn validate_password_enforces_the_signup_rules() {
     assert!(validate_password("nodigitshere", "a@b.com").is_err());
     assert!(validate_password("12345678", "a@b.com").is_err());
     assert!(validate_password(&format!("a1{}", "x".repeat(71)), "a@b.com").is_err());
+}
+
+fn signup(email: &str) -> (OrgUser, String) {
+    let (_, user, token) =
+        OrgUser::signup("Verify Org", "1 St", "Owner", email, "passw0rd1").expect("signup");
+    (user, token)
+}
+
+#[test]
+fn signup_user_must_verify_and_the_token_is_single_use() {
+    let _db = TestDb::create();
+    let (user, token) = signup("verify@example.com");
+    assert!(!OrgUser::email_verified(user.id).unwrap());
+    assert_eq!(OrgUser::unverified_ids(user.org_id).unwrap(), vec![user.id]);
+
+    assert!(OrgUser::verify_email("not-the-token").unwrap().is_none());
+    let verified = OrgUser::verify_email(&token).unwrap().expect("verified");
+    assert_eq!(verified.id, user.id);
+    assert!(OrgUser::email_verified(user.id).unwrap());
+    assert!(OrgUser::unverified_ids(user.org_id).unwrap().is_empty());
+    assert!(
+        OrgUser::verify_email(&token).unwrap().is_none(),
+        "a used token is dead"
+    );
+}
+
+#[test]
+fn expired_token_is_rejected_and_resend_replaces_it() {
+    use crate::logistics::db::connection::DbConnection;
+    use mysql::{params, prelude::*};
+    let _db = TestDb::create();
+    let (user, token) = signup("expired@example.com");
+
+    // Right after signup a resend is too soon.
+    assert_eq!(
+        OrgUser::resend_verification(user.id).unwrap(),
+        ResendOutcome::TooSoon
+    );
+    // Age the token past both the cooldown and its expiry.
+    let mut conn = DbConnection::from_env().get_connection().unwrap();
+    conn.exec_drop(
+        "UPDATE OrgUsers SET email_verification_expires_at = 1 WHERE id = :id",
+        params! { "id" => user.id.to_string() },
+    )
+    .unwrap();
+    assert!(OrgUser::verify_email(&token).unwrap().is_none());
+
+    let ResendOutcome::Issued(fresh) = OrgUser::resend_verification(user.id).unwrap() else {
+        panic!("expected a fresh token");
+    };
+    assert_ne!(fresh, token);
+    assert!(OrgUser::verify_email(&token).unwrap().is_none());
+    assert!(OrgUser::verify_email(&fresh).unwrap().is_some());
+    assert_eq!(
+        OrgUser::resend_verification(user.id).unwrap(),
+        ResendOutcome::NotPending
+    );
+}
+
+#[test]
+fn admin_created_users_need_no_verification_and_org_has_admin_tracks_users() {
+    let _db = TestDb::create();
+    let org = make_org("Legacy Org");
+    assert!(!OrgUser::org_has_admin(org.id).unwrap());
+    let dispatcher = OrgUser::create(
+        org.id,
+        "D",
+        "d@example.com",
+        "hunter2pw",
+        OrgRole::Dispatcher,
+    )
+    .unwrap();
+    assert!(OrgUser::email_verified(dispatcher.id).unwrap());
+    assert!(
+        !OrgUser::org_has_admin(org.id).unwrap(),
+        "a dispatcher is not an admin"
+    );
+    OrgUser::create(org.id, "A", "a@example.com", "hunter2pw", OrgRole::Admin).unwrap();
+    assert!(OrgUser::org_has_admin(org.id).unwrap());
 }

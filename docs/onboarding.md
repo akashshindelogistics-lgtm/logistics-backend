@@ -1,6 +1,6 @@
 # New-organisation onboarding (plan)
 
-Status: **planned**; phase 1 (`POST /api/auth/signup`) is implemented. The signup rate limit is in-memory per process, keyed on the socket peer IP, or with `TRUSTED_PROXY=1` on the rightmost `X-Forwarded-For` entry (the one the proxy appends), and `terms_accepted_at` is stored on `OrgUsers`.
+Status: **planned**; phase 3 (email verification and the existing-org Admin prompt) is implemented, see [Phase 3 as built](#phase-3-as-built); phase 1 (`POST /api/auth/signup`) is implemented. The signup rate limit is in-memory per process, keyed on the socket peer IP, or with `TRUSTED_PROXY=1` on the rightmost `X-Forwarded-For` entry (the one the proxy appends), and `terms_accepted_at` is stored on `OrgUsers`.
 
 Today a new org registers with a name, address and password, is logged in, and
 lands on its detail page (`frontend/src/pages/Register.tsx`). Nothing tells
@@ -141,6 +141,31 @@ and customer, all tagged so a "Remove sample data" action deletes exactly
 those. This lets a new user complete a dispatch in a minute. It is an add-on,
 not part of the first phase, and the tagging must be a real column, not a name
 convention.
+
+## Phase 3 as built
+
+- **Transport:** the verification email goes through `send_email` (SMTP or
+  Resend, see [notifications.md](notifications.md)), in a background task, best
+  effort: with no transport configured signup still succeeds and the user can
+  resend later. The link is `PUBLIC_APP_URL/verify-email?token=...`; without
+  `PUBLIC_APP_URL` the email carries the bare token. Tokens are never logged.
+- **Token:** 244 random bits, only its SHA-256 is stored
+  (`OrgUsers.email_verification_hash`), valid 24 h, cleared when used. Columns
+  `email_verified_at`, `email_verification_hash` and
+  `email_verification_expires_at` are patched in like `terms_accepted_at`.
+- **Who must verify:** only users created by `POST /api/auth/signup`. Users an
+  Admin adds, and users that predate this change, count as verified, so nobody
+  already working is locked out.
+- **Held emails:** running-late alerts are not recorded for an Admin whose
+  email is unverified. Customer emails are unaffected. The account itself works
+  before verification.
+- **Resend:** `POST /api/auth/resend-verification` for the signed-in user, at
+  most once a minute (derived from the token's expiry, nothing extra stored).
+- **Banners:** `GET /api/auth/session` returns `email_verified` and
+  `needs_admin_user` (the org has no active Admin user). The latter prompts
+  orgs that only have the shared org password; the prompt is completed with the
+  existing `POST /api/orgs/{id}/users` using role `ADMIN`. The frontend banners
+  are not part of this repository.
 
 ## Security and tenancy
 

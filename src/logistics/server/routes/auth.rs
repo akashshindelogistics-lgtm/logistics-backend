@@ -5,8 +5,9 @@ use super::common::*;
 use crate::logistics::auth::auth::{
     OrgCredentials, OrgSummary, generate_token, generate_user_token,
 };
+use crate::logistics::notification::delivery::send_email;
 use crate::logistics::orgs::orgs::Organization;
-use crate::logistics::user::user::{OrgUser, UserError};
+use crate::logistics::user::user::{OrgUser, ResendOutcome, UserError};
 use actix_web::{HttpResponse, Responder, get, post, web};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -94,6 +95,63 @@ fn signup_allowed(key: &str) -> bool {
     }
     entry.push(now);
     true
+}
+
+/// Body for `POST /api/auth/verify-email`.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct VerifyEmailPayload {
+    pub token: String,
+}
+
+/// What the dashboard needs to decide which banners to show.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SessionData {
+    pub org_id: String,
+    pub role: String,
+    /// The signed-in team member, `None` for the shared org-password login.
+    pub user_id: Option<String>,
+    pub email: Option<String>,
+    /// `false` while the signed-in user's email awaits verification: show the
+    /// verify banner with a resend button. `true` for the org-password login.
+    pub email_verified: bool,
+    /// `true` when the org has no active Admin user: show "Create your first
+    /// Admin user", which is `POST /api/orgs/{id}/users` with role `ADMIN`.
+    pub needs_admin_user: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SessionResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<SessionData>,
+}
+
+/// The link in the verification email, `None` without `PUBLIC_APP_URL`.
+fn verification_url(token: &str) -> Option<String> {
+    let base = std::env::var("PUBLIC_APP_URL").ok()?;
+    let base = base.trim().trim_end_matches('/');
+    (!base.is_empty()).then(|| format!("{base}/verify-email?token={token}"))
+}
+
+/// Mail the verification link in the background. Best effort: a missing
+/// transport or a provider error is logged (never the token) and signup or
+/// resend still succeeds; the user can resend later.
+fn queue_verification_email(to: String, name: String, token: String) {
+    if cfg!(test) {
+        return;
+    }
+    actix_web::rt::spawn(async move {
+        let link = match verification_url(&token) {
+            Some(l) => l,
+            None => format!("(set PUBLIC_APP_URL) token: {token}"),
+        };
+        let body = format!(
+            "Hi {name},\n\nConfirm your email address to finish setting up your account:\n{link}\n\nThe link works for 24 hours. If you didn't sign up, ignore this email."
+        );
+        if let Err(err) = send_email(&to, "Verify your email address", &body).await {
+            eprintln!("verification email to {to} not sent: {err}");
+        }
+    });
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -282,7 +340,7 @@ pub async fn signup(
         );
     }
 
-    let (org, user) = match OrgUser::signup(
+    let (org, user, verify_token) = match OrgUser::signup(
         &payload.org_name,
         &payload.address,
         &payload.owner_name,
@@ -306,6 +364,8 @@ pub async fn signup(
             );
         }
     };
+
+    queue_verification_email(user.email.clone(), user.name.clone(), verify_token);
 
     match generate_user_token(org.id, &org.name, Some(user.id), user.role.as_str()) {
         Ok(token) => HttpResponse::Created().json(ApiResponse {
@@ -353,6 +413,142 @@ pub async fn auth_me(auth: AuthenticatedOrg) -> impl Responder {
         Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
             success: false,
             message: format!("Failed to retrieve organization: {}", err),
+            data: None,
+        }),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/verify-email",
+    tag = "Auth",
+    request_body = VerifyEmailPayload,
+    responses(
+        (status = 200, description = "Email verified", body = EmptyResponse),
+        (status = 400, description = "Unknown, expired or already used token", body = EmptyResponse)
+    )
+)]
+#[post("/auth/verify-email")]
+pub async fn verify_email(payload: web::Json<VerifyEmailPayload>) -> impl Responder {
+    match OrgUser::verify_email(&payload.token) {
+        Ok(Some(_)) => HttpResponse::Ok().json(ApiResponse::<String> {
+            success: true,
+            message: "Email verified".to_string(),
+            data: None,
+        }),
+        Ok(None) => HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message: "That verification link is invalid or has expired".to_string(),
+            data: None,
+        }),
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Verification failed: {err}"),
+            data: None,
+        }),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/resend-verification",
+    tag = "Auth",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 202, description = "A new verification email was queued", body = EmptyResponse),
+        (status = 400, description = "Email already verified, or not a user login", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse),
+        (status = 429, description = "Asked again within a minute", body = EmptyResponse)
+    )
+)]
+#[post("/auth/resend-verification")]
+pub async fn resend_verification(auth: AuthenticatedOrg) -> impl Responder {
+    let fail = |status: actix_web::http::StatusCode, message: &str| {
+        HttpResponse::build(status).json(ApiResponse::<String> {
+            success: false,
+            message: message.to_string(),
+            data: None,
+        })
+    };
+    let Some(user_id) = auth.user_id else {
+        return fail(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "sign in as a team member to verify an email address",
+        );
+    };
+    let user = match OrgUser::get_by_id(user_id) {
+        Ok(Some(u)) => u,
+        Ok(None) => return fail(actix_web::http::StatusCode::UNAUTHORIZED, "unknown user"),
+        Err(err) => {
+            return fail(
+                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to load user: {err}"),
+            );
+        }
+    };
+    match OrgUser::resend_verification(user_id) {
+        Ok(ResendOutcome::Issued(token)) => {
+            queue_verification_email(user.email, user.name, token);
+            HttpResponse::Accepted().json(ApiResponse::<String> {
+                success: true,
+                message: "Verification email sent".to_string(),
+                data: None,
+            })
+        }
+        Ok(ResendOutcome::NotPending) => fail(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "email is already verified",
+        ),
+        Ok(ResendOutcome::TooSoon) => fail(
+            actix_web::http::StatusCode::TOO_MANY_REQUESTS,
+            "a verification email was just sent, wait a minute before asking again",
+        ),
+        Err(err) => fail(
+            actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to resend: {err}"),
+        ),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/auth/session",
+    tag = "Auth",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Verification and upgrade-prompt state for the dashboard banners", body = SessionResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[get("/auth/session")]
+pub async fn auth_session(auth: AuthenticatedOrg) -> impl Responder {
+    let state = (|| -> Result<SessionData, Box<dyn std::error::Error>> {
+        let user = match auth.user_id {
+            Some(id) => OrgUser::get_by_id(id)?,
+            None => None,
+        };
+        let email_verified = match &user {
+            Some(u) => OrgUser::email_verified(u.id)?,
+            None => true,
+        };
+        Ok(SessionData {
+            org_id: auth.org_id.to_string(),
+            role: auth.role.as_str().to_string(),
+            user_id: auth.user_id.map(|i| i.to_string()),
+            email: user.map(|u| u.email),
+            email_verified,
+            needs_admin_user: !OrgUser::org_has_admin(auth.org_id)?,
+        })
+    })();
+    match state {
+        Ok(data) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: "Session retrieved".to_string(),
+            data: Some(data),
+        }),
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to load session: {err}"),
             data: None,
         }),
     }

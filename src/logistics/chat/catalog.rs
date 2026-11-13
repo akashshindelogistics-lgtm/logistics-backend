@@ -107,6 +107,12 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ("auth_login", "takes a password"),
     ("user_login", "takes a password"),
     ("signup", "public, takes a password"),
+    ("verify_email", "public, takes a single-use secret token"),
+    (
+        "resend_verification",
+        "account maintenance, not a chat action",
+    ),
+    ("auth_session", "dashboard banner state only"),
     ("auth_orgs", "sign-in page only"),
     ("create_org", "takes a password"),
     ("add_org_user", "takes a password"),
