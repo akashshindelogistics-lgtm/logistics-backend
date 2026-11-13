@@ -412,6 +412,21 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
     .expect("migrate: create Invoices");
 
     conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS InvoicePayments (
+            id VARCHAR(36) PRIMARY KEY,
+            invoice_id VARCHAR(36) NOT NULL,
+            amount BIGINT NOT NULL,
+            mode VARCHAR(10) NOT NULL,
+            paid_on VARCHAR(10) NOT NULL,
+            reference VARCHAR(100) DEFAULT NULL,
+            INDEX idx_invoice_payments_invoice (invoice_id),
+            CONSTRAINT fk_invoice_payment_invoice
+                FOREIGN KEY (invoice_id) REFERENCES Invoices(id) ON DELETE CASCADE
+        )",
+    )
+    .expect("migrate: create InvoicePayments");
+
+    conn.query_drop(
         "CREATE TABLE IF NOT EXISTS OrgCredentials (
             org_id VARCHAR(36) PRIMARY KEY,
             org_name VARCHAR(255) NOT NULL,

@@ -79,6 +79,8 @@ pub const EXPOSED: &[&str] = &[
     "list_vendor_payments",
     "list_vendors",
     "pay_invoice",
+    "record_invoice_payment",
+    "list_invoice_payments",
     "record_vehicle_maintenance_mileage",
     "record_vendor_payment",
     "set_stock_category_hsn",
@@ -159,7 +161,12 @@ pub const EXCLUDED: &[(&str, &str)] = &[
 ];
 
 /// Writes that move money. Shown as a warning card, like deletes.
-const DANGEROUS: &[&str] = &["pay_invoice", "record_vendor_payment", "update_invoice"];
+const DANGEROUS: &[&str] = &[
+    "pay_invoice",
+    "record_invoice_payment",
+    "record_vendor_payment",
+    "update_invoice",
+];
 
 #[derive(Debug, Clone)]
 pub struct Operation {

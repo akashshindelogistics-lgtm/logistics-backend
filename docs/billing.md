@@ -30,13 +30,23 @@ Orgs ──1:N──▶ Dispatches ──1:1──▶ Invoices
   invoice form pre-fills `due_on` 30 days from today (a standard "net 30"),
   the common default commercial payment term, but the dispatcher can change
   it to match a customer-specific agreement before raising the invoice.
+- **Payments**: an invoice can be paid in several instalments. Each is an
+  `InvoicePayment { id, invoice_id, amount, mode, paid_on, reference? }` row
+  (`InvoicePayments`, `ON DELETE CASCADE` from `Invoices`). `mode` is `CASH`,
+  `UPI`, `CHEQUE` or `NEFT`; `reference` is a UPI txn id, cheque number or
+  UTR. A payment must be > 0 and no more than the balance (`400` otherwise),
+  and `paid_on` defaults to today. The invoice carries `amount_paid`
+  (sum of payments) and `balance` (`amount - amount_paid`); `paid_on` on the
+  invoice is stamped when the balance reaches zero. Invoices marked paid
+  before payments existed have no rows and count as fully paid.
 - `status` is **computed on every read**, never stored:
-  - `PAID` — `paid_on` is set.
-  - `OVERDUE` — unpaid and `due_on` is before today.
-  - `PENDING` — unpaid and not yet due.
+  - `PAID` — balance is zero.
+  - `OVERDUE` — balance remains and `due_on` is before today.
+  - `PARTIALLY_PAID` — some paid, balance remains, not yet due.
+  - `PENDING` — nothing paid and not yet due.
 - `Invoice::customer_summary(customer_id)` aggregates a customer's invoices
   into `{ invoice_count, total_outstanding, overdue_count, invoices }` where
-  `total_outstanding` is the summed `amount` of every non-paid invoice.
+  `total_outstanding` is the summed `balance` of every invoice.
 
 The date maths uses `days_from_civil` / `civil_from_days` helpers local to
 the module (mirroring `vehicle::document`), so the crate takes no date
@@ -48,8 +58,10 @@ dependency.
 |---|---|---|
 | POST | `/api/dispatches/{id}/invoice` | Raise an invoice for a dispatch — `{ amount, due_on }`. `400` on a bad amount/date, `409` if the dispatch is already invoiced |
 | GET | `/api/dispatches/{id}/invoice` | The dispatch's invoice, or `404` if not yet invoiced |
-| PUT | `/api/invoices/{id}` | Amend `amount` / `due_on`. `409` once the invoice is paid |
-| POST | `/api/invoices/{id}/pay` | Mark the invoice paid (idempotent — a no-op if already paid) |
+| PUT | `/api/invoices/{id}` | Amend `amount` / `due_on`. `409` once the invoice is paid; `400` if the new amount isn't above what is already paid |
+| POST | `/api/invoices/{id}/pay` | Pay the whole remaining balance in cash, dated today (idempotent — a no-op if already paid) |
+| POST | `/api/invoices/{id}/payments` | Record a payment — `{ amount, mode, paid_on?, reference? }`. `201` with the updated invoice; `400` if it exceeds the balance |
+| GET | `/api/invoices/{id}/payments` | The invoice's payments, oldest first |
 | GET | `/api/orgs/{id}/invoices` | Every invoice for the org, most recently issued first |
 | GET | `/api/customers/{id}/billing` | The customer's payment standing (outstanding total, overdue count, invoices) |
 
@@ -67,3 +79,8 @@ customer route through `load_owned_customer`.
 - **Customers page** gains a **Billing** column showing each customer's
   outstanding balance and an "N overdue" badge, computed client-side from a
   single `GET /api/orgs/{id}/invoices` call.
+
+## Not yet built
+
+- **UPI payment link in the invoice SMS** — needs a DLT template variable
+  (#316) and a UPI payee id; the invoice email is unchanged for now.
