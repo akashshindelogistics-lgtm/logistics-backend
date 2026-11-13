@@ -2,7 +2,7 @@
 
 Status: **Phases 1 (backend) and 4 (mobile app) implemented; phase 2's
 pairing panel implemented; the rest of phase 2 (source of the last fix) and
-phase 3 (history) planned.** See [Phase 1 as built](#phase-1-as-built),
+phase 3's backend (history) implemented; the trip-map trail is planned.** See [Phase 1 as built](#phase-1-as-built),
 [Phase 2 as built](#phase-2-as-built) and [Phase 4 as built](#phase-4-as-built).
 Phase 4 was built ahead of phases 2-3 at the user's request. The app in use
 is now the native Android one ([android-driver-app.md](https://github.com/akashshindelogistics-lgtm/logistics-android/blob/master/docs/android-driver-app.md)).
@@ -312,3 +312,24 @@ The backend is done. It follows the design above except where noted; the
   with `is_active: false` when inactive; missing, malformed, unknown, org-JWT
   and rotated-out tokens are `401`; the response never contains the device
   token or the vehicle's tracker key. Model: `Organization::name_by_id`.
+
+## Phase 3 as built (backend)
+
+- **Table:** `VehicleLocationHistory (id, registration_number, latitude,
+  longitude, recorded_at, source, accuracy_m, speed_mps)`, created on first
+  use. `source` is `driver_phone`, `gps_tracker` or `manual` (a string, like
+  `Vehicle.location_source`). A unique key on `(registration_number,
+  recorded_at, source)` makes a resent batch a no-op.
+- **Writes:** every location write: `POST /api/driver/location` stores *every*
+  fix in the batch (with accuracy and speed), including ones older than the
+  vehicle's current position; `POST /api/track/{key}` and
+  `PUT /api/vehicles/{reg}/location` store one. A history failure is logged and
+  never fails the location update.
+- **Retention:** rows older than `LOCATION_HISTORY_RETENTION_DAYS` (default 30)
+  are deleted by the event worker's 15-minute scan, so it only runs where
+  `EVENT_WORKERS_ENABLED=true`.
+- **Read:** `GET /api/vehicles/{reg}/location-history?from=&to=` (org login,
+  own vehicles; unix seconds, default the 24 h before `to`; `400` if `from` >
+  `to`), oldest first, capped at 5000 points. Not exposed to the chat assistant.
+
+Remaining: the trail on the trip map (logistics-frontend).

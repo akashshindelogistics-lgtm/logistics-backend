@@ -6,7 +6,8 @@ use super::common::*;
 use super::vehicles::coordinates_in_range;
 use crate::logistics::driver::driver::{DevicePairing, Driver};
 use crate::logistics::orgs::orgs::Organization;
-use crate::logistics::vehicle::vehicle::{Location, Vehicle};
+use crate::logistics::vehicle::location_history;
+use crate::logistics::vehicle::vehicle::{Location, LocationSource, Vehicle};
 use actix_web::{HttpRequest, HttpResponse, Responder, delete, get, post, put, web};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -557,6 +558,19 @@ pub async fn report_driver_location(
         .iter()
         .max_by_key(|f| f.recorded_at)
         .expect("batch is non-empty");
+    // Every fix goes in the history, including ones older than the vehicle's
+    // current position.
+    for fix in &payload.fixes {
+        location_history::record_best_effort(
+            &vehicle.registration_number,
+            LocationSource::DriverPhone.as_str(),
+            fix.latitude,
+            fix.longitude,
+            fix.recorded_at,
+            fix.accuracy_m,
+            fix.speed_mps,
+        );
+    }
     let updated = match vehicle.record_fix(newest.latitude, newest.longitude, newest.recorded_at) {
         Ok(u) => u,
         Err(err) => {

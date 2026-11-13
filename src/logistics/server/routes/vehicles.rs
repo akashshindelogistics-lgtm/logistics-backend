@@ -3,6 +3,7 @@
 
 use super::common::*;
 use crate::logistics::orgs::orgs::Organization;
+use crate::logistics::vehicle::location_history::{self, LocationHistoryPoint};
 use crate::logistics::vehicle::vehicle::{LocationSource, Unit, Vehicle, VehicleType};
 use actix_web::{HttpResponse, Responder, delete, get, post, put, web};
 use serde::{Deserialize, Serialize};
@@ -241,6 +242,80 @@ pub async fn update_vehicle_location(
         Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
             success: false,
             message: format!("Failed to update vehicle location: {}", err),
+            data: None,
+        }),
+    }
+}
+
+/// Query for `GET /api/vehicles/{reg}/location-history`.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct LocationHistoryQuery {
+    /// Start of the range, unix seconds. Default: 24 hours before `to`.
+    pub from: Option<i64>,
+    /// End of the range, unix seconds. Default: now.
+    pub to: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct LocationHistoryResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<Vec<LocationHistoryPoint>>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vehicles/{reg}/location-history",
+    tag = "Vehicles",
+    security(("bearer_auth" = [])),
+    params(
+        ("reg" = String, Path, description = "Vehicle registration number"),
+        LocationHistoryQuery
+    ),
+    responses(
+        (status = 200, description = "Positions in the range, oldest first (at most 5000)", body = LocationHistoryResponse),
+        (status = 400, description = "`from` is after `to`", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse),
+        (status = 403, description = "Vehicle belongs to a different organization", body = EmptyResponse),
+        (status = 404, description = "Vehicle not found", body = EmptyResponse)
+    )
+)]
+/// The positions a vehicle reported between `from` and `to`, from any source
+/// (phone, GPS tracker, manual), oldest first. Drives the trail on the trip
+/// map. Rows older than the retention window
+/// (`LOCATION_HISTORY_RETENTION_DAYS`, default 30) are gone.
+#[get("/vehicles/{reg}/location-history")]
+pub async fn vehicle_location_history(
+    path: web::Path<String>,
+    query: web::Query<LocationHistoryQuery>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
+    let reg_number = path.into_inner();
+    if let Err(resp) = check_owned_vehicle(&reg_number, auth.org_id) {
+        return resp;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let to = query.to.unwrap_or(now);
+    let from = query.from.unwrap_or(to - 24 * 3600);
+    if from > to {
+        return HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message: "from must not be after to".to_string(),
+            data: None,
+        });
+    }
+    match location_history::between(&reg_number, from, to) {
+        Ok(points) => HttpResponse::Ok().json(LocationHistoryResponse {
+            success: true,
+            message: "Location history".to_string(),
+            data: Some(points),
+        }),
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to read location history: {}", err),
             data: None,
         }),
     }

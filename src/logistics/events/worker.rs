@@ -6,6 +6,7 @@ use crate::logistics::db::connection::DbConnection;
 use crate::logistics::notification::consumer::NotificationConsumer;
 use crate::logistics::notification::delay_alerts;
 use crate::logistics::server::metrics;
+use crate::logistics::vehicle::location_history;
 use futures_util::FutureExt;
 use futures_util::future::LocalBoxFuture;
 use std::error::Error;
@@ -190,6 +191,9 @@ async fn scan_forever() {
         });
         if let Err(err) = purged {
             eprintln!("event retention failed: {err}");
+        }
+        if let Err(err) = location_history::prune_expired() {
+            eprintln!("location history retention failed: {err}");
         }
     }
 }
