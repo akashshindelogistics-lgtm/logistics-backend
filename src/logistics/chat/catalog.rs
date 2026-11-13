@@ -54,6 +54,7 @@ pub const EXPOSED: &[&str] = &[
     "get_ops_report",
     "get_ops_report_summary",
     "get_org",
+    "get_production_plan",
     "get_reorder_suggestions",
     "get_trip",
     "list_agent_actions",

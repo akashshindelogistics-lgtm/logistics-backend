@@ -204,6 +204,7 @@ impl Modify for SecurityAddon {
         reindex_assistant,
         get_daily_digest,
         get_reorder_suggestions,
+        get_production_plan,
         create_dispatch_invoice,
         get_dispatch_invoice,
         update_invoice,
@@ -280,6 +281,7 @@ impl Modify for SecurityAddon {
             UploadedFileResponse, UploadedFileRef,
             AssistantAskPayload, AssistantAnswer, AssistantSource, AssistantAnswerResponse,
             AssistantReindexResult, AssistantReindexResponse,
+            ProductionRun, ProductionPlanResponse,
             AgentSettings, AgentSettingsResponse, AgentRunResponse, AgentRunListResponse,
             AgentActionResponse, AgentActionListResponse,
             crate::logistics::agent::store::AutonomyMode,
@@ -438,6 +440,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(reindex_assistant)
             .service(get_daily_digest)
             .service(get_reorder_suggestions)
+            .service(get_production_plan)
             .service(create_dispatch_invoice)
             .service(get_dispatch_invoice)
             .service(update_invoice)

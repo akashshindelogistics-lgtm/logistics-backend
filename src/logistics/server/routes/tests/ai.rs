@@ -247,3 +247,57 @@ async fn test_get_reorder_suggestions_returns_a_canned_answer_when_nothing_is_lo
             .contains("No godowns are below their reorder threshold")
     );
 }
+
+#[actix_web::test]
+async fn test_get_production_plan_without_token_returns_401() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/orgs/{}/production-plan", Uuid::new_v4()))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 401);
+}
+
+#[actix_web::test]
+async fn test_get_production_plan_returns_403_for_a_different_org() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, _auth) = setup_org(&app, "Plan Owner Org").await;
+    let (_other, other_auth) = setup_org(&app, "Plan Intruder Org").await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/orgs/{}/production-plan", org.id))
+        .insert_header(("Authorization", other_auth))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
+}
+
+#[actix_web::test]
+async fn test_get_production_plan_lists_low_stock_items() {
+    use crate::logistics::godown::godown::Godown;
+    use crate::logistics::stock::stock::Stock;
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth) = setup_org(&app, "Plan Plant Org").await;
+    let godown = Godown::create(org.id, "Plant Yard", "1 Works Rd", None).expect("godown");
+    Stock::new(1, 5, "AAC Block")
+        .with_reorder_threshold(Some(50))
+        .add_to_godown(godown.id)
+        .expect("low stock");
+    Stock::new(1, 500, "Sand")
+        .with_reorder_threshold(Some(50))
+        .add_to_godown(godown.id)
+        .expect("healthy stock");
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/orgs/{}/production-plan", org.id))
+        .insert_header(("Authorization", auth))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: ApiResponse<Vec<ProductionRun>> = test::read_body_json(resp).await;
+    let runs = body.data.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].description, "AAC Block");
+    assert_eq!(runs[0].quantity_to_produce, 0);
+}
