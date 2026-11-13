@@ -31,6 +31,53 @@ pub enum PaymentStatus {
     Paid,
     /// Unpaid and past its `due_on` date.
     Overdue,
+    /// Some money received, a balance remains, and the invoice is not yet
+    /// past due.
+    PartiallyPaid,
+}
+
+/// How a payment was received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PaymentMode {
+    Cash,
+    Upi,
+    Cheque,
+    Neft,
+}
+
+impl PaymentMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PaymentMode::Cash => "CASH",
+            PaymentMode::Upi => "UPI",
+            PaymentMode::Cheque => "CHEQUE",
+            PaymentMode::Neft => "NEFT",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        match s {
+            "UPI" => PaymentMode::Upi,
+            "CHEQUE" => PaymentMode::Cheque,
+            "NEFT" => PaymentMode::Neft,
+            _ => PaymentMode::Cash,
+        }
+    }
+}
+
+/// One payment received against an invoice.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct InvoicePayment {
+    pub id: Uuid,
+    pub invoice_id: Uuid,
+    /// Whole currency units, greater than zero.
+    pub amount: i64,
+    pub mode: PaymentMode,
+    /// ISO `YYYY-MM-DD`; defaults to today.
+    pub paid_on: String,
+    /// Optional UPI transaction id, cheque number or NEFT UTR.
+    pub reference: Option<String>,
 }
 
 impl PaymentStatus {
@@ -39,6 +86,7 @@ impl PaymentStatus {
             PaymentStatus::Pending => "PENDING",
             PaymentStatus::Paid => "PAID",
             PaymentStatus::Overdue => "OVERDUE",
+            PaymentStatus::PartiallyPaid => "PARTIALLY_PAID",
         }
     }
 }
@@ -56,9 +104,13 @@ pub struct Invoice {
     pub issued_on: String,
     /// ISO `YYYY-MM-DD`, supplied by the caller.
     pub due_on: String,
-    /// ISO `YYYY-MM-DD`, set when the invoice is marked paid; `null` while unpaid.
+    /// ISO `YYYY-MM-DD`, set when the balance reaches zero; `null` until then.
     pub paid_on: Option<String>,
-    /// Server-computed from `paid_on` / `due_on` / today. Never stored.
+    /// Sum of the payments recorded so far.
+    pub amount_paid: i64,
+    /// `amount - amount_paid`.
+    pub balance: i64,
+    /// Server-computed from the balance / `due_on` / today. Never stored.
     pub status: PaymentStatus,
 }
 
@@ -67,7 +119,7 @@ pub struct Invoice {
 pub struct CustomerBillingSummary {
     pub customer_id: Uuid,
     pub invoice_count: i64,
-    /// Sum of `amount` across every unpaid (pending or overdue) invoice.
+    /// Sum of the `balance` across every invoice that is not fully paid.
     pub total_outstanding: i64,
     pub overdue_count: i64,
     pub invoices: Vec<Invoice>,
@@ -84,6 +136,10 @@ pub enum InvoiceError {
     AlreadyInvoiced,
     /// The invoice is already paid and can't be edited.
     AlreadyPaid,
+    /// A payment was larger than the invoice's remaining balance.
+    Overpayment { balance: i64 },
+    /// The new invoice amount would not exceed what is already paid.
+    AmountNotAbovePaid { paid: i64 },
     /// A lower-level database error.
     Db(Box<dyn Error>),
 }
@@ -97,6 +153,12 @@ impl fmt::Display for InvoiceError {
             InvoiceError::NonPositiveAmount => write!(f, "amount must be greater than zero"),
             InvoiceError::AlreadyInvoiced => write!(f, "this dispatch already has an invoice"),
             InvoiceError::AlreadyPaid => write!(f, "a paid invoice cannot be changed"),
+            InvoiceError::Overpayment { balance } => {
+                write!(f, "payment exceeds the remaining balance of {balance}")
+            }
+            InvoiceError::AmountNotAbovePaid { paid } => {
+                write!(f, "amount must be greater than the {paid} already paid")
+            }
             InvoiceError::Db(e) => write!(f, "database error: {e}"),
         }
     }
@@ -194,18 +256,25 @@ fn validate_iso_date(s: &str) -> Result<(), InvoiceError> {
     Ok(())
 }
 
-fn payment_status(paid_on: &Option<String>, due_on: &str) -> PaymentStatus {
-    if paid_on.is_some() {
+fn payment_status(amount: i64, amount_paid: i64, due_on: &str) -> PaymentStatus {
+    if amount_paid >= amount {
         PaymentStatus::Paid
     } else if due_on < today_iso().as_str() {
         PaymentStatus::Overdue
+    } else if amount_paid > 0 {
+        PaymentStatus::PartiallyPaid
     } else {
         PaymentStatus::Pending
     }
 }
 
+// `amount_paid` is summed from `InvoicePayments`. Invoices marked paid before
+// payments were recorded have no rows there, so `paid_on` counts as fully paid.
 const SELECT_COLS: &str =
-    "id, org_id, dispatch_id, customer_id, amount, issued_on, due_on, paid_on";
+    "id, org_id, dispatch_id, customer_id, amount, issued_on, due_on, paid_on,
+     CASE WHEN paid_on IS NOT NULL THEN amount ELSE
+       CAST((SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayments p
+             WHERE p.invoice_id = Invoices.id) AS SIGNED) END";
 
 type InvoiceRow = (
     String,
@@ -216,6 +285,7 @@ type InvoiceRow = (
     String,
     String,
     Option<String>,
+    i64,
 );
 
 impl Invoice {
@@ -239,12 +309,26 @@ impl Invoice {
                     FOREIGN KEY (dispatch_id) REFERENCES Dispatches(id) ON DELETE CASCADE
             )",
         )?;
+        conn.query_drop(
+            "CREATE TABLE IF NOT EXISTS InvoicePayments (
+                id VARCHAR(36) PRIMARY KEY,
+                invoice_id VARCHAR(36) NOT NULL,
+                amount BIGINT NOT NULL,
+                mode VARCHAR(10) NOT NULL,
+                paid_on VARCHAR(10) NOT NULL,
+                reference VARCHAR(100) DEFAULT NULL,
+                INDEX idx_invoice_payments_invoice (invoice_id),
+                CONSTRAINT fk_invoice_payment_invoice
+                    FOREIGN KEY (invoice_id) REFERENCES Invoices(id) ON DELETE CASCADE
+            )",
+        )?;
         Ok(())
     }
 
     fn hydrate(row: InvoiceRow) -> Self {
-        let (id, org_id, dispatch_id, customer_id, amount, issued_on, due_on, paid_on) = row;
-        let status = payment_status(&paid_on, &due_on);
+        let (id, org_id, dispatch_id, customer_id, amount, issued_on, due_on, paid_on, amount_paid) =
+            row;
+        let status = payment_status(amount, amount_paid, &due_on);
         Invoice {
             id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::new_v4()),
             org_id: Uuid::parse_str(&org_id).unwrap_or_else(|_| Uuid::new_v4()),
@@ -254,6 +338,8 @@ impl Invoice {
             issued_on,
             due_on,
             paid_on,
+            amount_paid,
+            balance: amount - amount_paid,
             status,
         }
     }
@@ -303,7 +389,7 @@ impl Invoice {
             },
         )?;
 
-        let status = payment_status(&None, &due_on);
+        let status = payment_status(amount, 0, &due_on);
         Ok(Invoice {
             id,
             org_id,
@@ -313,6 +399,8 @@ impl Invoice {
             issued_on,
             due_on,
             paid_on: None,
+            amount_paid: 0,
+            balance: amount,
             status,
         })
     }
@@ -368,11 +456,7 @@ impl Invoice {
     /// total and overdue count.
     pub fn customer_summary(customer_id: Uuid) -> Result<CustomerBillingSummary, Box<dyn Error>> {
         let invoices = Self::list_by_customer(customer_id)?;
-        let total_outstanding = invoices
-            .iter()
-            .filter(|i| i.status != PaymentStatus::Paid)
-            .map(|i| i.amount)
-            .sum();
+        let total_outstanding = invoices.iter().map(|i| i.balance).sum();
         let overdue_count = invoices
             .iter()
             .filter(|i| i.status == PaymentStatus::Overdue)
@@ -394,6 +478,11 @@ impl Invoice {
         if amount <= 0 {
             return Err(InvoiceError::NonPositiveAmount);
         }
+        if amount <= self.amount_paid {
+            return Err(InvoiceError::AmountNotAbovePaid {
+                paid: self.amount_paid,
+            });
+        }
         let due_on = due_on.into();
         validate_iso_date(&due_on)?;
 
@@ -411,28 +500,121 @@ impl Invoice {
 
         self.amount = amount;
         self.due_on = due_on;
-        self.status = payment_status(&self.paid_on, &self.due_on);
+        self.balance = amount - self.amount_paid;
+        self.status = payment_status(self.amount, self.amount_paid, &self.due_on);
         Ok(())
     }
 
-    /// Mark the invoice paid, stamping `paid_on` with today's date. A no-op
-    /// (returns the already-paid invoice) if it is already paid.
-    pub fn mark_paid(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.paid_on.is_some() {
-            return Ok(());
+    /// Record a payment. `amount` must be positive and no more than the
+    /// balance; `paid_on` defaults to today. Stamps the invoice's `paid_on`
+    /// once the balance reaches zero. Serialised per invoice by a row lock so
+    /// concurrent payments can't overpay.
+    pub fn record_payment(
+        &mut self,
+        amount: i64,
+        mode: PaymentMode,
+        paid_on: Option<String>,
+        reference: Option<String>,
+    ) -> Result<InvoicePayment, InvoiceError> {
+        if amount <= 0 {
+            return Err(InvoiceError::NonPositiveAmount);
         }
-        let paid_on = today_iso();
-        let mut conn = DbConnection::from_env().get_connection()?;
-        conn.exec_drop(
-            "UPDATE Invoices SET paid_on = :paid_on WHERE id = :id",
+        let paid_on = paid_on.unwrap_or_else(today_iso);
+        validate_iso_date(&paid_on)?;
+        let reference = reference
+            .map(|r| r.trim().chars().take(100).collect::<String>())
+            .filter(|r| !r.is_empty());
+
+        let mut conn = DbConnection::from_env()
+            .get_connection()
+            .map_err(InvoiceError::Db)?;
+        Self::ensure_table(&mut conn).map_err(InvoiceError::Db)?;
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        let locked: Option<i64> = tx.exec_first(
+            "SELECT amount FROM Invoices WHERE id = :id FOR UPDATE",
+            params! { "id" => self.id.to_string() },
+        )?;
+        let total = locked.unwrap_or(self.amount);
+        let row: Option<InvoiceRow> = tx.exec_first(
+            format!("SELECT {SELECT_COLS} FROM Invoices WHERE id = :id"),
+            params! { "id" => self.id.to_string() },
+        )?;
+        let current = row.map(Self::hydrate).unwrap_or_else(|| self.clone());
+        let balance = total - current.amount_paid;
+        if amount > balance {
+            return Err(InvoiceError::Overpayment { balance });
+        }
+
+        let payment = InvoicePayment {
+            id: Uuid::new_v4(),
+            invoice_id: self.id,
+            amount,
+            mode,
+            paid_on: paid_on.clone(),
+            reference,
+        };
+        tx.exec_drop(
+            "INSERT INTO InvoicePayments (id, invoice_id, amount, mode, paid_on, reference)
+             VALUES (:id, :invoice_id, :amount, :mode, :paid_on, :reference)",
             params! {
-                "id" => self.id.to_string(),
-                "paid_on" => &paid_on,
+                "id" => payment.id.to_string(),
+                "invoice_id" => self.id.to_string(),
+                "amount" => amount,
+                "mode" => mode.as_str(),
+                "paid_on" => &payment.paid_on,
+                "reference" => &payment.reference,
             },
         )?;
-        self.paid_on = Some(paid_on);
-        self.status = PaymentStatus::Paid;
-        Ok(())
+        let amount_paid = current.amount_paid + amount;
+        let settled = amount_paid >= total;
+        if settled && current.paid_on.is_none() {
+            tx.exec_drop(
+                "UPDATE Invoices SET paid_on = :paid_on WHERE id = :id",
+                params! { "id" => self.id.to_string(), "paid_on" => &paid_on },
+            )?;
+        }
+        tx.commit()?;
+
+        self.amount = total;
+        self.amount_paid = amount_paid;
+        self.balance = total - amount_paid;
+        if settled && self.paid_on.is_none() {
+            self.paid_on = Some(paid_on);
+        }
+        self.status = payment_status(self.amount, self.amount_paid, &self.due_on);
+        Ok(payment)
+    }
+
+    /// Payments recorded against this invoice, oldest first.
+    pub fn payments(&self) -> Result<Vec<InvoicePayment>, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        Self::ensure_table(&mut conn)?;
+        let rows: Vec<(String, i64, String, String, Option<String>)> = conn.exec(
+            "SELECT id, amount, mode, paid_on, reference FROM InvoicePayments
+             WHERE invoice_id = :id ORDER BY paid_on, id",
+            params! { "id" => self.id.to_string() },
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, amount, mode, paid_on, reference)| InvoicePayment {
+                id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::new_v4()),
+                invoice_id: self.id,
+                amount,
+                mode: PaymentMode::parse(&mode),
+                paid_on,
+                reference,
+            })
+            .collect())
+    }
+
+    /// Pay off the whole remaining balance in cash, dated today. A no-op if
+    /// the invoice is already paid.
+    pub fn mark_paid(&mut self) -> Result<(), InvoiceError> {
+        if self.balance <= 0 {
+            return Ok(());
+        }
+        self.record_payment(self.balance, PaymentMode::Cash, None, None)
+            .map(|_| ())
     }
 }
 
@@ -613,6 +795,74 @@ mod tests {
         assert_eq!(summary.invoice_count, 3);
         assert_eq!(summary.total_outstanding, 650); // 400 pending + 250 overdue
         assert_eq!(summary.overdue_count, 1);
+    }
+
+    #[test]
+    fn test_partial_payments_follow_the_balance() {
+        let _db = TestDb::create();
+        let (org, customer, dispatch) = org_customer_dispatch();
+        let mut inv =
+            Invoice::create(org.id, dispatch.id, customer.id, 1000, iso_offset(10)).unwrap();
+
+        inv.record_payment(400, PaymentMode::Upi, None, Some("UTR1".into()))
+            .unwrap();
+        assert_eq!((inv.amount_paid, inv.balance), (400, 600));
+        assert_eq!(inv.status, PaymentStatus::PartiallyPaid);
+        assert!(inv.paid_on.is_none());
+
+        // Overpaying or a bad amount is rejected.
+        assert!(matches!(
+            inv.record_payment(601, PaymentMode::Cash, None, None),
+            Err(InvoiceError::Overpayment { balance: 600 })
+        ));
+        assert!(matches!(
+            inv.record_payment(0, PaymentMode::Cash, None, None),
+            Err(InvoiceError::NonPositiveAmount)
+        ));
+        // The amount can't drop to what is already paid.
+        assert!(matches!(
+            inv.update(400, iso_offset(10)),
+            Err(InvoiceError::AmountNotAbovePaid { paid: 400 })
+        ));
+
+        let reloaded = Invoice::get_by_id(inv.id).unwrap().unwrap();
+        assert_eq!(reloaded.balance, 600);
+        assert_eq!(
+            Invoice::customer_summary(customer.id)
+                .unwrap()
+                .total_outstanding,
+            600
+        );
+
+        inv.record_payment(600, PaymentMode::Cheque, Some(iso_offset(0)), None)
+            .unwrap();
+        assert_eq!(inv.status, PaymentStatus::Paid);
+        assert_eq!(inv.balance, 0);
+        assert!(inv.paid_on.is_some());
+
+        let payments = inv.payments().unwrap();
+        assert_eq!(payments.len(), 2);
+        assert_eq!(payments.iter().map(|p| p.amount).sum::<i64>(), 1000);
+        assert!(
+            payments
+                .iter()
+                .any(|p| p.mode == PaymentMode::Upi && p.reference.as_deref() == Some("UTR1"))
+        );
+        assert_eq!(
+            Invoice::get_by_id(inv.id).unwrap().unwrap().status,
+            PaymentStatus::Paid
+        );
+    }
+
+    #[test]
+    fn test_overdue_wins_over_partially_paid() {
+        let _db = TestDb::create();
+        let (org, customer, dispatch) = org_customer_dispatch();
+        let mut inv =
+            Invoice::create(org.id, dispatch.id, customer.id, 100, iso_offset(-1)).unwrap();
+        inv.record_payment(10, PaymentMode::Neft, None, None)
+            .unwrap();
+        assert_eq!(inv.status, PaymentStatus::Overdue);
     }
 
     #[test]

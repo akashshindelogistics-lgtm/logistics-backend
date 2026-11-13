@@ -10,7 +10,9 @@
 use super::metrics::{self, metrics_endpoint};
 use crate::logistics::ai::assistant::{AssistantAnswer, AssistantSource};
 use crate::logistics::auth::auth::OrgSummary;
-use crate::logistics::billing::invoice::{CustomerBillingSummary, Invoice, PaymentStatus};
+use crate::logistics::billing::invoice::{
+    CustomerBillingSummary, Invoice, InvoicePayment, PaymentMode, PaymentStatus,
+};
 use crate::logistics::customer::customer::Customer;
 use crate::logistics::dispatch::dispatch::{
     DispatchLineItem, DispatchOrder, DispatchStatus, DispatchStatusEvent, ProofOfDelivery,
@@ -208,6 +210,8 @@ impl Modify for SecurityAddon {
         get_dispatch_invoice,
         update_invoice,
         pay_invoice,
+        record_invoice_payment,
+        list_invoice_payments,
         list_org_invoices,
         get_customer_billing,
         get_ops_report,
@@ -255,7 +259,7 @@ impl Modify for SecurityAddon {
             VehicleDocument, ComplianceDocType, ComplianceStatus,
             VehicleMaintenance, MaintenanceStatus, VehicleMaintenanceResponse, VehicleMaintenanceListResponse,
             DispatchOrder, DispatchLineItem, DispatchStatus, DispatchStatusEvent, ProofOfDelivery,
-            Invoice, PaymentStatus, CustomerBillingSummary,
+            Invoice, PaymentStatus, PaymentMode, InvoicePayment, PaymentPayload, PaymentListResponse, CustomerBillingSummary,
             OpsReport, VehicleUtilization, DeliveryPerformance, GodownInventory, CategoryUnits, DispatchVolumePoint,
             Notification, NotificationEvent, NotificationChannel, NotificationStatus,
             Trip, TripStatus,
@@ -442,6 +446,8 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(get_dispatch_invoice)
             .service(update_invoice)
             .service(pay_invoice)
+            .service(record_invoice_payment)
+            .service(list_invoice_payments)
             .service(list_org_invoices)
             .service(get_customer_billing)
             .service(get_ops_report)
