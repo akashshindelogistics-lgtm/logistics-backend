@@ -5,9 +5,9 @@ name: Claude agent
 # as `agent:review`. Only the repo owner's label counts: this repo is public, so
 # issue text from anyone else must never start an agent with write access.
 # Every hour (or on "Run workflow") the `pick` job also starts the next
-# `agent:ready` issue by priority, oldest first, unless an agent is already working:
-# labels added before the agent existed never fire a `labeled` event. Each
-# successful run then starts the next one, so the queue drains without waiting
+# `agent:ready` issues by priority, oldest first, up to MAX_AGENTS working at
+# once: labels added before the agent existed never fire a `labeled` event. Each
+# successful run then starts the next batch, so the queue drains without waiting
 # for the hourly schedule. The agent picks its recommended approach instead of
 # asking, and labels such PRs `agent:decided`.
 # Setup: run `/install-github-app` in Claude Code once (installs the Claude
@@ -19,33 +19,40 @@ on:
     - cron: "17 * * * *"
   workflow_dispatch:
 
-concurrency:
-  group: claude-agent-issue-${{ github.event.issue.number || 'picker' }}
-
 jobs:
   pick:
     if: github.event_name != 'issues'
+    # One picker at a time, so two runs can't pick the same issue before it is claimed.
+    concurrency:
+      group: claude-agent-picker
     runs-on: ubuntu-latest
     permissions:
-      issues: read
+      issues: write
     outputs:
-      issue: ${{ steps.pick.outputs.issue }}
+      issues: ${{ steps.pick.outputs.issues }}
     steps:
       - id: pick
         env:
           GH_TOKEN: ${{ github.token }}
+          MAX_AGENTS: 4
         run: |
-          if [ -n "$(gh issue list -R "$GITHUB_REPOSITORY" --label agent:working --state open --json number --jq '.[].number')" ]; then
-            echo "An agent is already working on an issue; not starting another."
+          working=$(gh issue list -R "$GITHUB_REPOSITORY" --label agent:working --state open --limit 300 --json number --jq length)
+          slots=$((MAX_AGENTS - working))
+          if [ "$slots" -le 0 ]; then
+            echo "$working agents already working (max $MAX_AGENTS); not starting another."
             exit 0
           fi
           # priority:A before B before C before none; oldest first within a priority.
-          issue=$(gh issue list -R "$GITHUB_REPOSITORY" --label agent:ready --state open --limit 300 \
+          issues=$(gh issue list -R "$GITHUB_REPOSITORY" --label agent:ready --state open --limit 300 \
             --json number,labels,createdAt \
             --jq 'map(. + {p: ([.labels[].name | select(startswith("priority:"))][0] // "priority:Z")})
-                  | sort_by(.p, .createdAt) | .[0].number // empty')
-          echo "Picked: ${issue:-nothing}"
-          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+                  | sort_by(.p, .createdAt) | .[:'"$slots"'] | map(.number)' | jq -c .)
+          echo "Picked: $issues ($working already working, max $MAX_AGENTS)"
+          # Claim here, inside the picker's concurrency group, so the next picker skips them.
+          for n in $(jq -r '.[]' <<<"$issues"); do
+            gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent:ready --add-label agent:working
+          done
+          if [ "$issues" != "[]" ]; then echo "issues=$issues" >> "$GITHUB_OUTPUT"; fi
 
   work:
     needs: pick
@@ -55,8 +62,15 @@ jobs:
         (github.event_name == 'issues' &&
          github.event.label.name == 'agent:ready' &&
          github.event.sender.login == github.repository_owner) ||
-        (github.event_name != 'issues' && needs.pick.outputs.issue != '')
+        (github.event_name != 'issues' && needs.pick.outputs.issues != '')
       )
+    strategy:
+      # A cancelled sibling would skip "Release the issue on failure" and leave its issue stuck.
+      fail-fast: false
+      matrix:
+        issue: ${{ fromJSON(github.event_name == 'issues' && format('[{0}]', github.event.issue.number) || needs.pick.outputs.issues) }}
+    concurrency:
+      group: claude-agent-issue-${{ matrix.issue }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -66,7 +80,7 @@ jobs:
       id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
-      ISSUE: ${{ github.event.issue.number || needs.pick.outputs.issue }}
+      ISSUE: ${{ matrix.issue }}
       MYSQL_HOST: 127.0.0.1
       MYSQL_PORT: 3306
       MYSQL_USER: root
