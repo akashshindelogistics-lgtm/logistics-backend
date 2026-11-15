@@ -193,6 +193,8 @@ fn invoices_csv(org_id: Uuid) -> Result<String, Box<dyn Error>> {
         "dispatch_id",
         "customer_id",
         "amount",
+        "amount_paid",
+        "balance",
         "issued_on",
         "due_on",
         "paid_on",
@@ -204,6 +206,8 @@ fn invoices_csv(org_id: Uuid) -> Result<String, Box<dyn Error>> {
             i.dispatch_id.to_string(),
             i.customer_id.to_string(),
             i.amount.to_string(),
+            i.amount_paid.to_string(),
+            i.balance.to_string(),
             i.issued_on.clone(),
             i.due_on.clone(),
             opt(&i.paid_on),
@@ -450,6 +454,8 @@ mod tests {
             issued_on: "2026-11-12".into(),
             due_on: "2026-12-12".into(),
             paid_on: None,
+            amount_paid: 0,
+            balance: 1500,
             status: PaymentStatus::Pending,
         }
     }

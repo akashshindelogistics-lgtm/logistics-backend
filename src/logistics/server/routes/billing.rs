@@ -4,7 +4,9 @@
 use super::common::*;
 use super::customers::load_owned_customer;
 use super::dispatches::load_owned_dispatch;
-use crate::logistics::billing::invoice::{CustomerBillingSummary, Invoice, InvoiceError};
+use crate::logistics::billing::invoice::{
+    CustomerBillingSummary, Invoice, InvoiceError, InvoicePayment, PaymentMode,
+};
 use crate::logistics::customer::customer::Customer;
 use crate::logistics::db::connection::DbConnection;
 use crate::logistics::events;
@@ -21,6 +23,25 @@ pub struct InvoicePayload {
     pub amount: i64,
     /// Payment due date as ISO `YYYY-MM-DD`.
     pub due_on: String,
+}
+
+/// Record a payment against an invoice.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct PaymentPayload {
+    /// Whole currency units; greater than zero and at most the balance.
+    pub amount: i64,
+    pub mode: PaymentMode,
+    /// ISO `YYYY-MM-DD`; defaults to today.
+    pub paid_on: Option<String>,
+    /// UPI transaction id, cheque number or NEFT UTR.
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct PaymentListResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<Vec<InvoicePayment>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -77,7 +98,10 @@ fn load_owned_invoice(invoice_id: Uuid, auth_org_id: Uuid) -> Result<Invoice, Ht
 /// a `400`, a duplicate/paid conflict a `409`, anything else a `500`.
 fn invoice_error_response(err: InvoiceError) -> HttpResponse {
     match err {
-        InvoiceError::InvalidDate(_) | InvoiceError::NonPositiveAmount => {
+        InvoiceError::InvalidDate(_)
+        | InvoiceError::NonPositiveAmount
+        | InvoiceError::Overpayment { .. }
+        | InvoiceError::AmountNotAbovePaid { .. } => {
             HttpResponse::BadRequest().json(ApiResponse::<String> {
                 success: false,
                 message: err.to_string(),
@@ -259,7 +283,7 @@ pub async fn update_invoice(
     security(("bearer_auth" = [])),
     params(("id" = Uuid, Path, description = "Invoice UUID")),
     responses(
-        (status = 200, description = "Invoice marked paid (idempotent)", body = InvoiceResponse),
+        (status = 200, description = "Remaining balance paid in cash (idempotent)", body = InvoiceResponse),
         (status = 403, description = "Invoice belongs to a different organization", body = EmptyResponse),
         (status = 404, description = "Invoice not found", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse)
@@ -280,9 +304,80 @@ pub async fn pay_invoice(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl 
             message: "Invoice marked paid".to_string(),
             data: Some(inv),
         }),
+        Err(err) => invoice_error_response(err),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/invoices/{id}/payments",
+    tag = "Billing",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Invoice UUID")),
+    request_body = PaymentPayload,
+    responses(
+        (status = 201, description = "Payment recorded; returns the invoice with its new balance and status", body = InvoiceResponse),
+        (status = 400, description = "Amount not positive, larger than the balance, or date invalid", body = EmptyResponse),
+        (status = 403, description = "Invoice belongs to a different organization", body = EmptyResponse),
+        (status = 404, description = "Invoice not found", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[post("/invoices/{id}/payments")]
+pub async fn record_invoice_payment(
+    path: web::Path<Uuid>,
+    payload: web::Json<PaymentPayload>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
+    let mut inv = match load_owned_invoice(path.into_inner(), auth.org_id) {
+        Ok(i) => i,
+        Err(resp) => return resp,
+    };
+    let p = payload.into_inner();
+    match inv.record_payment(p.amount, p.mode, p.paid_on, p.reference) {
+        Ok(_) => HttpResponse::Created().json(ApiResponse {
+            success: true,
+            message: "Payment recorded".to_string(),
+            data: Some(inv),
+        }),
+        Err(err) => invoice_error_response(err),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/invoices/{id}/payments",
+    tag = "Billing",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Invoice UUID")),
+    responses(
+        (status = 200, description = "Payments against the invoice, oldest first", body = PaymentListResponse),
+        (status = 403, description = "Invoice belongs to a different organization", body = EmptyResponse),
+        (status = 404, description = "Invoice not found", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[get("/invoices/{id}/payments")]
+pub async fn list_invoice_payments(
+    path: web::Path<Uuid>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
+    let inv = match load_owned_invoice(path.into_inner(), auth.org_id) {
+        Ok(i) => i,
+        Err(resp) => return resp,
+    };
+    match inv.payments() {
+        Ok(payments) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: format!("Retrieved {} payments", payments.len()),
+            data: Some(payments),
+        }),
         Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
             success: false,
-            message: format!("Failed to mark invoice paid: {}", err),
+            message: format!("Failed to list payments: {}", err),
             data: None,
         }),
     }
