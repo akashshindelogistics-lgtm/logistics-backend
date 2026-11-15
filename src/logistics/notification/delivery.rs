@@ -123,7 +123,7 @@ async fn send_via_msg91(
     template_id: &str,
     to: &str,
     vars: &[String],
-) -> Result<(), DeliveryError> {
+) -> Result<Option<String>, DeliveryError> {
     let mobile = normalize_indian_mobile(to)
         .ok_or_else(|| DeliveryError::ProviderError("Not an Indian mobile number".to_string()))?;
 
@@ -160,24 +160,27 @@ async fn send_via_msg91(
     let text = resp.text().await.unwrap_or_default();
     // A rejected request can still come back as HTTP 200, with `"type": "error"`.
     // "success" means MSG91 queued the request, not that the phone got it.
-    let accepted = status.is_success()
-        && serde_json::from_str::<serde_json::Value>(&text)
-            .is_ok_and(|reply| reply["type"] == "success");
-    if !accepted {
+    let reply = serde_json::from_str::<serde_json::Value>(&text).unwrap_or_default();
+    if !(status.is_success() && reply["type"] == "success") {
         return Err(DeliveryError::ProviderError(format!(
             "MSG91 error ({status}): {text}"
         )));
     }
-    Ok(())
+    // On success `message` is the request ID that delivery reports quote.
+    Ok(reply["message"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_string))
 }
 
 /// Send one templated SMS. `NotConfigured` without `MSG91_AUTH_KEY` or without
 /// an ID for this template, so templates can be approved and added one by one.
+/// Returns MSG91's request ID, which its delivery reports use to name the message.
 pub async fn send_sms(
     to: &str,
     template: SmsTemplate,
     vars: &[String],
-) -> Result<(), DeliveryError> {
+) -> Result<Option<String>, DeliveryError> {
     let config = Msg91Config::from_env().ok_or(DeliveryError::NotConfigured)?;
     let template_id = non_blank_env(template.env_key()).ok_or(DeliveryError::NotConfigured)?;
     send_via_msg91(&config, &template_id, to, vars).await

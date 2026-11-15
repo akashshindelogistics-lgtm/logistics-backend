@@ -140,6 +140,33 @@ impl NotificationStatus {
     }
 }
 
+/// What the provider's delivery report says happened to a sent message.
+/// Separate from [`NotificationStatus`]: `SENT` only means the provider queued it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DeliveryStatus {
+    /// The handset (or mailbox) received it.
+    Delivered,
+    /// The operator reported it undelivered.
+    Failed,
+}
+
+impl DeliveryStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            DeliveryStatus::Delivered => "DELIVERED",
+            DeliveryStatus::Failed => "FAILED",
+        }
+    }
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "DELIVERED" => Some(DeliveryStatus::Delivered),
+            "FAILED" => Some(DeliveryStatus::Failed),
+            _ => None,
+        }
+    }
+}
+
 /// One recorded notification.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Notification {
@@ -155,6 +182,13 @@ pub struct Notification {
     pub body: String,
     pub status: NotificationStatus,
     pub created_at: i64,
+    /// From the provider's delivery report; `None` until one arrives (or for
+    /// a channel that sends none).
+    pub delivery_status: Option<DeliveryStatus>,
+    /// The provider's ID for the sent message, matched against its reports.
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub provider_ref: Option<String>,
 }
 
 type Row = (
@@ -168,10 +202,11 @@ type Row = (
     String,
     String,
     i64,
+    Option<String>,
+    Option<String>,
 );
 
-const SELECT_COLS: &str =
-    "id, org_id, dispatch_id, event, channel, recipient_kind, recipient, body, status, created_at";
+const SELECT_COLS: &str = "id, org_id, dispatch_id, event, channel, recipient_kind, recipient, body, status, created_at, delivery_status, provider_ref";
 
 /// `body` followed by the customer tracking link, when there is one. Applied
 /// in code, not left to the AI copy, so the link can't be dropped or altered.
@@ -197,6 +232,9 @@ impl Notification {
                 body TEXT NOT NULL,
                 status VARCHAR(16) NOT NULL,
                 created_at BIGINT NOT NULL,
+                delivery_status VARCHAR(16) NULL,
+                provider_ref VARCHAR(64) NULL,
+                INDEX idx_notification_provider_ref (provider_ref),
                 CONSTRAINT fk_notification_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
             )",
         )?;
@@ -211,6 +249,21 @@ impl Notification {
         if has_seq.is_none() {
             conn.query_drop(
                 "ALTER TABLE Notifications ADD COLUMN seq BIGINT NOT NULL AUTO_INCREMENT UNIQUE",
+            )?;
+        }
+        // Delivery reports came later still.
+        let has_report: Option<i64> = conn.exec_first(
+            "SELECT 1 FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = 'Notifications'
+               AND column_name = 'provider_ref'",
+            (),
+        )?;
+        if has_report.is_none() {
+            conn.query_drop(
+                "ALTER TABLE Notifications
+                 ADD COLUMN delivery_status VARCHAR(16) NULL,
+                 ADD COLUMN provider_ref VARCHAR(64) NULL,
+                 ADD INDEX idx_notification_provider_ref (provider_ref)",
             )?;
         }
         Ok(())
@@ -228,6 +281,8 @@ impl Notification {
             body,
             status,
             created_at,
+            delivery_status,
+            provider_ref,
         ): Row,
     ) -> Self {
         Notification {
@@ -247,6 +302,10 @@ impl Notification {
             body,
             status: NotificationStatus::from_str(&status),
             created_at,
+            delivery_status: delivery_status
+                .as_deref()
+                .and_then(DeliveryStatus::from_str),
+            provider_ref,
         }
     }
 
@@ -311,6 +370,8 @@ impl Notification {
             body,
             status,
             created_at: now_unix(),
+            delivery_status: None,
+            provider_ref: None,
         }
     }
 
@@ -711,6 +772,35 @@ impl Notification {
             params! { "status" => status.as_str(), "id" => id.to_string() },
         )?;
         Ok(())
+    }
+
+    /// Remember the provider's ID for a message we sent.
+    pub(crate) fn set_provider_ref(id: Uuid, provider_ref: &str) -> Result<(), Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        conn.exec_drop(
+            "UPDATE Notifications SET provider_ref = :r WHERE id = :id",
+            params! { "r" => provider_ref, "id" => id.to_string() },
+        )?;
+        Ok(())
+    }
+
+    /// Store a delivery report for the message the provider knows as
+    /// `provider_ref`. Returns whether a notification matched.
+    pub fn record_delivery_report(
+        provider_ref: &str,
+        status: DeliveryStatus,
+    ) -> Result<bool, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        Self::ensure_table(&mut conn)?;
+        let known: Option<i64> = conn.exec_first(
+            "SELECT 1 FROM Notifications WHERE provider_ref = :r LIMIT 1",
+            params! { "r" => provider_ref },
+        )?;
+        conn.exec_drop(
+            "UPDATE Notifications SET delivery_status = :s WHERE provider_ref = :r",
+            params! { "s" => status.as_str(), "r" => provider_ref },
+        )?;
+        Ok(known.is_some())
     }
 
     /// Replace a row's body with its personalized copy and reindex it.

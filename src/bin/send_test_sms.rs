@@ -15,7 +15,7 @@ async fn main() -> ExitCode {
     };
     let vars = ["TEST0000".to_string(), "Test Customer".to_string()];
     match send_sms(&to, SmsTemplate::DispatchCreatedDriver, &vars).await {
-        Ok(()) => {
+        Ok(_) => {
             println!(
                 "queued by MSG91 for {to}. Check that the phone receives it: MSG91 can also \
                  queue a request with a wrong key or template, then drop it."

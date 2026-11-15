@@ -202,6 +202,8 @@ export ANTHROPIC_WORKSPACE_ID="wrkspc_..."
 # Without these, notifications stay QUEUED — see docs/notifications.md.
 # SMS: an MSG91 key, plus one ID per DLT template (see the doc for the names).
 export MSG91_AUTH_KEY="..."
+# Optional: lets MSG91 report delivered/failed (see the doc).
+export MSG91_WEBHOOK_SECRET="..."
 export MSG91_TEMPLATE_DISPATCH_CREATED_DRIVER="..."
 # Email: a Gmail address + App Password (or any SMTP server), or else Resend.
 export SMTP_USERNAME="you@gmail.com"

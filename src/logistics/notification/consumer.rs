@@ -52,7 +52,17 @@ async fn send(n: Notification, customer_name: String) -> Result<(), DeliveryErro
         NotificationChannel::Sms => {
             let template = n.sms_template().ok_or(DeliveryError::NotConfigured)?;
             let vars = n.sms_vars(&customer_name);
-            delivery::send_sms(&n.recipient, template, &vars).await
+            let request_id = delivery::send_sms(&n.recipient, template, &vars).await?;
+            if let Some(request_id) = request_id
+                && let Err(err) = Notification::set_provider_ref(n.id, &request_id)
+            {
+                // Without it a delivery report can't be matched to this row.
+                eprintln!(
+                    "notification consumer: couldn't store MSG91 id for {}: {err}",
+                    n.id
+                );
+            }
+            Ok(())
         }
     }
 }

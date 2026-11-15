@@ -189,7 +189,8 @@ Both are reads — any authenticated member of the org can see them.
 - The **Dispatches** page gained a **Notifications** column: a 🔔 toggle per
   row that expands a panel listing each recorded notification
   (status · recipient kind · channel → recipient · message). It refetches on
-  open, so a delivered notification shows up after the status change.
+  open, so a delivered notification shows up after the status change. Showing
+  `delivery_status` there is still to do (logistics-frontend).
 
 ## Tests
 
@@ -221,6 +222,8 @@ Both are reads — any authenticated member of the org can see them.
   (customer `SKIPPED`, driver `QUEUED` SMS); delivering records a
   `DISPATCH_DELIVERED` for the customer; the org feed is org-scoped (`403`
   otherwise); `POST /customers` stores contact details.
+- Rust routes: a delivery report needs the right secret, ignores pending and
+  unknown IDs, and sets `DELIVERED` then `FAILED` on the matching SMS.
 - Frontend unit: notifications api client; the Customers form passes contact
   details; the Dispatches page loads and shows a dispatch's notifications.
 - Playwright (`notifications.spec.ts`): a customer created with an email gets

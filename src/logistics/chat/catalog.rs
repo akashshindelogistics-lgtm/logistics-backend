@@ -139,6 +139,10 @@ pub const EXCLUDED: &[(&str, &str)] = &[
         "thousands of map points, for the trip map",
     ),
     (
+        "msg91_delivery_reports",
+        "called by MSG91's servers, not by a user",
+    ),
+    (
         "public_track_dispatch",
         "for customers holding a tracking link",
     ),
