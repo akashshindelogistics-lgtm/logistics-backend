@@ -43,6 +43,29 @@ pub(crate) async fn complete_content(
     content: serde_json::Value,
     effort: Effort,
 ) -> Result<String, String> {
+    let json = send(content, effort).await?;
+    response_text(&json).map(|s| s.to_string())
+}
+
+/// Like [`complete_content`] with an array of blocks, but returns the whole
+/// response JSON, so callers can read every `text` block and its `citations`
+/// (e.g. from `search_result` blocks). Still errors on a refusal or a reply
+/// with no text, like [`complete`].
+pub(crate) async fn complete_blocks(
+    content: Vec<serde_json::Value>,
+    effort: Effort,
+) -> Result<serde_json::Value, String> {
+    checked_reply(send(serde_json::Value::Array(content), effort).await?)
+}
+
+/// `json` unchanged if it has reply text, else the error [`response_text`] gives.
+fn checked_reply(json: serde_json::Value) -> Result<serde_json::Value, String> {
+    response_text(&json)?;
+    Ok(json)
+}
+
+/// POST one user message and return the raw response JSON.
+async fn send(content: serde_json::Value, effort: Effort) -> Result<serde_json::Value, String> {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())?;
 
@@ -72,12 +95,9 @@ pub(crate) async fn complete_content(
         return Err(format!("Anthropic API error: {}", err));
     }
 
-    let json: serde_json::Value = resp
-        .json()
+    resp.json()
         .await
-        .map_err(|e| format!("Failed to parse API response: {}", e))?;
-
-    response_text(&json).map(|s| s.to_string())
+        .map_err(|e| format!("Failed to parse API response: {}", e))
 }
 
 fn request_body(content: serde_json::Value, effort: Effort) -> serde_json::Value {
@@ -143,5 +163,26 @@ mod tests {
         let cut_off =
             json!({"stop_reason": "max_tokens", "content": [{"type": "thinking", "thinking": ""}]});
         assert!(response_text(&cut_off).is_err());
+    }
+
+    #[test]
+    fn complete_blocks_sends_the_block_array_and_keeps_citations_in_the_reply() {
+        let blocks = vec![
+            json!({"type": "search_result", "source": "a", "title": "t",
+                   "content": [{"type": "text", "text": "fact"}],
+                   "citations": {"enabled": true}}),
+            json!({"type": "text", "text": "Question?"}),
+        ];
+        let body = request_body(serde_json::Value::Array(blocks.clone()), Effort::Medium);
+        assert_eq!(body["messages"][0]["content"], json!(blocks));
+
+        let reply = json!({"stop_reason": "end_turn", "content": [
+            {"type": "thinking", "thinking": "", "signature": "x"},
+            {"type": "text", "text": "Yes.", "citations": [
+                {"type": "search_result_location", "search_result_index": 0}]}
+        ]});
+        assert_eq!(checked_reply(reply.clone()).unwrap(), reply);
+        let refused = json!({"stop_reason": "refusal", "content": []});
+        assert!(checked_reply(refused).is_err());
     }
 }
