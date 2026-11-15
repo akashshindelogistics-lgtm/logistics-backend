@@ -1,6 +1,7 @@
 //! Storage for events and per-consumer deliveries. Nothing outside this file
 //! knows how the queue is stored.
 
+use crate::logistics::ai::reindex_job::CONSUMER_NAME as REINDEX_CONSUMER;
 use crate::logistics::dispatch::pod_review::CONSUMER_NAME as POD_PHOTO_CONSUMER;
 use crate::logistics::notification::consumer::CONSUMER_NAME as NOTIFICATION_CONSUMER;
 use mysql::prelude::*;
@@ -38,6 +39,8 @@ pub enum EventType {
     /// A hired dispatch has waited too long for a truck to be assigned.
     VehicleAwaitedTooLong,
     InvoiceRaised,
+    /// An org asked for its assistant index to be rebuilt.
+    AssistantReindexRequested,
 }
 
 impl EventType {
@@ -48,6 +51,7 @@ impl EventType {
             EventType::DispatchRunningLate => "dispatch.running_late",
             EventType::VehicleAwaitedTooLong => "dispatch.awaiting_vehicle_delayed",
             EventType::InvoiceRaised => "invoice.raised",
+            EventType::AssistantReindexRequested => "assistant.reindex_requested",
         }
     }
 
@@ -58,6 +62,7 @@ impl EventType {
             "dispatch.running_late" => Some(EventType::DispatchRunningLate),
             "dispatch.awaiting_vehicle_delayed" => Some(EventType::VehicleAwaitedTooLong),
             "invoice.raised" => Some(EventType::InvoiceRaised),
+            "assistant.reindex_requested" => Some(EventType::AssistantReindexRequested),
             _ => None,
         }
     }
@@ -70,6 +75,7 @@ impl EventType {
             | EventType::DispatchRunningLate
             | EventType::VehicleAwaitedTooLong
             | EventType::InvoiceRaised => &[NOTIFICATION_CONSUMER],
+            EventType::AssistantReindexRequested => &[REINDEX_CONSUMER],
         }
     }
 }
@@ -279,6 +285,28 @@ pub fn complete(
             "now" => now_unix(),
             "id" => delivery_id,
             "token" => worker_token,
+        },
+    )?;
+    Ok(())
+}
+
+/// Renew the lease on `consumer`'s delivery of `event_id`, for a consumer whose
+/// work can outlast [`LEASE_SECS`]. Without it another worker would re-claim
+/// the delivery and run it a second time. Keyed by event, since a consumer
+/// doesn't see its delivery id; a delivery that is no longer `PROCESSING` is
+/// left alone.
+pub fn extend_lease(
+    conn: &mut PooledConn,
+    event_id: Uuid,
+    consumer: &str,
+) -> Result<(), Box<dyn Error>> {
+    conn.exec_drop(
+        "UPDATE EventDeliveries SET locked_until = :locked_until
+         WHERE event_id = :event_id AND consumer = :consumer AND status = 'PROCESSING'",
+        params! {
+            "locked_until" => now_unix() + LEASE_SECS,
+            "event_id" => event_id.to_string(),
+            "consumer" => consumer,
         },
     )?;
     Ok(())

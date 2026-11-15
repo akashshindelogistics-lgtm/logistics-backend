@@ -58,6 +58,12 @@ pub struct AgentActionQuery {
     pub status: Option<ActionStatus>,
 }
 
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct AgentRunQuery {
+    /// `dispatch_desk` (default), `delivery_monitor` or `trip_planner`.
+    pub agent: Option<String>,
+}
+
 fn error(status: actix_web::http::StatusCode, message: impl Into<String>) -> HttpResponse {
     HttpResponse::build(status).json(ApiResponse::<String> {
         success: false,
@@ -150,8 +156,9 @@ pub async fn update_agent_settings(
     path = "/api/orgs/{id}/agents/run",
     tag = "Agents",
     security(("bearer_auth" = [])),
-    params(("id" = Uuid, Path, description = "Organization UUID")),
+    params(("id" = Uuid, Path, description = "Organization UUID"), AgentRunQuery),
     responses(
+        (status = 400, description = "Unknown agent", body = EmptyResponse),
         (status = 200, description = "The finished run. A run the model couldn't finish still returns 200, with status FAILED", body = AgentRunResponse),
         (status = 403, description = "Forbidden", body = EmptyResponse),
         (status = 409, description = "Agents are off, a run is in progress, or the daily limit is used up", body = EmptyResponse),
@@ -160,7 +167,11 @@ pub async fn update_agent_settings(
     )
 )]
 #[post("/orgs/{id}/agents/run")]
-pub async fn run_agents_now(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl Responder {
+pub async fn run_agents_now(
+    path: web::Path<Uuid>,
+    query: web::Query<AgentRunQuery>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
     if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
         return resp;
     }
@@ -168,13 +179,20 @@ pub async fn run_agents_now(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> im
     if let Err(resp) = require_own_org(&auth, org_id) {
         return resp;
     }
+    let agent = match query.agent.as_deref() {
+        None => runtime::Agent::DispatchDesk,
+        Some(name) => match runtime::Agent::from_name(name) {
+            Some(agent) => agent,
+            None => return error(actix_web::http::StatusCode::BAD_REQUEST, "Unknown agent"),
+        },
+    };
     let Some(config) = ModelConfig::from_env() else {
         return error(
             actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
             "Agents need ANTHROPIC_API_KEY to be configured",
         );
     };
-    match runtime::run_dispatch_desk(org_id, "manual", &config).await {
+    match runtime::run_agent(agent, org_id, "manual", &config).await {
         Ok(run) => HttpResponse::Ok().json(ApiResponse {
             success: true,
             message: format!("Agent run {}", run.status),

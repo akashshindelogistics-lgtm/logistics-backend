@@ -64,7 +64,9 @@ fn notification_event(event: &Event) -> Result<NotificationEvent, String> {
         Some(EventType::DispatchRunningLate) => Ok(NotificationEvent::DispatchRunningLate),
         Some(EventType::VehicleAwaitedTooLong) => Ok(NotificationEvent::VehicleAwaitedTooLong),
         Some(EventType::InvoiceRaised) => Ok(NotificationEvent::InvoiceRaised),
-        None => Err(format!("unknown event type {}", event.event_type)),
+        Some(EventType::AssistantReindexRequested) | None => {
+            Err(format!("unknown event type {}", event.event_type))
+        }
     }
 }
 
