@@ -178,7 +178,7 @@ pub async fn create_dispatch_invoice(
 
 /// Queue the "your invoice is ready" email. Best-effort: the invoice is
 /// already saved, and a missing email must not undo it.
-fn notify_invoice_raised(inv: &Invoice) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn notify_invoice_raised(inv: &Invoice) -> Result<(), Box<dyn std::error::Error>> {
     let Some(customer) = Customer::get_by_id(inv.customer_id)? else {
         return Ok(());
     };

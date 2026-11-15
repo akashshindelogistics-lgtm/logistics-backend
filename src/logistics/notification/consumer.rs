@@ -64,6 +64,7 @@ fn notification_event(event: &Event) -> Result<NotificationEvent, String> {
         Some(EventType::DispatchRunningLate) => Ok(NotificationEvent::DispatchRunningLate),
         Some(EventType::VehicleAwaitedTooLong) => Ok(NotificationEvent::VehicleAwaitedTooLong),
         Some(EventType::InvoiceRaised) => Ok(NotificationEvent::InvoiceRaised),
+        Some(EventType::InvoiceReminder) => Ok(NotificationEvent::InvoiceReminder),
         None => Err(format!("unknown event type {}", event.event_type)),
     }
 }
@@ -98,7 +99,9 @@ async fn personalized_body(n: &Notification, event: &Event) -> Option<String> {
             copy::generate_dispatch_running_late_customer_body(name, short_id, hours_late).await
         }
         // Amounts and dates stay exactly as entered: no AI rewording.
-        NotificationEvent::InvoiceRaised | NotificationEvent::VehicleAwaitedTooLong => return None,
+        NotificationEvent::InvoiceRaised
+        | NotificationEvent::InvoiceReminder
+        | NotificationEvent::VehicleAwaitedTooLong => return None,
     };
     let link = event.payload["tracking_url"].as_str();
     result.ok().map(|body| with_tracking_link(body, link))

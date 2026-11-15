@@ -12,6 +12,21 @@ use uuid::Uuid;
 
 const LIST_LIMIT: u32 = 100;
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentKind {
+    #[default]
+    DispatchDesk,
+    Billing,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct RunQuery {
+    /// Which agent to run: `dispatch_desk` (the default) or `billing`
+    #[serde(default)]
+    agent: AgentKind,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AgentSettings {
     pub mode: AutonomyMode,
@@ -150,7 +165,10 @@ pub async fn update_agent_settings(
     path = "/api/orgs/{id}/agents/run",
     tag = "Agents",
     security(("bearer_auth" = [])),
-    params(("id" = Uuid, Path, description = "Organization UUID")),
+    params(
+        ("id" = Uuid, Path, description = "Organization UUID"),
+        RunQuery
+    ),
     responses(
         (status = 200, description = "The finished run. A run the model couldn't finish still returns 200, with status FAILED", body = AgentRunResponse),
         (status = 403, description = "Forbidden", body = EmptyResponse),
@@ -160,7 +178,11 @@ pub async fn update_agent_settings(
     )
 )]
 #[post("/orgs/{id}/agents/run")]
-pub async fn run_agents_now(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl Responder {
+pub async fn run_agents_now(
+    path: web::Path<Uuid>,
+    query: web::Query<RunQuery>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
     if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
         return resp;
     }
@@ -174,7 +196,11 @@ pub async fn run_agents_now(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> im
             "Agents need ANTHROPIC_API_KEY to be configured",
         );
     };
-    match runtime::run_dispatch_desk(org_id, "manual", &config).await {
+    let result = match query.agent {
+        AgentKind::DispatchDesk => runtime::run_dispatch_desk(org_id, "manual", &config).await,
+        AgentKind::Billing => runtime::run_billing(org_id, "manual", &config).await,
+    };
+    match result {
         Ok(run) => HttpResponse::Ok().json(ApiResponse {
             success: true,
             message: format!("Agent run {}", run.status),

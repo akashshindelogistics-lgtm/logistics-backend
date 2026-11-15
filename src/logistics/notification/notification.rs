@@ -58,6 +58,8 @@ pub enum NotificationEvent {
     /// A freight invoice was raised against the dispatch. Email only: there
     /// is no DLT template for it, so a customer with just a phone is skipped.
     InvoiceRaised,
+    /// A reminder that an invoice is overdue. Email only, like `InvoiceRaised`.
+    InvoiceReminder,
 }
 
 impl NotificationEvent {
@@ -68,6 +70,7 @@ impl NotificationEvent {
             NotificationEvent::DispatchRunningLate => "DISPATCH_RUNNING_LATE",
             NotificationEvent::VehicleAwaitedTooLong => "VEHICLE_AWAITED_TOO_LONG",
             NotificationEvent::InvoiceRaised => "INVOICE_RAISED",
+            NotificationEvent::InvoiceReminder => "INVOICE_REMINDER",
         }
     }
 
@@ -80,6 +83,7 @@ impl NotificationEvent {
             NotificationEvent::DispatchRunningLate => "Your order is running behind schedule",
             NotificationEvent::VehicleAwaitedTooLong => "A hired dispatch has no truck yet",
             NotificationEvent::InvoiceRaised => "Your invoice is ready",
+            NotificationEvent::InvoiceReminder => "Your invoice is overdue",
         }
     }
 }
@@ -239,6 +243,7 @@ impl Notification {
                 "DISPATCH_RUNNING_LATE" => NotificationEvent::DispatchRunningLate,
                 "VEHICLE_AWAITED_TOO_LONG" => NotificationEvent::VehicleAwaitedTooLong,
                 "INVOICE_RAISED" => NotificationEvent::InvoiceRaised,
+                "INVOICE_REMINDER" => NotificationEvent::InvoiceReminder,
                 _ => NotificationEvent::DispatchCreated,
             },
             channel: NotificationChannel::from_str(&channel),
@@ -332,7 +337,9 @@ impl Notification {
             NotificationEvent::DispatchCreated => Some(SmsTemplate::DispatchCreatedCustomer),
             NotificationEvent::DispatchDelivered => Some(SmsTemplate::DispatchDelivered),
             NotificationEvent::DispatchRunningLate => Some(SmsTemplate::DispatchRunningLate),
-            NotificationEvent::InvoiceRaised | NotificationEvent::VehicleAwaitedTooLong => None,
+            NotificationEvent::InvoiceRaised
+            | NotificationEvent::InvoiceReminder
+            | NotificationEvent::VehicleAwaitedTooLong => None,
         }
     }
 
@@ -661,6 +668,47 @@ impl Notification {
             tx,
             org_id,
             EventType::InvoiceRaised,
+            serde_json::json!({
+                "dispatch_id": dispatch_id,
+                "customer_name": customer.name,
+            }),
+            None,
+        )?;
+        Ok(notifs)
+    }
+
+    /// Record the "your invoice is overdue" email to the customer and publish
+    /// its event, in the caller's transaction. `balance` is in whole rupees.
+    pub fn enqueue_invoice_reminder(
+        tx: &mut Transaction<'_>,
+        org_id: Uuid,
+        dispatch_id: Uuid,
+        customer: &Customer,
+        balance: i64,
+        due_on: &str,
+    ) -> Result<Vec<Notification>, Box<dyn Error>> {
+        let short_id = &dispatch_id.to_string()[..8];
+        let target = customer
+            .email
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|e| (NotificationChannel::Email, e.to_string()));
+        let notifs = vec![Self::build(
+            org_id,
+            dispatch_id,
+            NotificationEvent::InvoiceReminder,
+            "customer",
+            target,
+            format!(
+                "Hi {}, a reminder that Rs {balance} is still unpaid on the invoice for your order (ref {short_id}), which was due on {due_on}. Please arrange payment, or ignore this if you have already paid. Thank you!",
+                customer.name
+            ),
+        )];
+        Self::insert_all(tx, &notifs)?;
+        events::queue::publish(
+            tx,
+            org_id,
+            EventType::InvoiceReminder,
             serde_json::json!({
                 "dispatch_id": dispatch_id,
                 "customer_name": customer.name,

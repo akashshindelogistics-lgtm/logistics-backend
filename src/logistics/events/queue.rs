@@ -37,6 +37,8 @@ pub enum EventType {
     /// A hired dispatch has waited too long for a truck to be assigned.
     VehicleAwaitedTooLong,
     InvoiceRaised,
+    /// An overdue invoice's customer was reminded.
+    InvoiceReminder,
 }
 
 impl EventType {
@@ -47,6 +49,7 @@ impl EventType {
             EventType::DispatchRunningLate => "dispatch.running_late",
             EventType::VehicleAwaitedTooLong => "dispatch.awaiting_vehicle_delayed",
             EventType::InvoiceRaised => "invoice.raised",
+            EventType::InvoiceReminder => "invoice.reminder",
         }
     }
 
@@ -57,6 +60,7 @@ impl EventType {
             "dispatch.running_late" => Some(EventType::DispatchRunningLate),
             "dispatch.awaiting_vehicle_delayed" => Some(EventType::VehicleAwaitedTooLong),
             "invoice.raised" => Some(EventType::InvoiceRaised),
+            "invoice.reminder" => Some(EventType::InvoiceReminder),
             _ => None,
         }
     }
@@ -68,7 +72,8 @@ impl EventType {
             | EventType::DispatchDelivered
             | EventType::DispatchRunningLate
             | EventType::VehicleAwaitedTooLong
-            | EventType::InvoiceRaised => &[NOTIFICATION_CONSUMER],
+            | EventType::InvoiceRaised
+            | EventType::InvoiceReminder => &[NOTIFICATION_CONSUMER],
         }
     }
 }
