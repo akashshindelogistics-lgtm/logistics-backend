@@ -34,6 +34,15 @@ impl Effort {
 /// `ANTHROPIC_API_KEY` is unset, the API fails or refuses, or the reply has
 /// no text.
 pub(crate) async fn complete(prompt: String, effort: Effort) -> Result<String, String> {
+    complete_content(serde_json::Value::String(prompt), effort).await
+}
+
+/// Like [`complete`], but `content` is the user message's content as the API
+/// takes it: a string, or an array of blocks (e.g. an image and a text block).
+pub(crate) async fn complete_content(
+    content: serde_json::Value,
+    effort: Effort,
+) -> Result<String, String> {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())?;
 
@@ -53,7 +62,7 @@ pub(crate) async fn complete(prompt: String, effort: Effort) -> Result<String, S
     }
 
     let resp = request
-        .json(&request_body(&prompt, effort))
+        .json(&request_body(content, effort))
         .send()
         .await
         .map_err(|e| format!("Failed to reach Anthropic API: {}", e))?;
@@ -71,12 +80,12 @@ pub(crate) async fn complete(prompt: String, effort: Effort) -> Result<String, S
     response_text(&json).map(|s| s.to_string())
 }
 
-fn request_body(prompt: &str, effort: Effort) -> serde_json::Value {
+fn request_body(content: serde_json::Value, effort: Effort) -> serde_json::Value {
     serde_json::json!({
         "model": MODEL,
         "max_tokens": MAX_TOKENS,
         "output_config": { "effort": effort.as_str() },
-        "messages": [{ "role": "user", "content": prompt }]
+        "messages": [{ "role": "user", "content": content }]
     })
 }
 
@@ -106,13 +115,13 @@ mod tests {
 
     #[test]
     fn request_body_uses_the_shared_model_and_the_features_effort() {
-        let body = request_body("hi", Effort::Medium);
+        let body = request_body(json!("hi"), Effort::Medium);
         assert_eq!(body["model"], MODEL);
         assert_eq!(body["max_tokens"], MAX_TOKENS);
         assert_eq!(body["output_config"]["effort"], "medium");
         assert_eq!(body["messages"][0]["content"], "hi");
         assert_eq!(
-            request_body("hi", Effort::Low)["output_config"]["effort"],
+            request_body(json!("hi"), Effort::Low)["output_config"]["effort"],
             "low"
         );
     }
