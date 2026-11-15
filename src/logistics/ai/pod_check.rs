@@ -7,6 +7,10 @@
 //! arbitrary external URL or `data:` URI is not fetched. The check *fails
 //! open*: with no `ANTHROPIC_API_KEY`, a network error, or an unclear reply,
 //! the delivery proceeds. Only a clear "NO" from the model blocks it.
+//!
+//! The Messages API rejects an image whose base64 payload exceeds 5 MB, so an
+//! upload over about 3.75 MiB raw is skipped up front (see
+//! [`MAX_IMAGE_BASE64_BYTES`]) rather than sent; the caller logs the reason.
 
 use base64::Engine;
 use uuid::Uuid;
@@ -18,6 +22,14 @@ const PROMPT: &str = "This image was submitted as proof of delivery for a freigh
     or a photo of a signed delivery document? Answer with exactly one word: YES if it \
     plausibly is, NO if it clearly is not (e.g. a blank image, a random screenshot, a meme, \
     an unrelated scene).";
+
+/// The Messages API's per-image limit, measured on the base64 payload.
+pub const MAX_IMAGE_BASE64_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Length of the standard (padded) base64 encoding of `raw_bytes` bytes.
+pub fn base64_len(raw_bytes: u64) -> u64 {
+    raw_bytes.div_ceil(3) * 4
+}
 
 /// Outcome of a check that completed.
 #[derive(Debug, PartialEq, Eq)]
@@ -49,6 +61,14 @@ pub fn parse_verdict(reply: &str) -> PodVerdict {
 
 /// Check one stored upload. `Err` means the check could not run.
 pub async fn check_upload(file: &UploadedFile) -> Result<PodVerdict, String> {
+    let encoded_len = base64_len(file.byte_size.max(0) as u64);
+    if encoded_len > MAX_IMAGE_BASE64_BYTES {
+        return Err(format!(
+            "image too large for the vision check ({} bytes, {encoded_len} as base64; \
+             the API limit is {MAX_IMAGE_BASE64_BYTES} bytes of base64)",
+            file.byte_size
+        ));
+    }
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())?;
     let bytes = file
@@ -106,6 +126,34 @@ mod tests {
         assert_eq!(upload_id_from_url("https://example.com/sig.png"), None);
         assert_eq!(upload_id_from_url("data:image/png;base64,AAAA"), None);
         assert_eq!(upload_id_from_url("/api/uploads/not-a-uuid"), None);
+    }
+
+    #[test]
+    fn base64_len_matches_the_encoder() {
+        for n in [0usize, 1, 2, 3, 4, 5, 6, 3_932_160, 3_932_161] {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(vec![0u8; n]);
+            assert_eq!(base64_len(n as u64), encoded.len() as u64, "n = {n}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn check_upload_skips_an_image_too_large_for_the_api() {
+        // 3.75 MiB raw is exactly 5 MiB as base64; one byte more is over.
+        let file = |byte_size: i64| UploadedFile {
+            id: Uuid::new_v4(),
+            org_id: Uuid::new_v4(),
+            content_type: "image/jpeg".to_string(),
+            byte_size,
+            storage_path: "/nonexistent/pod.jpg".to_string(),
+            uploaded_at: 0,
+        };
+        assert_eq!(base64_len(3_932_160), MAX_IMAGE_BASE64_BYTES);
+
+        // Rejected on size alone: no env lookup, no file read, no API call.
+        let err = check_upload(&file(3_932_161)).await.unwrap_err();
+        assert!(err.contains("too large"), "unexpected: {err}");
+        let err = check_upload(&file(4 * 1024 * 1024)).await.unwrap_err();
+        assert!(err.contains("too large"), "unexpected: {err}");
     }
 
     #[test]

@@ -266,23 +266,35 @@ pub async fn update_dispatch_status(
             signature_or_photo_url: p.signature_or_photo_url.clone(),
         });
 
-    // Vision check on an uploaded proof photo before marking DELIVERED. Fails
-    // open: only a clear "not a signature/photo" verdict blocks the delivery.
+    // Vision check on an uploaded proof photo before marking DELIVERED. Only
+    // runs for a legal transition, so an illegal one gets the state-machine
+    // error below without a paid API call. Fails open: only a clear "not a
+    // signature/photo" verdict blocks the delivery; a check that couldn't run
+    // is logged.
     if payload.status == DispatchStatus::Delivered
+        && dispatch.status.can_transition_to(DispatchStatus::Delivered)
         && let Some(file) = proof
             .as_ref()
             .and_then(|p| pod_check::upload_id_from_url(&p.signature_or_photo_url))
             .and_then(|id| UploadedFile::get_by_id(id).ok().flatten())
         && file.org_id == auth.org_id
-        && let Ok(PodVerdict::NotProof) = pod_check::check_upload(&file).await
     {
-        return HttpResponse::BadRequest().json(ApiResponse::<String> {
-            success: false,
-            message: "Status update failed: the proof-of-delivery file doesn't look like a \
-                signature or a photo of the delivered goods; upload a clearer one"
-                .to_string(),
-            data: None,
-        });
+        match pod_check::check_upload(&file).await {
+            Ok(PodVerdict::NotProof) => {
+                return HttpResponse::BadRequest().json(ApiResponse::<String> {
+                    success: false,
+                    message: "Status update failed: the proof-of-delivery file doesn't look \
+                        like a signature or a photo of the delivered goods; upload a clearer one"
+                        .to_string(),
+                    data: None,
+                });
+            }
+            Ok(PodVerdict::Plausible) => {}
+            Err(err) => eprintln!(
+                "proof-of-delivery check skipped for upload {} (dispatch {}): {err}",
+                file.id, dispatch.id
+            ),
+        }
     }
 
     match dispatch.transition_to(payload.status, proof, payload.return_to_godown_id) {
