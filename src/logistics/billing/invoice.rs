@@ -486,10 +486,32 @@ impl Invoice {
         let due_on = due_on.into();
         validate_iso_date(&due_on)?;
 
+        // Lock the row before reading, as `record_payment` does, so a payment
+        // that landed after this invoice was loaded is seen and re-checked.
         let mut conn = DbConnection::from_env()
             .get_connection()
             .map_err(InvoiceError::Db)?;
-        conn.exec_drop(
+        Self::ensure_table(&mut conn).map_err(InvoiceError::Db)?;
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        tx.exec_drop(
+            "SELECT id FROM Invoices WHERE id = :id FOR UPDATE",
+            params! { "id" => self.id.to_string() },
+        )?;
+        let row: Option<InvoiceRow> = tx.exec_first(
+            format!("SELECT {SELECT_COLS} FROM Invoices WHERE id = :id"),
+            params! { "id" => self.id.to_string() },
+        )?;
+        let current = row.map(Self::hydrate).unwrap_or_else(|| self.clone());
+        if current.paid_on.is_some() {
+            *self = current;
+            return Err(InvoiceError::AlreadyPaid);
+        }
+        if amount <= current.amount_paid {
+            let paid = current.amount_paid;
+            *self = current;
+            return Err(InvoiceError::AmountNotAbovePaid { paid });
+        }
+        tx.exec_drop(
             "UPDATE Invoices SET amount = :amount, due_on = :due_on WHERE id = :id",
             params! {
                 "id" => self.id.to_string(),
@@ -497,7 +519,9 @@ impl Invoice {
                 "due_on" => &due_on,
             },
         )?;
+        tx.commit()?;
 
+        self.amount_paid = current.amount_paid;
         self.amount = amount;
         self.due_on = due_on;
         self.balance = amount - self.amount_paid;
@@ -519,6 +543,20 @@ impl Invoice {
         if amount <= 0 {
             return Err(InvoiceError::NonPositiveAmount);
         }
+        self.pay_locked(Some(amount), mode, paid_on, reference)
+            .map(|p| p.expect("a requested amount always records a payment"))
+    }
+
+    /// Shared body of [`Invoice::record_payment`] and [`Invoice::mark_paid`].
+    /// `amount: None` pays whatever balance remains under the row lock, and
+    /// records nothing (returning `Ok(None)`) when that balance is zero.
+    fn pay_locked(
+        &mut self,
+        amount: Option<i64>,
+        mode: PaymentMode,
+        paid_on: Option<String>,
+        reference: Option<String>,
+    ) -> Result<Option<InvoicePayment>, InvoiceError> {
         let paid_on = paid_on.unwrap_or_else(today_iso);
         validate_iso_date(&paid_on)?;
         let reference = reference
@@ -541,9 +579,18 @@ impl Invoice {
         )?;
         let current = row.map(Self::hydrate).unwrap_or_else(|| self.clone());
         let balance = total - current.amount_paid;
-        if amount > balance {
-            return Err(InvoiceError::Overpayment { balance });
-        }
+        let amount = match amount {
+            Some(amount) if amount > balance => {
+                return Err(InvoiceError::Overpayment { balance });
+            }
+            Some(amount) => amount,
+            None if balance <= 0 => {
+                // Already settled (e.g. a concurrent `/pay`): nothing to record.
+                *self = current;
+                return Ok(None);
+            }
+            None => balance,
+        };
 
         let payment = InvoicePayment {
             id: Uuid::new_v4(),
@@ -582,7 +629,7 @@ impl Invoice {
             self.paid_on = Some(paid_on);
         }
         self.status = payment_status(self.amount, self.amount_paid, &self.due_on);
-        Ok(payment)
+        Ok(Some(payment))
     }
 
     /// Payments recorded against this invoice, oldest first.
@@ -608,12 +655,14 @@ impl Invoice {
     }
 
     /// Pay off the whole remaining balance in cash, dated today. A no-op if
-    /// the invoice is already paid.
+    /// the invoice is already paid. The balance is read under the row lock, so
+    /// a double-submitted `/pay` (or a payment that landed after this invoice
+    /// was loaded) pays only what is left and never fails as an overpayment.
     pub fn mark_paid(&mut self) -> Result<(), InvoiceError> {
         if self.balance <= 0 {
             return Ok(());
         }
-        self.record_payment(self.balance, PaymentMode::Cash, None, None)
+        self.pay_locked(None, PaymentMode::Cash, None, None)
             .map(|_| ())
     }
 }
@@ -852,6 +901,77 @@ mod tests {
             Invoice::get_by_id(inv.id).unwrap().unwrap().status,
             PaymentStatus::Paid
         );
+    }
+
+    #[test]
+    fn test_update_rechecks_payments_made_after_load() {
+        let _db = TestDb::create();
+        let (org, customer, dispatch) = org_customer_dispatch();
+        let mut payer =
+            Invoice::create(org.id, dispatch.id, customer.id, 1000, iso_offset(10)).unwrap();
+        payer
+            .record_payment(400, PaymentMode::Cash, None, None)
+            .unwrap();
+
+        // Loaded with 400 paid; another request then pays 300 more.
+        let mut stale = Invoice::get_by_id(payer.id).unwrap().unwrap();
+        payer
+            .record_payment(300, PaymentMode::Upi, None, None)
+            .unwrap();
+        assert!(matches!(
+            stale.update(500, iso_offset(10)),
+            Err(InvoiceError::AmountNotAbovePaid { paid: 700 })
+        ));
+        assert_eq!(Invoice::get_by_id(payer.id).unwrap().unwrap().amount, 1000);
+
+        // Loaded unpaid; another request then settles it.
+        let mut stale = Invoice::get_by_id(payer.id).unwrap().unwrap();
+        payer
+            .record_payment(300, PaymentMode::Cash, None, None)
+            .unwrap();
+        assert!(matches!(
+            stale.update(1500, iso_offset(10)),
+            Err(InvoiceError::AlreadyPaid)
+        ));
+        assert_eq!(stale.status, PaymentStatus::Paid);
+        let reloaded = Invoice::get_by_id(payer.id).unwrap().unwrap();
+        assert_eq!((reloaded.amount, reloaded.balance), (1000, 0));
+        assert_eq!(reloaded.status, PaymentStatus::Paid);
+    }
+
+    #[test]
+    fn test_mark_paid_pays_the_balance_under_the_lock() {
+        let _db = TestDb::create();
+        let (org, customer, dispatch) = org_customer_dispatch();
+        let inv = Invoice::create(org.id, dispatch.id, customer.id, 900, iso_offset(10)).unwrap();
+
+        // A double-submitted `/pay`: both requests loaded the unpaid invoice.
+        let mut first = Invoice::get_by_id(inv.id).unwrap().unwrap();
+        let mut second = Invoice::get_by_id(inv.id).unwrap().unwrap();
+        first.mark_paid().expect("first pay");
+        second
+            .mark_paid()
+            .expect("second pay is an idempotent no-op");
+        assert_eq!(second.status, PaymentStatus::Paid);
+        assert_eq!(second.balance, 0);
+        let payments = inv.payments().unwrap();
+        assert_eq!(payments.len(), 1);
+        assert_eq!(payments[0].amount, 900);
+
+        // A partial payment landing between load and `/pay`: only the rest is paid.
+        let mut d2 = dispatch.clone();
+        d2.id = Uuid::new_v4();
+        d2.save().unwrap();
+        let mut partial = Invoice::create(org.id, d2.id, customer.id, 500, iso_offset(10)).unwrap();
+        let mut stale = Invoice::get_by_id(partial.id).unwrap().unwrap();
+        partial
+            .record_payment(200, PaymentMode::Upi, None, None)
+            .unwrap();
+        stale.mark_paid().expect("pays the remaining 300");
+        assert_eq!(stale.status, PaymentStatus::Paid);
+        let amounts: Vec<i64> = stale.payments().unwrap().iter().map(|p| p.amount).collect();
+        assert_eq!(amounts.len(), 2);
+        assert_eq!(amounts.iter().sum::<i64>(), 500);
     }
 
     #[test]

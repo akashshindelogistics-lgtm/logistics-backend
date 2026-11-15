@@ -403,7 +403,7 @@
     {
       "type": "stat",
       "title": "Outstanding invoices",
-      "description": "Unpaid invoice total.",
+      "description": "Remaining balance across unpaid invoices (amount minus payments received).",
       "datasource": {
         "type": "mysql",
         "uid": "logistics-mysql"
@@ -418,7 +418,7 @@
           "rawQuery": true,
           "editorMode": "code",
           "format": "table",
-          "rawSql": "SELECT COALESCE(SUM(amount), 0) AS value FROM Invoices WHERE org_id IN (${org:sqlstring}) AND paid_on IS NULL"
+          "rawSql": "SELECT COALESCE(SUM(amount - (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayments p WHERE p.invoice_id = Invoices.id)), 0) AS value FROM Invoices WHERE org_id IN (${org:sqlstring}) AND paid_on IS NULL"
         }
       ],
       "options": {
@@ -1367,7 +1367,7 @@
           "rawQuery": true,
           "editorMode": "code",
           "format": "table",
-          "rawSql": "SELECT c.name AS customer, i.amount, i.issued_on AS issued, i.due_on AS due, DATEDIFF(CURDATE(), i.due_on) AS days_overdue FROM Invoices i JOIN Customers c ON c.id = i.customer_id WHERE i.org_id IN (${org:sqlstring}) AND i.paid_on IS NULL AND i.due_on < CURDATE() ORDER BY i.due_on"
+          "rawSql": "SELECT c.name AS customer, i.amount, i.amount - (SELECT COALESCE(SUM(p.amount), 0) FROM InvoicePayments p WHERE p.invoice_id = i.id) AS balance, i.issued_on AS issued, i.due_on AS due, DATEDIFF(CURDATE(), i.due_on) AS days_overdue FROM Invoices i JOIN Customers c ON c.id = i.customer_id WHERE i.org_id IN (${org:sqlstring}) AND i.paid_on IS NULL AND i.due_on < CURDATE() ORDER BY i.due_on"
         }
       ],
       "options": {
