@@ -53,6 +53,12 @@ pub struct AgentActionListResponse {
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
+pub struct AgentRunQuery {
+    /// `dispatch_desk` (the default) or `order_intake`.
+    pub agent: Option<String>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct AgentActionQuery {
     /// Only actions with this status, such as `PENDING_APPROVAL`.
     pub status: Option<ActionStatus>,
@@ -150,7 +156,7 @@ pub async fn update_agent_settings(
     path = "/api/orgs/{id}/agents/run",
     tag = "Agents",
     security(("bearer_auth" = [])),
-    params(("id" = Uuid, Path, description = "Organization UUID")),
+    params(("id" = Uuid, Path, description = "Organization UUID"), AgentRunQuery),
     responses(
         (status = 200, description = "The finished run. A run the model couldn't finish still returns 200, with status FAILED", body = AgentRunResponse),
         (status = 403, description = "Forbidden", body = EmptyResponse),
@@ -160,7 +166,11 @@ pub async fn update_agent_settings(
     )
 )]
 #[post("/orgs/{id}/agents/run")]
-pub async fn run_agents_now(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl Responder {
+pub async fn run_agents_now(
+    path: web::Path<Uuid>,
+    query: web::Query<AgentRunQuery>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
     if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
         return resp;
     }
@@ -174,7 +184,19 @@ pub async fn run_agents_now(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> im
             "Agents need ANTHROPIC_API_KEY to be configured",
         );
     };
-    match runtime::run_dispatch_desk(org_id, "manual", &config).await {
+    let result = match query.agent.as_deref() {
+        None | Some(runtime::DISPATCH_DESK) => {
+            runtime::run_dispatch_desk(org_id, "manual", &config).await
+        }
+        Some(runtime::ORDER_INTAKE) => runtime::run_order_intake(org_id, "manual", &config).await,
+        Some(_) => {
+            return error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "agent must be dispatch_desk or order_intake",
+            );
+        }
+    };
+    match result {
         Ok(run) => HttpResponse::Ok().json(ApiResponse {
             success: true,
             message: format!("Agent run {}", run.status),

@@ -92,7 +92,7 @@ are this backend's own database and domain code.
 | Agent | Takes over | Autonomous | Waits for a person | Needs first |
 | --- | --- | --- | --- | --- |
 | **Dispatch desk** (built) | Reviewing open dispatches | Confirm, raise alerts | Cancel | Nothing |
-| **Order intake** | Dispatch creation, new customers | Create when customer and stock are unambiguous | Anything ambiguous, unusual quantities | Inbound email or WhatsApp |
+| **Order intake** (built, off by default) | Dispatch creation, new customers | Nothing: every proposed dispatch waits for a person | Everything | Gateway to POST messages, see [inbound-channels.md](inbound-channels.md) |
 | **Trip planner** | Grouping stops, own or hired vehicle | Group stops on own vehicles | Hiring at a cost | Rate cards |
 | **Delivery monitor** | Loaded, in transit, delivered, returned; delay alerts | Advance status from driver and GPS signals | Returns, disputed deliveries | Driver app status actions; [proof-of-delivery check](../todo.org) |
 | **Fleet and compliance** | Document and maintenance tracking | Reminders, take a non-compliant vehicle out of planning | Booking paid work | Vehicle availability flag |
@@ -165,7 +165,8 @@ monitor and trip planner.
 stays human.
 
 **Phase 6: inbound channels.** Email or WhatsApp in, then order intake, customer
-comms, vendor and hire. This is the biggest reduction in human work, and it's the
+comms, vendor and hire. First slice built: inbound webhook and order intake, see
+[inbound-channels.md](inbound-channels.md). This is the biggest reduction in human work, and it's the
 riskiest, since it's the first time outsiders' text directly drives agents.
 
 **Phase 7: payment gateway.** Only then consider automatic payment recording.

@@ -149,7 +149,9 @@ pub struct AgentAction {
     pub org_id: Uuid,
     pub agent: String,
     pub tool: String,
-    /// The tool's arguments, as JSON text.
+    /// The tool's arguments, as JSON text. An action about an inbound message
+    /// also has `source_message` (channel, sender, subject, body), copied from
+    /// the stored message rather than the model, for whoever approves it.
     pub input: String,
     /// The agent's explanation, for whoever reviews this.
     pub reason: String,
@@ -351,6 +353,18 @@ fn row_to_run(r: RunRow) -> AgentRun {
         started_at: r.8,
         finished_at: r.9,
     }
+}
+
+/// When this agent's most recent completed run for the org started.
+pub fn last_completed_run_start(org_id: Uuid, agent: &str) -> Result<Option<i64>, String> {
+    let mut conn = connect()?;
+    conn.exec_first(
+        "SELECT started_at FROM AgentRuns
+         WHERE org_id = :org_id AND agent = :agent AND status = 'COMPLETED'
+         ORDER BY seq DESC LIMIT 1",
+        params! { "org_id" => org_id.to_string(), "agent" => agent },
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub fn get_run(id: Uuid) -> Result<Option<AgentRun>, String> {

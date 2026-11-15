@@ -63,6 +63,7 @@ mod godowns;
 mod health;
 mod hires;
 mod imports;
+mod inbound;
 mod maintenance;
 mod notifications;
 mod orgs;
@@ -92,6 +93,7 @@ pub use godowns::*;
 pub use health::*;
 pub use hires::*;
 pub use imports::*;
+pub use inbound::*;
 pub use maintenance::*;
 pub use notifications::*;
 pub use orgs::*;
@@ -248,6 +250,8 @@ impl Modify for SecurityAddon {
         get_agent_settings,
         update_agent_settings,
         run_agents_now,
+        receive_inbound_message,
+        list_inbound_messages,
         list_chat_conversations,
         create_chat_conversation,
         get_chat_conversation,
@@ -316,6 +320,9 @@ impl Modify for SecurityAddon {
             ProductionRun, ProductionPlanResponse,
             AgentSettings, AgentSettingsResponse, AgentRunResponse, AgentRunListResponse,
             AgentActionResponse, AgentActionListResponse,
+            InboundMessagePayload, InboundMessageResponse, InboundMessageListResponse,
+            crate::logistics::inbound::InboundMessage,
+            crate::logistics::inbound::Channel,
             crate::logistics::agent::store::AutonomyMode,
             crate::logistics::agent::store::Risk,
             crate::logistics::agent::store::ActionStatus,
@@ -355,6 +362,7 @@ impl Modify for SecurityAddon {
         (name = "Trips", description = "Multi-stop trips: one vehicle serving several customer orders in sequence"),
         (name = "Uploads", description = "File storage for uploaded images, e.g. proof-of-delivery photos and signatures"),
         (name = "Chat", description = "The chat inbox: run operations by asking, with a confirmation card for every change"),
+        (name = "Inbound", description = "Email and WhatsApp messages from outside the org, read by the order-intake agent"),
         (name = "Agents", description = "Autonomy settings, the audit trail of agent runs and actions, and the approval inbox"),
         (name = "AI Assistant", description = "Retrieval-grounded natural-language Q&A over an organization's own data"),
     )
@@ -508,6 +516,8 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(get_agent_settings)
             .service(update_agent_settings)
             .service(run_agents_now)
+            .service(receive_inbound_message)
+            .service(list_inbound_messages)
             .service(list_chat_conversations)
             .service(create_chat_conversation)
             .service(get_chat_conversation)
