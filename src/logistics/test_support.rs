@@ -46,7 +46,8 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             longitude DOUBLE DEFAULT NULL,
             last_updated_at BIGINT DEFAULT NULL,
             location_address VARCHAR(255) DEFAULT NULL,
-            gstin VARCHAR(15) DEFAULT NULL
+            gstin VARCHAR(15) DEFAULT NULL,
+            onboarding_dismissed BOOLEAN NOT NULL DEFAULT FALSE
         )",
     )
     .expect("migrate: create Orgs");

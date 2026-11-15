@@ -1,6 +1,6 @@
 # New-organisation onboarding (plan)
 
-Status: **planned**; phase 1 (`POST /api/auth/signup`) is implemented. The signup rate limit is in-memory per process, keyed on the socket peer IP, or with `TRUSTED_PROXY=1` on the rightmost `X-Forwarded-For` entry (the one the proxy appends), and `terms_accepted_at` is stored on `OrgUsers`.
+Status: **planned**; phase 1 (`POST /api/auth/signup`) and the phase 2 checklist API (`GET /api/orgs/{id}/onboarding`, `PUT .../onboarding/dismiss`) are implemented; the frontend half of phase 2 is not. The signup rate limit is in-memory per process, keyed on the socket peer IP, or with `TRUSTED_PROXY=1` on the rightmost `X-Forwarded-For` entry (the one the proxy appends), and `terms_accepted_at` is stored on `OrgUsers`.
 
 Today a new org registers with a name, address and password, is logged in, and
 lands on its detail page (`frontend/src/pages/Register.tsx`). Nothing tells
@@ -94,7 +94,7 @@ completion is stored.
 `done` comes from queries the app already has (counts of godowns, stock rows,
 vehicles, drivers, a vehicle with an assigned active driver, customers with a
 location, dispatches, org users beyond the owner, vehicles with a recent
-location). Because it is derived, data added through the API or CSV import
+location from a GPS tracker or driver phone). Because it is derived, data added through the API or CSV import
 ticks the checklist too, and it can never disagree with reality.
 
 The only stored state is `Organization.onboarding_dismissed` (bool), set by
