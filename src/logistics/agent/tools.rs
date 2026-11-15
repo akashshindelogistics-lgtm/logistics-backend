@@ -81,6 +81,21 @@ fn propose_dispatch_schema() -> Value {
     )
 }
 
+fn flag_message_schema() -> Value {
+    object_schema(
+        json!({
+            "message_id": {"type": "string", "description": "The inbound message's id"},
+            "outcome": {
+                "type": "string",
+                "enum": ["ALERT", "IGNORE"],
+                "description": "ALERT when a person should look at it; IGNORE when it needs nothing, such as a thank-you",
+            },
+            "reason": {"type": "string", "description": "What it is and, for an alert, what a person should do"},
+        }),
+        &["message_id", "outcome", "reason"],
+    )
+}
+
 pub fn catalog() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -120,6 +135,12 @@ pub fn catalog() -> Vec<ToolDef> {
             schema: propose_dispatch_schema,
         },
         ToolDef {
+            name: "flag_message",
+            description: "Close an inbound message you won't propose a dispatch for: ALERT raises it for a person (unknown sender, a question or complaint, unclear items, anything unusual), IGNORE drops it when it needs nothing. Use one of these or propose_dispatch for every message.",
+            risk: Risk::Internal,
+            schema: flag_message_schema,
+        },
+        ToolDef {
             name: "confirm_dispatch",
             description: "Move a PENDING dispatch to CONFIRMED, meaning it will be fulfilled as booked. Refused when its vehicle has an expired document.",
             risk: Risk::Operational,
@@ -153,7 +174,7 @@ pub const ORDER_INTAKE_TOOLS: &[&str] = &[
     "list_inbound_messages",
     "list_stock_items",
     "propose_dispatch",
-    "raise_alert",
+    "flag_message",
 ];
 
 /// The tool definitions as the Messages API wants them.
@@ -247,8 +268,96 @@ pub fn validate(org_id: Uuid, name: &str, input: &Value) -> Result<String, Strin
         "propose_dispatch" => {
             validate_proposal(org_id, input).map(|p| format!("order:{}", p.message.id))
         }
+        // Same key as a proposal: a message gets one outcome.
+        "flag_message" => {
+            flag_outcome(input)?;
+            open_message(org_id, input).map(|m| format!("order:{}", m.id))
+        }
         other => Err(format!("{other} isn't an action")),
     }
+}
+
+/// The message status a `flag_message` call leaves behind.
+fn flag_outcome(input: &Value) -> Result<&'static str, String> {
+    match string_arg(input, "outcome")? {
+        "ALERT" => Ok(inbound::ALERTED),
+        "IGNORE" => Ok(inbound::IGNORED),
+        _ => Err("outcome must be ALERT or IGNORE".to_string()),
+    }
+}
+
+/// The input's `message_id`, if it's this org's and nobody has dealt with it.
+fn open_message(org_id: Uuid, input: &Value) -> Result<inbound::InboundMessage, String> {
+    let id = Uuid::parse_str(string_arg(input, "message_id")?)
+        .map_err(|_| "message_id isn't a valid id".to_string())?;
+    let message = match inbound::get(id)? {
+        Some(m) if m.org_id == org_id => m,
+        _ => return Err("No such message in this organization".to_string()),
+    };
+    if message.status != inbound::RECEIVED {
+        return Err(format!(
+            "This message was already handled ({})",
+            message.status
+        ));
+    }
+    Ok(message)
+}
+
+/// The arguments as stored with the action. A message's proposal or alert also
+/// keeps the message itself, copied here from the database rather than from
+/// the model, so the person deciding reads what the customer actually sent.
+pub fn stored_input(org_id: Uuid, name: &str, input: &Value) -> Result<Value, String> {
+    let mut stored = input.clone();
+    if matches!(name, "propose_dispatch" | "flag_message") {
+        let message = open_message(org_id, input)?;
+        if let Some(fields) = stored.as_object_mut() {
+            fields.insert(
+                "source_message".to_string(),
+                json!({
+                    "channel": message.channel.as_str(),
+                    "sender": message.sender,
+                    "subject": message.subject,
+                    "body": message.body,
+                    "customer_id": message.customer_id,
+                    "received_at": message.received_at,
+                }),
+            );
+        }
+    }
+    Ok(stored)
+}
+
+/// A person rejected this action. A rejected proposal closes its message, so
+/// the agent doesn't read it again.
+pub fn rejected(org_id: Uuid, name: &str, input: &Value) -> Result<(), String> {
+    let id = string_arg(input, "message_id")
+        .ok()
+        .and_then(|s| Uuid::parse_str(s).ok());
+    if name == "propose_dispatch"
+        && let Some(id) = id
+        && let Some(message) = inbound::get(id)?
+        && message.org_id == org_id
+    {
+        inbound::mark_handled(message.id, inbound::REJECTED)?;
+    }
+    Ok(())
+}
+
+/// This org's `RECEIVED` messages with no proposal or alert yet, newest first,
+/// at most 50. A message waiting for a person's decision isn't new work.
+pub fn unhandled_messages(org_id: Uuid) -> Result<Vec<inbound::InboundMessage>, String> {
+    let mode = crate::logistics::agent::store::get_mode(org_id)?;
+    let mut messages = Vec::new();
+    for m in inbound::list(org_id, true, 200)? {
+        let key = format!("order:{}", m.id);
+        if crate::logistics::agent::store::existing_action(org_id, &key, mode)?.is_none() {
+            messages.push(m);
+        }
+        if messages.len() >= MAX_LISTED {
+            break;
+        }
+    }
+    Ok(messages)
 }
 
 struct Proposal {
@@ -258,15 +367,7 @@ struct Proposal {
 }
 
 fn validate_proposal(org_id: Uuid, input: &Value) -> Result<Proposal, String> {
-    let id = Uuid::parse_str(string_arg(input, "message_id")?)
-        .map_err(|_| "message_id isn't a valid id".to_string())?;
-    let message = match inbound::get(id)? {
-        Some(m) if m.org_id == org_id => m,
-        _ => return Err("No such message in this organization".to_string()),
-    };
-    if message.status != "RECEIVED" {
-        return Err("A dispatch was already made from this message".to_string());
-    }
+    let message = open_message(org_id, input)?;
     let customer = match message.customer_id.map(Customer::get_by_id) {
         Some(Ok(Some(c))) if c.org_id == org_id => c,
         _ => {
@@ -357,7 +458,7 @@ pub fn execute(org_id: Uuid, name: &str, input: &Value) -> Result<String, String
             let dispatch = org
                 .dispatch_stock_to_customer(&proposal.customer, &proposal.lines)
                 .map_err(|e| e.to_string())?;
-            inbound::mark_processed(proposal.message.id)?;
+            inbound::mark_handled(proposal.message.id, inbound::PROCESSED)?;
             Ok(format!(
                 "Dispatch {} created as {}",
                 dispatch.id, dispatch.status
@@ -365,6 +466,12 @@ pub fn execute(org_id: Uuid, name: &str, input: &Value) -> Result<String, String
         }
         // The alert is the recorded action itself.
         "raise_alert" => Ok("Alert raised".to_string()),
+        "flag_message" => {
+            let status = flag_outcome(input)?;
+            let message = open_message(org_id, input)?;
+            inbound::mark_handled(message.id, status)?;
+            Ok(format!("Message marked {status}"))
+        }
         other => Err(format!("{other} isn't an action")),
     }
 }
@@ -440,26 +547,19 @@ pub fn read(org_id: Uuid, name: &str) -> Result<Value, String> {
             Ok(json!({"items": items}))
         }
         "list_inbound_messages" => {
-            let mode = crate::logistics::agent::store::get_mode(org_id)?;
-            let mut messages = Vec::new();
-            for m in inbound::list(org_id, true, 200).map_err(|e| e.to_string())? {
-                // One a person already decided on, or that's waiting, isn't new work.
-                let key = format!("order:{}", m.id);
-                if crate::logistics::agent::store::existing_action(org_id, &key, mode)?.is_some() {
-                    continue;
-                }
-                messages.push(json!({
-                    "id": m.id,
-                    "channel": m.channel.as_str(),
-                    "sender": m.sender,
-                    "subject": m.subject,
-                    "body": m.body.chars().take(MAX_MESSAGE_CHARS).collect::<String>(),
-                    "customer_matched": m.customer_id.is_some(),
-                }));
-                if messages.len() >= MAX_LISTED {
-                    break;
-                }
-            }
+            let messages: Vec<Value> = unhandled_messages(org_id)?
+                .into_iter()
+                .map(|m| {
+                    json!({
+                        "id": m.id,
+                        "channel": m.channel.as_str(),
+                        "sender": m.sender,
+                        "subject": m.subject,
+                        "body": m.body.chars().take(MAX_MESSAGE_CHARS).collect::<String>(),
+                        "customer_matched": m.customer_id.is_some(),
+                    })
+                })
+                .collect();
             Ok(json!({"messages": messages}))
         }
         other => Err(format!("{other} isn't a read tool")),

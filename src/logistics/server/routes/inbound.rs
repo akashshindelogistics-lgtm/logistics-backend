@@ -2,7 +2,8 @@
 
 use super::common::*;
 use crate::logistics::inbound::{
-    self, Channel, InboundMessage, MAX_BODY_CHARS, MAX_SENDER_CHARS, MAX_SUBJECT_CHARS,
+    self, Channel, InboundMessage, MAX_BODY_CHARS, MAX_EXTERNAL_ID_CHARS, MAX_SENDER_CHARS,
+    MAX_SUBJECT_CHARS,
 };
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, Responder, get, post, web};
@@ -20,6 +21,10 @@ pub struct InboundMessagePayload {
     pub sender: String,
     pub subject: Option<String>,
     pub body: String,
+    /// The provider's message id (an email Message-ID, a WhatsApp message id),
+    /// at most 191 characters. Send it so a retried delivery isn't stored twice:
+    /// a repeat answers 200 with the message already stored.
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -62,6 +67,7 @@ fn secrets_match(given: &str, expected: &str) -> bool {
     request_body = InboundMessagePayload,
     responses(
         (status = 201, description = "Stored for the order-intake agent", body = InboundMessageResponse),
+        (status = 200, description = "Already stored: a repeat of an earlier external_id, nothing new stored", body = InboundMessageResponse),
         (status = 400, description = "Empty or too long", body = EmptyResponse),
         (status = 401, description = "Missing or wrong X-Inbound-Secret", body = EmptyResponse),
         (status = 404, description = "No such organization", body = EmptyResponse),
@@ -102,6 +108,10 @@ pub async fn receive_inbound_message(
             .subject
             .as_deref()
             .is_some_and(|s| s.chars().count() > MAX_SUBJECT_CHARS)
+        || payload
+            .external_id
+            .as_deref()
+            .is_some_and(|e| e.trim().chars().count() > MAX_EXTERNAL_ID_CHARS)
     {
         return error(StatusCode::BAD_REQUEST, "Message is too long");
     }
@@ -110,16 +120,22 @@ pub async fn receive_inbound_message(
         Ok(None) => return error(StatusCode::NOT_FOUND, "Organization not found"),
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
-    match inbound::receive(
+    match inbound::receive_once(
         org_id,
         payload.channel,
         sender,
         payload.subject.as_deref(),
         body,
+        payload.external_id.as_deref(),
     ) {
-        Ok(message) => HttpResponse::Created().json(ApiResponse {
+        Ok((message, true)) => HttpResponse::Created().json(ApiResponse {
             success: true,
             message: "Message received".to_string(),
+            data: Some(message),
+        }),
+        Ok((message, false)) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: "Message already received".to_string(),
             data: Some(message),
         }),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),

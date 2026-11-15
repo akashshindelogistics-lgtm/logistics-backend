@@ -13,6 +13,15 @@ fn webhook(org_id: Uuid, secret: Option<&str>, body: &str) -> test::TestRequest 
     req
 }
 
+fn webhook_with_id(org_id: Uuid, external_id: &str, body: &str) -> test::TestRequest {
+    test::TestRequest::post()
+        .uri(&format!("/api/inbound/{org_id}/messages"))
+        .insert_header(("X-Inbound-Secret", "s3cret"))
+        .set_json(serde_json::json!({
+            "channel": "EMAIL", "sender": "a@b.test", "body": body, "external_id": external_id,
+        }))
+}
+
 // One test, because INBOUND_WEBHOOK_SECRET is process-wide.
 #[actix_web::test]
 async fn test_inbound_webhook_needs_the_shared_secret_and_stores_messages() {
@@ -48,6 +57,34 @@ async fn test_inbound_webhook_needs_the_shared_secret_and_stores_messages() {
     )
     .await;
     assert_eq!(resp.status().as_u16(), 201);
+
+    // A gateway retry with the same provider id stores nothing new.
+    let resp = test::call_service(
+        &app,
+        webhook_with_id(org.id, "msg-1", "5 cement").to_request(),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 201);
+    let first = test::read_body_json::<ApiResponse<InboundMessage>, _>(resp)
+        .await
+        .data
+        .unwrap();
+    assert_eq!(first.external_id.as_deref(), Some("msg-1"));
+    let resp = test::call_service(
+        &app,
+        webhook_with_id(org.id, "msg-1", "5 cement").to_request(),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let replay = test::read_body_json::<ApiResponse<InboundMessage>, _>(resp)
+        .await
+        .data
+        .unwrap();
+    assert_eq!(replay.id, first.id);
+    let too_long = "x".repeat(192);
+    let resp =
+        test::call_service(&app, webhook_with_id(org.id, &too_long, "hi").to_request()).await;
+    assert_eq!(resp.status().as_u16(), 400);
     unsafe { std::env::remove_var("INBOUND_WEBHOOK_SECRET") };
 
     let req = test::TestRequest::get()
@@ -60,7 +97,7 @@ async fn test_inbound_webhook_needs_the_shared_secret_and_stores_messages() {
     .await
     .data
     .unwrap();
-    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].channel, Channel::Email);
     assert_eq!(listed[0].status, "RECEIVED");
 
