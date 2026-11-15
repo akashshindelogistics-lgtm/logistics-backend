@@ -70,19 +70,6 @@ fn ensure_table(conn: &mut PooledConn) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// The org's job that is still `QUEUED` or `RUNNING`, if any.
-fn active_job(conn: &mut PooledConn, org_id: Uuid) -> Result<Option<ReindexJob>, Box<dyn Error>> {
-    let row: Option<JobRow> = conn.exec_first(
-        format!(
-            "SELECT {COLUMNS} FROM AssistantReindexJobs
-             WHERE org_id = :org_id AND status IN ('QUEUED', 'RUNNING')
-             ORDER BY created_at DESC LIMIT 1"
-        ),
-        params! { "org_id" => org_id.to_string() },
-    )?;
-    row.map(job_from_row).transpose()
-}
-
 /// Queue a reindex of `org_id` and return its job at once. If one is already
 /// queued or running, that job is returned instead of starting another.
 pub fn enqueue(org_id: Uuid) -> Result<ReindexJob, Box<dyn Error>> {
@@ -237,7 +224,6 @@ impl Consumer for ReindexConsumer {
         let Ok(job_id) = job_id_of(event) else { return };
         let result = DbConnection::from_env()
             .get_connection()
-            .map_err(Box::<dyn Error>::from)
             .and_then(|mut conn| {
                 update(
                     &mut conn,
