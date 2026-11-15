@@ -5,7 +5,6 @@ use super::common::*;
 use crate::logistics::db::connection::DbConnection;
 use crate::logistics::events::queue::{self, Event, now_unix};
 use actix_web::{HttpResponse, Responder, get, web};
-use std::collections::HashSet;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -22,19 +21,25 @@ fn frame(event: &Event) -> String {
     )
 }
 
-fn fetch(org_id: Uuid, since: i64) -> Result<Vec<Event>, String> {
+fn fetch(org_id: Uuid, since: i64, after_id: &str) -> Result<Vec<Event>, String> {
     let mut conn = DbConnection::from_env()
         .get_connection()
         .map_err(|e| e.to_string())?;
     queue::ensure_tables(&mut conn).map_err(|e| e.to_string())?;
-    queue::list_for_org_since(&mut conn, org_id, since, BATCH).map_err(|e| e.to_string())
+    queue::list_for_org_after(&mut conn, org_id, since, after_id, BATCH).map_err(|e| e.to_string())
 }
 
 struct StreamState {
     org_id: Uuid,
+    /// Keyset cursor: the last sent event's `(created_at, id)`. `last_id`
+    /// starts empty so events in the connect second are included.
     since: i64,
-    /// Ids already sent at second `since`, since the cursor is inclusive.
-    seen: HashSet<Uuid>,
+    last_id: String,
+    /// The token's expiry; the stream ends once it passes, so the client
+    /// reconnects with a fresh token.
+    exp: i64,
+    /// The last page was full, so poll again without waiting.
+    more: bool,
     idle_polls: u32,
     first: bool,
 }
@@ -45,7 +50,7 @@ struct StreamState {
     tag = "Events",
     security(("bearer_auth" = [])),
     responses(
-        (status = 200, description = "text/event-stream of the org's new events (`event:` is the type, `data:` the JSON payload). Only events from after connecting are sent.", content_type = "text/event-stream", body = String),
+        (status = 200, description = "text/event-stream of the org's new events (`event:` is the type, `data:` the JSON payload). Only events from after connecting are sent. The stream ends when the token expires; reconnect with a fresh one.", content_type = "text/event-stream", body = String),
         (status = 401, description = "Unauthorized", body = EmptyResponse)
     )
 )]
@@ -54,7 +59,9 @@ pub async fn stream_events(auth: AuthenticatedOrg) -> impl Responder {
     let state = StreamState {
         org_id: auth.org_id,
         since: now_unix(),
-        seen: HashSet::new(),
+        last_id: String::new(),
+        exp: auth.exp,
+        more: false,
         idle_polls: 0,
         first: true,
     };
@@ -68,36 +75,33 @@ pub async fn stream_events(auth: AuthenticatedOrg) -> impl Responder {
             ));
         }
         loop {
-            tokio::time::sleep(POLL_INTERVAL).await;
-            let (org_id, since) = (st.org_id, st.since);
+            if now_unix() >= st.exp {
+                return None;
+            }
+            if !st.more {
+                tokio::time::sleep(POLL_INTERVAL).await;
+                if now_unix() >= st.exp {
+                    return None;
+                }
+            }
             // Inline like the other handlers: one small indexed query.
-            let events = fetch(org_id, since).unwrap_or_else(|err| {
+            let events = fetch(st.org_id, st.since, &st.last_id).unwrap_or_else(|err| {
                 eprintln!("events stream: {err}");
                 Vec::new()
             });
-            let fresh: Vec<&Event> = events.iter().filter(|e| !st.seen.contains(&e.id)).collect();
-            if fresh.is_empty() {
+            st.more = events.len() >= BATCH as usize;
+            let Some(last) = events.last() else {
                 st.idle_polls += 1;
                 if st.idle_polls >= KEEPALIVE_EVERY {
                     st.idle_polls = 0;
                     return Some((Ok(web::Bytes::from_static(b": keepalive\n\n")), st));
                 }
                 continue;
-            }
+            };
             st.idle_polls = 0;
-            let out: String = fresh.iter().map(|e| frame(e)).collect();
-            if let Some(last) = events.last() {
-                if last.created_at > st.since {
-                    st.seen.clear();
-                }
-                st.since = last.created_at;
-                st.seen.extend(
-                    events
-                        .iter()
-                        .filter(|e| e.created_at == st.since)
-                        .map(|e| e.id),
-                );
-            }
+            st.since = last.created_at;
+            st.last_id = last.id.to_string();
+            let out: String = events.iter().map(frame).collect();
             return Some((Ok(web::Bytes::from(out)), st));
         }
     });

@@ -62,11 +62,13 @@ events (bearer token in the `Authorization` header, so browsers need a
 fetch-based reader rather than `EventSource`). Each frame has `id` (event id),
 `event` (the type, e.g. `dispatch.status_changed`) and `data` (the JSON
 payload). Only events created after connecting are sent, with no replay; a
-client should refetch its data when it reconnects.
+client should refetch its data when it reconnects. The stream ends when the
+token's `exp` passes, so the client reconnects with a fresh token.
 
 It is not a queue consumer: it polls the org's `Events` rows every 2 seconds
-(a `: keepalive` comment goes out every ~14 idle seconds), so it needs no
-delivery rows and works whether or not workers are enabled. Every dispatch
+(a `: keepalive` comment goes out every ~14 idle seconds) with a keyset
+cursor on `(created_at, id)`, re-polling at once while pages come back full,
+so it needs no delivery rows and works whether or not workers are enabled. Every dispatch
 status change publishes `dispatch.status_changed` (`dispatch_id`, `from`,
 `status`) in the same transaction, with no subscribers. The dashboard-side
 subscription belongs to logistics-frontend.

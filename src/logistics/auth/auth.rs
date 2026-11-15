@@ -178,6 +178,27 @@ pub fn generate_user_token(
     Ok(token)
 }
 
+/// Admin token expiring at `exp` (unix seconds), for tests of expiry.
+#[cfg(test)]
+pub(crate) fn generate_token_expiring_at(
+    org_id: Uuid,
+    org_name: &str,
+    exp: u64,
+) -> Result<String, Box<dyn Error>> {
+    let claims = Claims {
+        org_id: org_id.to_string(),
+        org_name: org_name.to_string(),
+        exp: exp as usize,
+        user_id: None,
+        role: default_admin_role(),
+    };
+    Ok(encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(jwt_secret()),
+    )?)
+}
+
 pub fn decode_token(token: &str) -> Result<Claims, Box<dyn Error>> {
     let data = decode::<Claims>(
         token,

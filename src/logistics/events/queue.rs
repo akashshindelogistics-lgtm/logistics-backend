@@ -201,20 +201,30 @@ pub(crate) fn publish_to(
     Ok(true)
 }
 
-/// An org's events created at or after `since` (unix seconds), oldest first.
+/// An org's events after the keyset cursor `(since, after_id)`, oldest
+/// first in `(created_at, id)` order. `since` is unix seconds; pass an empty
+/// `after_id` to include every event at second `since`. Strictly after the
+/// cursor, so paging always advances even when many events share a second.
 /// The live dashboard stream polls this; it needs no delivery rows.
-pub fn list_for_org_since(
+pub fn list_for_org_after(
     conn: &mut PooledConn,
     org_id: Uuid,
     since: i64,
+    after_id: &str,
     limit: u32,
 ) -> Result<Vec<Event>, Box<dyn Error>> {
     let rows: Vec<(String, String, String, i64)> = conn.exec(
         "SELECT id, event_type, payload, created_at FROM Events
          WHERE org_id = :org_id AND created_at >= :since
+           AND (created_at > :since OR id > :after_id)
          ORDER BY created_at, id
          LIMIT :limit",
-        params! { "org_id" => org_id.to_string(), "since" => since, "limit" => limit },
+        params! {
+            "org_id" => org_id.to_string(),
+            "since" => since,
+            "after_id" => after_id,
+            "limit" => limit,
+        },
     )?;
     rows.into_iter()
         .map(|(id, event_type, payload, created_at)| {

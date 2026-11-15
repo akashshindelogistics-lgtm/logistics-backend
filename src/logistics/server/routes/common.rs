@@ -20,6 +20,9 @@ pub struct AuthenticatedOrg {
     pub role: OrgRole,
     /// The team member's id, when the token came from user-login.
     pub user_id: Option<Uuid>,
+    /// The token's `exp` (unix seconds), for long-lived responses like the
+    /// event stream that must stop once the token expires.
+    pub exp: i64,
 }
 
 /// Roles allowed to run and bill dispatches, and to manage customers.
@@ -85,6 +88,7 @@ impl FromRequest for AuthenticatedOrg {
                         .user_id
                         .as_deref()
                         .and_then(|u| Uuid::parse_str(u).ok()),
+                    exp: claims.exp as i64,
                 })),
                 Err(_) => ready(Err(actix_web::error::ErrorUnauthorized(
                     "Invalid org_id in token",
