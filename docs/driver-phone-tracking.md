@@ -315,9 +315,11 @@ The backend is done. It follows the design above except where noted; the
 
 ## Phase 3 as built (backend)
 
-- **Table:** `VehicleLocationHistory (id, registration_number, latitude,
+- **Table:** `VehicleLocationHistory (id, org_id, registration_number, latitude,
   longitude, recorded_at, source, accuracy_m, speed_mps)`, created on first
-  use. `source` is `driver_phone`, `gps_tracker` or `manual` (a string, like
+  use. `org_id` is the vehicle's owner when the fix was stored; reads filter
+  by it, and removing the vehicle (or its org) deletes its rows, so a
+  registration number re-added later starts with an empty trail. `source` is `driver_phone`, `gps_tracker` or `manual` (a string, like
   `Vehicle.location_source`). A unique key on `(registration_number,
   recorded_at, source)` makes a resent batch a no-op.
 - **Writes:** every location write: `POST /api/driver/location` stores *every*
@@ -326,8 +328,8 @@ The backend is done. It follows the design above except where noted; the
   `PUT /api/vehicles/{reg}/location` store one. A history failure is logged and
   never fails the location update.
 - **Retention:** rows older than `LOCATION_HISTORY_RETENTION_DAYS` (default 30)
-  are deleted by the event worker's 15-minute scan, so it only runs where
-  `EVENT_WORKERS_ENABLED=true`.
+  are deleted at startup and then hourly by their own background thread, in
+  chunks of 5000 rows. It runs whatever `EVENT_WORKERS_ENABLED` is set to.
 - **Read:** `GET /api/vehicles/{reg}/location-history?from=&to=` (org login,
   own vehicles; unix seconds, default the 24 h before `to`; `400` if `from` >
   `to`), oldest first, capped at 5000 points. Not exposed to the chat assistant.

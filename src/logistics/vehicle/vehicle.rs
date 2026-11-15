@@ -651,6 +651,7 @@ impl Vehicle {
         )?;
 
         crate::logistics::ai::chunk::delete_vehicle_chunk_best_effort(&self.registration_number);
+        location_history::delete_for_vehicle_best_effort(&self.registration_number);
 
         Ok(())
     }

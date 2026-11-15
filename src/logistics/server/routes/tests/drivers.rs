@@ -1143,3 +1143,46 @@ async fn test_location_history_checks_ownership_range_and_existence() {
             .is_empty()
     );
 }
+
+#[actix_web::test]
+async fn test_location_history_does_not_pass_to_the_next_owner() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org_a, auth_a) = setup_org(&app, "History Seller Org").await;
+    let (_d, token) = pair_driver_phone(&app, org_a.id, &auth_a, Some("HIST-3")).await;
+    let now = unix_now();
+    let resp = post_driver_fixes(
+        &app,
+        Some(&token.to_string()),
+        vec![fix(5.0, 5.0, now - 100), fix(6.0, 6.0, now - 50)],
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let from = format!("?from={}", now - 1000);
+    let resp = get_history(&app, &auth_a, "HIST-3", &from).await;
+    let points = test::read_body_json::<LocationHistoryResponse, _>(resp)
+        .await
+        .data
+        .unwrap();
+    assert_eq!(points.len(), 2);
+
+    let req = test::TestRequest::delete()
+        .uri("/api/vehicles/HIST-3")
+        .insert_header(("Authorization", auth_a.clone()))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+
+    // Another org registers the same number inside the retention window.
+    let (org_b, auth_b) = setup_org(&app, "History Buyer Org").await;
+    register_vehicle(&app, org_b.id, &auth_b, "HIST-3").await;
+    let resp = get_history(&app, &auth_b, "HIST-3", &from).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(
+        test::read_body_json::<LocationHistoryResponse, _>(resp)
+            .await
+            .data
+            .unwrap()
+            .is_empty(),
+        "the previous owner's trail must not be visible"
+    );
+}

@@ -307,7 +307,7 @@ pub async fn vehicle_location_history(
             data: None,
         });
     }
-    match location_history::between(&reg_number, from, to) {
+    match location_history::between(&reg_number, auth.org_id, from, to) {
         Ok(points) => HttpResponse::Ok().json(LocationHistoryResponse {
             success: true,
             message: "Location history".to_string(),
