@@ -3,7 +3,7 @@
 //! network call or a bill.
 
 use super::model::ModelConfig;
-use super::runtime::{self, DecisionError, RunError};
+use super::runtime::{self, Agent, DecisionError, RunError};
 use super::store::{self, ActionStatus, AutonomyMode, Disposition, Risk};
 use crate::logistics::dispatch::dispatch::{DispatchOrder, DispatchStatus, DispatchStatusEvent};
 use crate::logistics::orgs::orgs::Organization;
@@ -187,7 +187,12 @@ fn no_tool_can_delete_or_touch_money_users_or_credentials() {
 
 #[test]
 fn every_tool_definition_is_strict() {
-    for def in super::tools::api_definitions() {
+    for def in super::tools::api_definitions(
+        &super::tools::catalog()
+            .iter()
+            .map(|t| t.name)
+            .collect::<Vec<_>>(),
+    ) {
         assert_eq!(def["strict"], true);
         assert_eq!(def["input_schema"]["additionalProperties"], false);
     }
@@ -507,6 +512,34 @@ async fn the_daily_token_limit_stops_more_runs() {
     assert!(requests.lock().unwrap().is_empty());
 }
 
+#[test]
+fn the_dispatch_desk_keeps_the_whole_daily_limit_and_shadow_agents_get_a_share() {
+    assert_eq!(Agent::DispatchDesk.daily_token_budget(500_000), 500_000);
+    assert_eq!(Agent::DeliveryMonitor.daily_token_budget(500_000), 50_000);
+    assert_eq!(Agent::TripPlanner.daily_token_budget(500_000), 50_000);
+}
+
+#[actix_web::test]
+async fn shadow_agents_cant_use_up_the_dispatch_desks_daily_limit() {
+    let _db = TestDb::create();
+    let org = org("Shared Budget Org");
+    store::set_mode(org.id, AutonomyMode::Shadow).unwrap();
+    for agent in [Agent::DeliveryMonitor, Agent::TripPlanner] {
+        let used = store::start_run(org.id, agent.name(), "schedule").unwrap();
+        store::finish_run(used, "COMPLETED", None, 300_000, 0).unwrap();
+    }
+    let (config, _r) = fake_model(vec![finished("Done.")]).await;
+
+    let run = runtime::run_dispatch_desk(org.id, "schedule", &config)
+        .await
+        .expect("the dispatch desk has its own budget");
+    assert_eq!(run.status, "COMPLETED");
+    let err = runtime::run_agent(Agent::DeliveryMonitor, org.id, "schedule", &config)
+        .await
+        .expect_err("over its share");
+    assert!(matches!(err, RunError::OverDailyLimit));
+}
+
 #[actix_web::test]
 async fn read_tools_send_the_model_no_customer_details() {
     let _db = TestDb::create();
@@ -549,4 +582,122 @@ async fn live_agent_run() {
     }
     assert_eq!(run.status, "COMPLETED", "{:?}", run.summary);
     assert_eq!(status_of(dispatch.id), DispatchStatus::Pending);
+}
+
+fn advance(id: Uuid, status: &str) -> Value {
+    tool_call(
+        "advance_dispatch",
+        json!({"dispatch_id": id.to_string(), "status": status, "reason": "Vehicle left the depot"}),
+    )
+}
+
+fn confirmed_dispatch(org_id: Uuid) -> DispatchOrder {
+    let mut d = pending_dispatch(org_id);
+    d.transition_to(DispatchStatus::Confirmed, None, None)
+        .unwrap();
+    d
+}
+
+#[actix_web::test]
+async fn delivery_monitor_stays_in_shadow_even_when_the_org_is_autonomous() {
+    let _db = TestDb::create();
+    let org = org("Monitor Org");
+    store::set_mode(org.id, AutonomyMode::Autonomous).unwrap();
+    let dispatch = confirmed_dispatch(org.id);
+    let (config, _r) = fake_model(vec![advance(dispatch.id, "LOADED"), finished("Done.")]).await;
+
+    let run = runtime::run_agent(Agent::DeliveryMonitor, org.id, "manual", &config)
+        .await
+        .unwrap();
+
+    assert_eq!(run.agent, "delivery_monitor");
+    assert_eq!(status_of(dispatch.id), DispatchStatus::Confirmed);
+    let actions = store::list_actions(org.id, None, 10).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].status, ActionStatus::Shadowed);
+    assert_eq!(actions[0].agent, "delivery_monitor");
+}
+
+#[actix_web::test]
+async fn delivery_monitor_cant_deliver_or_skip_steps_and_is_off_when_the_org_is() {
+    let _db = TestDb::create();
+    let org = org("Monitor Limits Org");
+    let dispatch = confirmed_dispatch(org.id);
+    let (config, requests) = fake_model(vec![advance(dispatch.id, "LOADED")]).await;
+    let err = runtime::run_agent(Agent::DeliveryMonitor, org.id, "manual", &config)
+        .await
+        .expect_err("off");
+    assert!(matches!(err, RunError::Off));
+    assert!(requests.lock().unwrap().is_empty());
+
+    store::set_mode(org.id, AutonomyMode::Shadow).unwrap();
+    let (config, requests) = fake_model(vec![
+        advance(dispatch.id, "DELIVERED"),
+        advance(dispatch.id, "IN_TRANSIT"),
+        finished("Done."),
+    ])
+    .await;
+    runtime::run_agent(Agent::DeliveryMonitor, org.id, "manual", &config)
+        .await
+        .unwrap();
+    // The IN_TRANSIT request was the last tool result sent back.
+    let sent = requests.lock().unwrap();
+    let result_of =
+        |i: usize| sent[i]["messages"].as_array().unwrap().last().unwrap()["content"][0].clone();
+    assert_eq!(result_of(1)["is_error"], true);
+    assert_eq!(result_of(2)["is_error"], true);
+    drop(sent);
+    assert!(store::list_actions(org.id, None, 10).unwrap().is_empty());
+}
+
+#[actix_web::test]
+async fn an_agent_cant_call_another_agents_tools() {
+    let _db = TestDb::create();
+    let org = org("Tool Scope Org");
+    store::set_mode(org.id, AutonomyMode::Shadow).unwrap();
+    let dispatch = pending_dispatch(org.id);
+    let (config, requests) = fake_model(vec![confirm(dispatch.id), finished("Done.")]).await;
+
+    runtime::run_agent(Agent::TripPlanner, org.id, "manual", &config)
+        .await
+        .unwrap();
+
+    let sent = requests.lock().unwrap();
+    let refusal = &sent[1]["messages"].as_array().unwrap().last().unwrap()["content"][0];
+    assert_eq!(refusal["is_error"], true);
+    drop(sent);
+    assert!(store::list_actions(org.id, None, 10).unwrap().is_empty());
+}
+
+#[actix_web::test]
+async fn trip_planner_reads_vehicles_and_raises_suggestions_in_shadow() {
+    let _db = TestDb::create();
+    let org = org("Planner Org");
+    store::set_mode(org.id, AutonomyMode::Supervised).unwrap();
+    let (config, requests) = fake_model(vec![
+        tool_call("list_available_vehicles", json!({})),
+        tool_call(
+            "raise_alert",
+            json!({"severity": "LOW", "subject": "idle trucks", "reason": "Two idle vehicles"}),
+        ),
+        finished("Suggested."),
+    ])
+    .await;
+
+    let run = runtime::run_agent(Agent::TripPlanner, org.id, "manual", &config)
+        .await
+        .unwrap();
+
+    assert_eq!(run.status, "COMPLETED");
+    let sent = requests.lock().unwrap();
+    let names: Vec<&str> = sent[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"list_available_vehicles") && !names.contains(&"confirm_dispatch"));
+    drop(sent);
+    let actions = store::list_actions(org.id, None, 10).unwrap();
+    assert_eq!(actions[0].status, ActionStatus::Shadowed);
 }

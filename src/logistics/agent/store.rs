@@ -41,6 +41,18 @@ impl AutonomyMode {
         }
     }
 
+    /// The mode an agent that is capped at `cap` actually works in. `Off` stays
+    /// `Off`, so the kill switch still wins.
+    pub fn capped_at(self, cap: AutonomyMode) -> AutonomyMode {
+        let rank = |m: AutonomyMode| match m {
+            AutonomyMode::Off => 0,
+            AutonomyMode::Shadow => 1,
+            AutonomyMode::Supervised => 2,
+            AutonomyMode::Autonomous => 3,
+        };
+        if rank(self) <= rank(cap) { self } else { cap }
+    }
+
     /// Anything unrecognised is `Off`, so a bad stored value can't widen access.
     pub fn from_db(s: &str) -> Self {
         match s {
@@ -263,14 +275,16 @@ pub fn orgs_with_agents_on() -> Result<Vec<Uuid>, String> {
     Ok(ids.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect())
 }
 
-/// Tokens this org's runs have used in the last 24 hours.
-pub fn tokens_used_last_day(org_id: Uuid) -> Result<i64, String> {
+/// Tokens one agent's runs for this org have used in the last 24 hours.
+pub fn tokens_used_last_day(org_id: Uuid, agent: &str) -> Result<i64, String> {
     let mut conn = connect()?;
     let used: Option<i64> = conn
         .exec_first(
             "SELECT CAST(COALESCE(SUM(input_tokens + output_tokens), 0) AS SIGNED) FROM AgentRuns
-             WHERE org_id = :org_id AND started_at >= :since",
-            params! { "org_id" => org_id.to_string(), "since" => now_unix() - 86_400 },
+             WHERE org_id = :org_id AND agent = :agent AND started_at >= :since",
+            params! {
+                "org_id" => org_id.to_string(), "agent" => agent, "since" => now_unix() - 86_400,
+            },
         )
         .map_err(|e| e.to_string())?;
     Ok(used.unwrap_or(0))
