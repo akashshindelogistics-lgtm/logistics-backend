@@ -324,17 +324,43 @@ impl Errors {
     }
 }
 
-fn required(row: &Row, col: &str, errs: &mut Errors) -> Option<String> {
+/// Widest value most text columns hold (`VARCHAR(255)`).
+const MAX_TEXT: usize = 255;
+/// `Drivers.phone` is `VARCHAR(64)`.
+const MAX_DRIVER_PHONE: usize = 64;
+
+/// `false` (and a row error) when `v` has more than `max` characters, the
+/// way MySQL counts a `VARCHAR(max)`.
+fn fits(row: &Row, col: &str, v: &str, max: usize, errs: &mut Errors) -> bool {
+    if v.chars().count() > max {
+        errs.add(
+            row.line,
+            col,
+            format!("{col} is longer than {max} characters"),
+        );
+        false
+    } else {
+        true
+    }
+}
+
+fn required(row: &Row, col: &str, max: usize, errs: &mut Errors) -> Option<String> {
     let v = row.get(col);
     if v.is_empty() {
         errs.add(row.line, col, format!("{col} is required"));
         None
-    } else if v.len() > 255 {
-        errs.add(
-            row.line,
-            col,
-            format!("{col} is longer than 255 characters"),
-        );
+    } else if !fits(row, col, v, max, errs) {
+        None
+    } else {
+        Some(v.to_string())
+    }
+}
+
+/// An optional text cell: `None` when blank. A value over `max` characters
+/// is a row error (and also `None`).
+fn optional(row: &Row, col: &str, max: usize, errs: &mut Errors) -> Option<String> {
+    let v = row.get(col);
+    if v.is_empty() || !fits(row, col, v, max, errs) {
         None
     } else {
         Some(v.to_string())
@@ -430,10 +456,15 @@ fn validate_vehicles(
     rows: &[Row],
     errs: &mut Errors,
 ) -> Result<Vec<VehicleRow>, Box<dyn Error>> {
-    let drivers: HashMap<String, Uuid> = Driver::list_by_org(org_id)?
-        .into_iter()
-        .map(|d| (norm(&d.license_number), d.id))
-        .collect();
+    // Licences are not unique in `Drivers`, so keep every match and refuse
+    // to guess when there is more than one.
+    let mut drivers: HashMap<String, Vec<Uuid>> = HashMap::new();
+    for d in Driver::list_by_org(org_id)? {
+        drivers
+            .entry(norm(&d.license_number))
+            .or_default()
+            .push(d.id);
+    }
     // Drivers already on a vehicle; one driver drives one vehicle.
     let taken: HashSet<Uuid> = Vehicle::list_by_org(org_id)?
         .into_iter()
@@ -442,9 +473,7 @@ fn validate_vehicles(
     let existing: HashSet<String> = {
         // Registration numbers are unique across the whole system.
         let mut conn = DbConnection::from_env().get_connection()?;
-        let regs: Vec<String> = conn
-            .query("SELECT registration_number FROM Vehicle")
-            .unwrap_or_default();
+        let regs: Vec<String> = conn.query("SELECT registration_number FROM Vehicle")?;
         regs.iter().map(|r| norm(r)).collect()
     };
     let mut seen: HashSet<String> = HashSet::new();
@@ -452,7 +481,7 @@ fn validate_vehicles(
     let mut out = Vec::new();
     for row in rows {
         let before = errs.0.len();
-        let reg = required(row, "registration_number", errs);
+        let reg = required(row, "registration_number", MAX_TEXT, errs);
         let capacity = int(row, "capacity", 1, errs);
         let unit = if row.get("unit").is_empty() {
             Some("MetricTon")
@@ -467,18 +496,23 @@ fn validate_vehicles(
         let mut driver_id = None;
         let lic = row.get("driver_license_number");
         if !lic.is_empty() {
-            match drivers.get(&norm(lic)) {
-                None => errs.add(
+            match drivers.get(&norm(lic)).map(Vec::as_slice) {
+                None | Some([]) => errs.add(
                     row.line,
                     "driver_license_number",
                     format!("no driver with licence number '{lic}' in this organization"),
                 ),
-                Some(id) if taken.contains(id) || !used_drivers.insert(*id) => errs.add(
+                Some([id]) if taken.contains(id) || !used_drivers.insert(*id) => errs.add(
                     row.line,
                     "driver_license_number",
                     format!("driver '{lic}' is already assigned to a vehicle"),
                 ),
-                Some(id) => driver_id = Some(*id),
+                Some([id]) => driver_id = Some(*id),
+                Some(_) => errs.add(
+                    row.line,
+                    "driver_license_number",
+                    format!("more than one driver has licence number '{lic}'"),
+                ),
             }
         }
         if let Some(reg) = &reg {
@@ -524,9 +558,9 @@ fn validate_drivers(
     let mut out = Vec::new();
     for row in rows {
         let before = errs.0.len();
-        let name = required(row, "name", errs);
-        let lic = required(row, "license_number", errs);
-        let phone = required(row, "phone", errs);
+        let name = required(row, "name", MAX_TEXT, errs);
+        let lic = required(row, "license_number", MAX_TEXT, errs);
+        let phone = required(row, "phone", MAX_DRIVER_PHONE, errs);
         if let Some(l) = &lic
             && !seen.insert(norm(l))
         {
@@ -561,10 +595,10 @@ fn validate_customers(
     let mut out = Vec::new();
     for row in rows {
         let before = errs.0.len();
-        let name = required(row, "name", errs);
-        let address = required(row, "address", errs);
-        let opt = |col: &str| Some(row.get(col).to_string()).filter(|v| !v.is_empty());
-        let email = opt("email");
+        let name = required(row, "name", MAX_TEXT, errs);
+        let address = required(row, "address", MAX_TEXT, errs);
+        let phone = optional(row, "phone", MAX_TEXT, errs);
+        let email = optional(row, "email", MAX_TEXT, errs);
         if let Some(e) = &email
             && (!e.contains('@') || e.contains(char::is_whitespace))
         {
@@ -574,7 +608,8 @@ fn validate_customers(
                 format!("'{e}' is not a valid email address"),
             );
         }
-        let gstin = match normalize_gstin(opt("gstin")) {
+        let gstin_cell = Some(row.get("gstin").to_string()).filter(|v| !v.is_empty());
+        let gstin = match normalize_gstin(gstin_cell) {
             Ok(g) => g,
             Err(msg) => {
                 errs.add(row.line, "gstin", msg);
@@ -596,7 +631,7 @@ fn validate_customers(
             out.push(CustomerRow {
                 name,
                 address,
-                phone: opt("phone"),
+                phone,
                 email,
                 gstin,
             });
@@ -628,8 +663,8 @@ fn validate_stock(
     let mut out = Vec::new();
     for row in rows {
         let before = errs.0.len();
-        let godown_name = required(row, "godown_name", errs);
-        let description = required(row, "description", errs);
+        let godown_name = required(row, "godown_name", MAX_TEXT, errs);
+        let description = required(row, "description", MAX_TEXT, errs);
         let quantity = int(row, "quantity", 0, errs);
         let volume = if row.get("volume_in_size").is_empty() {
             Some(1)
@@ -637,8 +672,7 @@ fn validate_stock(
             int(row, "volume_in_size", 0, errs)
         };
         let threshold = optional_int(row, "reorder_threshold", 0, errs);
-        let category = Some(row.get("category").to_string())
-            .filter(|c| !c.is_empty())
+        let category = optional(row, "category", MAX_TEXT, errs)
             .unwrap_or_else(crate::logistics::stock::stock::default_category);
 
         let mut godown: Option<&Godown> = None;
@@ -822,8 +856,52 @@ fn ensure_vehicle_table(conn: &mut mysql::PooledConn) -> Result<(), Box<dyn Erro
     ensure_tracker_key_column(conn)
 }
 
+/// How long a real import waits for another import into the same org.
+const IMPORT_LOCK_WAIT_SECS: u64 = 10;
+
+/// A MySQL named lock that serializes real imports per org, held from
+/// validation through commit. Without it two concurrent imports of the same
+/// file (a double click, two Admins) both pass the duplicate checks and both
+/// write. Named locks belong to a session, so the guard keeps its own
+/// connection and releases the lock on drop, before that connection goes
+/// back to the pool.
+struct OrgImportLock {
+    conn: mysql::PooledConn,
+    name: String,
+}
+
+impl OrgImportLock {
+    fn lock_name(org_id: Uuid) -> String {
+        format!("logistics-import:{org_id}")
+    }
+
+    /// `Ok(None)` when another import still holds the lock after the wait.
+    fn acquire(org_id: Uuid) -> Result<Option<Self>, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        let name = Self::lock_name(org_id);
+        let got: Option<Option<i64>> = conn.exec_first(
+            "SELECT GET_LOCK(:name, :wait)",
+            params! { "name" => &name, "wait" => IMPORT_LOCK_WAIT_SECS },
+        )?;
+        Ok((got.flatten() == Some(1)).then_some(Self { conn, name }))
+    }
+}
+
+impl Drop for OrgImportLock {
+    fn drop(&mut self) {
+        if let Err(err) = self
+            .conn
+            .exec_drop("DO RELEASE_LOCK(:name)", params! { "name" => &self.name })
+        {
+            eprintln!("couldn't release import lock {}: {err}", self.name);
+        }
+    }
+}
+
 /// Validate `bytes` as a CSV of `kind` for `org_id` and, unless `dry_run` or
-/// any row has errors, write every row in one transaction.
+/// any row has errors, write every row in one transaction. A real import
+/// holds a per-org lock across validate and write, and refreshes the
+/// assistant's search index (best-effort) after it commits.
 pub fn import_csv(
     org_id: Uuid,
     kind: ImportKind,
@@ -833,6 +911,19 @@ pub fn import_csv(
     let rows = match read_rows(kind, bytes) {
         Ok(r) => r,
         Err(e) => return Ok(Err(e)),
+    };
+    let lock = if dry_run {
+        None
+    } else {
+        match OrgImportLock::acquire(org_id)? {
+            Some(lock) => Some(lock),
+            None => {
+                return Ok(Err(FileError(
+                    "Another import into this organization is still running; try again shortly"
+                        .to_string(),
+                )));
+            }
+        }
     };
     let mut errs = Errors(Vec::new());
     let parsed = match kind {
@@ -854,6 +945,18 @@ pub fn import_csv(
     } else {
         write_all(org_id, &parsed)?
     };
+    drop(lock);
+    if imported > 0 {
+        // The inserts above bypass the models' write-through indexing, so
+        // rebuild the org's assistant index. Best-effort: the rows are
+        // committed either way.
+        if let Err(err) = crate::logistics::ai::chunk::reindex_org(org_id) {
+            eprintln!(
+                "assistant reindex after {} import failed: {err}",
+                kind.as_str()
+            );
+        }
+    }
     Ok(Ok(ImportReport {
         kind: kind.as_str().to_string(),
         dry_run,
@@ -908,5 +1011,150 @@ mod tests {
     fn missing_required_column_is_a_file_error() {
         let err = read_rows(ImportKind::Drivers, b"name,phone\nA,1\n").unwrap_err();
         assert!(err.0.contains("license_number"));
+    }
+
+    use crate::logistics::db::connection::set_test_db_override;
+    use crate::logistics::orgs::orgs::Organization;
+    use crate::logistics::test_support::TestDb;
+
+    fn errors_of(report: &ImportReport) -> Vec<(usize, Option<&str>)> {
+        report
+            .errors
+            .iter()
+            .map(|e| (e.line, e.column.as_deref()))
+            .collect()
+    }
+
+    #[test]
+    fn cells_longer_than_their_column_are_row_errors() {
+        let _db = TestDb::create();
+        let org = Organization::create_organization("Len Co", "1 Rd").unwrap();
+        let long = "9".repeat(65);
+        let csv = format!(
+            "name,license_number,phone\nA,L1,{long}\nB,L2,{}\n",
+            &long[1..]
+        );
+        let report = import_csv(org.id, ImportKind::Drivers, csv.as_bytes(), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(errors_of(&report), vec![(2, Some("phone"))]);
+        assert_eq!(report.valid_rows, 1);
+
+        let long = "x".repeat(256);
+        let csv = format!(
+            "name,address,phone,email,gstin\nA,1 St,{long},a@b.com,\nB,2 St,,{long}@b.com,\n"
+        );
+        let report = import_csv(org.id, ImportKind::Customers, csv.as_bytes(), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            errors_of(&report),
+            vec![(2, Some("phone")), (3, Some("email"))]
+        );
+
+        // Characters, not bytes: 255 multi-byte characters still fit.
+        let wide = "\u{0905}".repeat(255);
+        let csv =
+            format!("godown_name,description,category,quantity\nG,Rice,{long},1\nG,Dal,{wide},1\n");
+        let report = import_csv(org.id, ImportKind::Stock, csv.as_bytes(), true)
+            .unwrap()
+            .unwrap();
+        assert!(report.errors.contains(&RowError {
+            line: 2,
+            column: Some("category".to_string()),
+            message: "category is longer than 255 characters".to_string(),
+        }));
+        assert!(
+            !report
+                .errors
+                .iter()
+                .any(|e| e.line == 3 && e.column.as_deref() == Some("category"))
+        );
+    }
+
+    #[test]
+    fn a_licence_shared_by_two_drivers_is_a_row_error() {
+        let _db = TestDb::create();
+        let org = Organization::create_organization("Twin Licence Co", "1 Rd").unwrap();
+        Driver::create(org.id, "First", "MH12 X", "1").unwrap();
+        Driver::create(org.id, "Second", "mh12 x", "2").unwrap();
+        let csv = "registration_number,capacity,driver_license_number\nTWIN-1,5,MH12 X\n";
+        let report = import_csv(org.id, ImportKind::Vehicles, csv.as_bytes(), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(errors_of(&report), vec![(2, Some("driver_license_number"))]);
+        assert_eq!(report.imported, 0);
+        assert!(Vehicle::list_by_org(org.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_real_import_waits_for_another_import_of_the_same_org() {
+        let db = TestDb::create();
+        let org = Organization::create_organization("Lock Co", "1 Rd").unwrap();
+        // Stand in for an import already in flight by holding its lock.
+        let held = OrgImportLock::acquire(org.id)
+            .unwrap()
+            .expect("lock is free");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            drop(held);
+        });
+        let started = std::time::Instant::now();
+        let csv = b"name,license_number,phone\nA,L1,1\n";
+        let report = import_csv(org.id, ImportKind::Drivers, csv, false)
+            .unwrap()
+            .unwrap();
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(1000),
+            "import did not wait for the held lock"
+        );
+        assert_eq!(report.imported, 1);
+        release.join().unwrap();
+
+        // Two imports of the same file at the same moment: one writes, the
+        // other sees the first one's rows as duplicates.
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let csv = b"name,license_number,phone\nB,L2,2\nC,L3,3\n";
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let name = db.name().to_string();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    set_test_db_override(Some(name));
+                    barrier.wait();
+                    let report = import_csv(org.id, ImportKind::Drivers, csv, false)
+                        .unwrap()
+                        .unwrap();
+                    set_test_db_override(None);
+                    report.imported
+                })
+            })
+            .collect();
+        let mut imported: Vec<usize> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        imported.sort();
+        assert_eq!(imported, vec![0, 2]);
+        assert_eq!(Driver::list_by_org(org.id).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_real_import_refreshes_the_assistant_index() {
+        let _db = TestDb::create();
+        let org = Organization::create_organization("Index Co", "1 Rd").unwrap();
+        let csv = b"name,address\nZephyrine Traders,9 Quay Rd\n";
+        let report = import_csv(org.id, ImportKind::Customers, csv, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.imported, 1);
+        let mut conn = DbConnection::from_env().get_connection().unwrap();
+        let texts: Vec<String> = conn
+            .exec(
+                "SELECT text FROM AiChunks WHERE org_id = :org_id",
+                params! { "org_id" => org.id.to_string() },
+            )
+            .unwrap();
+        assert!(
+            texts.iter().any(|t| t.contains("Zephyrine Traders")),
+            "imported customer is not in the assistant index: {texts:?}"
+        );
     }
 }

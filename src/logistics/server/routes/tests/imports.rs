@@ -126,7 +126,7 @@ async fn test_drivers_dry_run_reports_bad_rows_by_line_and_writes_nothing() {
     let resp = test::call_service(&app, import_request(org.id, &auth, "drivers", false, csv)).await;
     assert_eq!(resp.status().as_u16(), 422);
     let req = test::TestRequest::get()
-        .uri(&format!("/api/drivers"))
+        .uri("/api/drivers")
         .insert_header(("Authorization", auth))
         .to_request();
     let body: ApiResponse<Vec<Driver>> =
@@ -166,7 +166,7 @@ async fn test_import_drivers_vehicles_customers_and_stock() {
     assert_eq!(resp.status().as_u16(), 422);
 
     let req = test::TestRequest::get()
-        .uri(&format!("/api/vehicles"))
+        .uri("/api/vehicles")
         .insert_header(("Authorization", auth.clone()))
         .to_request();
     let body: ApiResponse<Vec<Vehicle>> =
@@ -188,7 +188,7 @@ async fn test_import_drivers_vehicles_customers_and_stock() {
     assert_eq!(resp.status().as_u16(), 200);
     assert_eq!(report_of(resp).await.imported, 2);
     let req = test::TestRequest::get()
-        .uri(&format!("/api/customers"))
+        .uri("/api/customers")
         .insert_header(("Authorization", auth.clone()))
         .to_request();
     let body: ApiResponse<Vec<Customer>> =

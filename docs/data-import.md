@@ -27,7 +27,10 @@ cleanly as a file with zero rows; it carries no sample data.
 - Vehicles may reference an existing driver of the org by `driver_license_number`;
   stock rows reference a godown of the org by `godown_name` (case-insensitive).
   Import drivers/godowns first. Drivers already on a vehicle cannot be assigned
-  again.
+  again, and a licence number shared by more than one driver of the org is a row
+  error (the import will not guess which one).
+- Text cells must fit their column: `phone` of a driver is at most 64
+  characters, every other text cell at most 255. A longer cell is a row error.
 - Duplicates are rejected, never overwritten: an existing or repeated
   registration number (registration numbers are unique system-wide), licence
   number, customer name+address, or stock description within a godown. Stock
@@ -46,9 +49,14 @@ Without `dry_run`, a file with any row error writes **nothing** and returns
 `422` with the same report; a clean file is inserted in a single transaction
 (`imported` = rows written). Limits: 1,000 data rows and 1 MiB per file; a
 missing required column, non-UTF-8 text or exceeding a limit is `400`.
+Real imports into one org are serialized (a MySQL named lock held from
+validation through commit), so a double-submitted file is written once; an
+import that waits more than 10 seconds for another one is a `400` asking to try
+again.
 
 Implementation: `import/csv_import.rs` (parser, validation, transactional write)
-and `server/routes/imports.rs`. Imports use direct SQL inserts, so the
-assistant's search index is not refreshed per row; run the assistant reindex
-afterwards. Both routes are excluded from chat tools (`chat/catalog.rs`). The
+and `server/routes/imports.rs`. Imports use direct SQL inserts, so after a
+successful commit the org's assistant search index is rebuilt (best-effort, as
+`POST .../assistant/reindex` does; a failure is logged and does not fail the
+import). Both routes are excluded from chat tools (`chat/catalog.rs`). The
 dashboard import UI is in the frontend repo.
