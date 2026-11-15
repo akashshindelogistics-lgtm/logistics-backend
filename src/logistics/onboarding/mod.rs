@@ -4,10 +4,11 @@
 use serde_json::{Value, json};
 
 /// Templates compiled into the binary, so they cannot drift from the code
-/// that validates them.
+/// that validates them. They live under `src/` because the Docker build
+/// context only contains Cargo.toml, Cargo.lock and src/.
 pub const TEMPLATES: &[(&str, &str)] = &[(
     "building-materials",
-    include_str!("../../../docs/onboarding/templates/building-materials.json"),
+    include_str!("templates/building-materials.json"),
 )];
 
 /// The compliance papers every vehicle is expected to carry.
@@ -169,5 +170,47 @@ mod tests {
     #[test]
     fn litre_convention_matches_manifest_example() {
         assert_eq!(litres_from_size_mm([600, 200, 150]), 18.0);
+    }
+
+    /// The Dockerfile copies only Cargo.toml, Cargo.lock and src/, so a file
+    /// embedded from outside src/ breaks the release build.
+    #[test]
+    fn embedded_files_stay_inside_src() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .canonicalize()
+            .unwrap();
+        // Built at runtime so this test does not match itself.
+        let needles = [
+            format!("{}!(\"", "include_str"),
+            format!("{}!(\"", "include_bytes"),
+        ];
+        let mut stack = vec![src.clone()];
+        let mut bad = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                for needle in &needles {
+                    for (i, _) in text.match_indices(needle.as_str()) {
+                        let rest = &text[i + needle.len()..];
+                        let rel = &rest[..rest.find('"').unwrap()];
+                        let target = path.parent().unwrap().join(rel);
+                        match target.canonicalize() {
+                            Ok(t) if t.starts_with(&src) => {}
+                            _ => bad.push(format!("{}: {rel}", path.display())),
+                        }
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "embedded files outside src/: {bad:?}");
     }
 }

@@ -3,7 +3,9 @@
 A new plant should start from a template, not a blank sheet. A template is a
 starter manifest in the same format as
 [`test-org-e2e-manifest.json`](test-org-e2e-manifest.json), kept in
-`docs/onboarding/templates/` and compiled into the `onboard_template` binary.
+[`src/logistics/onboarding/templates/`](../../src/logistics/onboarding/templates/)
+(under `src/` so the Docker build, which copies only `src/`, can embed it) and
+compiled into the `onboard_template` binary.
 
 ```bash
 cargo run --bin onboard_template -- --list
@@ -31,9 +33,9 @@ documents use one of the five compliance types.
 
 ## Adding an industry
 
-Add `docs/onboarding/templates/<name>.json` and one line in `TEMPLATES` in
-`src/logistics/onboarding/mod.rs`; the unit test renders and validates every
-template.
+Add `src/logistics/onboarding/templates/<name>.json` and one line in
+`TEMPLATES` in `src/logistics/onboarding/mod.rs`; the unit test renders and
+validates every template.
 
 ## Not yet built
 
