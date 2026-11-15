@@ -25,6 +25,25 @@ const KIND_GODOWN: &str = "godown";
 const KIND_VEHICLE: &str = "vehicle";
 const KIND_DRIVER: &str = "driver";
 const KIND_CUSTOMER: &str = "customer";
+/// One row `(org_id, "loaded", "")` per org, inserted first by [`load`]. Its
+/// primary key makes two concurrent loads for one org mutually exclusive.
+const KIND_MARKER: &str = "loaded";
+
+/// The sample stock lines: (volume per unit, quantity, description, category).
+const SAMPLE_STOCK: [(i64, i64, &str, &str); 2] = [
+    (10, 500, "Sample Rice Bags", "Grains"),
+    (5, 200, "Sample Cooking Oil", "Groceries"),
+];
+
+/// Ids of sample entities: the tagged ones on remove, the ones this request
+/// created on a failed load.
+#[derive(Debug, Default)]
+struct SampleIds {
+    godowns: Vec<String>,
+    vehicles: Vec<String>,
+    drivers: Vec<String>,
+    customers: Vec<String>,
+}
 
 /// What [`load`] created or [`remove`] deleted.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -117,20 +136,95 @@ pub fn is_loaded(org_id: Uuid) -> Result<bool, Box<dyn Error>> {
 }
 
 /// Load the sample godown, stock, vehicle, driver and customer. Fails with
-/// [`SampleDataError::AlreadyLoaded`] if it is already there. If a step fails
-/// part-way, what was created is removed again.
+/// [`SampleDataError::AlreadyLoaded`] if it is already there, or is being
+/// loaded by a concurrent request. If a step fails part-way, only what this
+/// request created is removed again.
 pub fn load(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
-    if is_loaded(org_id)? {
-        return Err(SampleDataError::AlreadyLoaded);
+    let mut conn = DbConnection::from_env().get_connection()?;
+    Organization::ensure_tables(&mut conn)?;
+    ensure_table(&mut conn)?;
+    match conn.exec_drop(
+        "INSERT INTO SampleData (org_id, kind, ref_id) VALUES (:org_id, :kind, '')",
+        params! { "org_id" => org_id.to_string(), "kind" => KIND_MARKER },
+    ) {
+        Ok(()) => {}
+        Err(mysql::Error::MySqlError(ref e)) if e.code == 1062 => {
+            return Err(SampleDataError::AlreadyLoaded);
+        }
+        Err(e) => return Err(e.into()),
     }
-    let result = create_all(org_id);
-    if result.is_err() {
-        let _ = remove(org_id);
+    let mut created = SampleIds::default();
+    let result = create_all(org_id, &mut created);
+    if result.is_err()
+        && let Err(e) = rollback(org_id, &created)
+    {
+        eprintln!("sample data: failed to roll back a failed load for {org_id}: {e}");
     }
     result
 }
 
-fn create_all(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
+/// Undo a failed [`load`]: delete exactly the entities it created, their
+/// tags and the marker, leaving any other sample rows alone.
+fn rollback(org_id: Uuid, created: &SampleIds) -> Result<(), Box<dyn Error>> {
+    let mut conn = DbConnection::from_env().get_connection()?;
+    let org = org_id.to_string();
+    let mut tx = conn.start_transaction(TxOpts::default())?;
+    delete_entities(&mut tx, &org, created)?;
+    tx.exec_drop(
+        "DELETE FROM SampleData WHERE org_id = :org AND kind = :kind",
+        params! { "org" => &org, "kind" => KIND_MARKER },
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Delete the given sample vehicles, drivers, godowns and customers and their
+/// tags. Vehicle documents and maintenance cascade from the vehicle, stock
+/// from the godown. Like `Driver::delete`, a vehicle still assigned a sample
+/// driver is unassigned first, as there is no foreign key to do it.
+fn delete_entities(
+    tx: &mut Transaction<'_>,
+    org: &str,
+    ids: &SampleIds,
+) -> Result<(), Box<dyn Error>> {
+    if !ids.drivers.is_empty() {
+        let mut args: Vec<Value> = vec![org.to_string().into()];
+        args.extend(ids.drivers.iter().cloned().map(Value::from));
+        tx.exec_drop(
+            format!(
+                "UPDATE Vehicle SET assigned_driver_id = NULL
+                 WHERE org_id = ? AND assigned_driver_id IN ({})",
+                placeholders(ids.drivers.len())
+            ),
+            args,
+        )?;
+    }
+    for (kind, table, col, list) in [
+        (
+            KIND_VEHICLE,
+            "Vehicle",
+            "registration_number",
+            &ids.vehicles,
+        ),
+        (KIND_DRIVER, "Drivers", "id", &ids.drivers),
+        (KIND_GODOWN, "Godowns", "id", &ids.godowns),
+        (KIND_CUSTOMER, "Customers", "id", &ids.customers),
+    ] {
+        for id in list {
+            tx.exec_drop(
+                format!("DELETE FROM {table} WHERE {col} = :id AND org_id = :org"),
+                params! { "id" => id, "org" => org },
+            )?;
+            tx.exec_drop(
+                "DELETE FROM SampleData WHERE org_id = :org AND kind = :kind AND ref_id = :id",
+                params! { "org" => org, "kind" => kind, "id" => id },
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn create_all(org_id: Uuid, created: &mut SampleIds) -> Result<SampleDataSummary, SampleDataError> {
     let mut conn = DbConnection::from_env().get_connection()?;
     // Registration numbers and licences are globally unique, so derive them
     // from the org id.
@@ -142,14 +236,13 @@ fn create_all(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
         "1 Sample Warehouse Road, Pune",
         Some(1_000_000),
     )?;
+    created.godowns.push(godown.id.to_string());
     tag(&mut conn, org_id, KIND_GODOWN, &godown.id.to_string())?;
     godown.update_location(18.5204, 73.8567, Some("Pune"))?;
-    let items = [
-        Stock::new(10, 500, "Sample Rice Bags").with_category("Grains"),
-        Stock::new(5, 200, "Sample Cooking Oil").with_category("Groceries"),
-    ];
-    for item in &items {
-        item.add_to_godown(godown.id)?;
+    for (volume, quantity, description, category) in SAMPLE_STOCK {
+        Stock::new(volume, quantity, description)
+            .with_category(category)
+            .add_to_godown(godown.id)?;
     }
 
     let driver = Driver::create(
@@ -158,23 +251,28 @@ fn create_all(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
         format!("SAMPLE-LIC-{short}"),
         "+91 90000 00000",
     )?;
+    created.drivers.push(driver.id.to_string());
     tag(&mut conn, org_id, KIND_DRIVER, &driver.id.to_string())?;
 
     let reg = format!("SAMPLE-{short}");
     let org = Organization::get_by_id(org_id)?.ok_or("Organization not found")?;
+    // Tag before creating: `add_new_vehicle_to_org` is an upsert, so only a
+    // tag this request inserted shows that the vehicle row is its own.
+    tag(&mut conn, org_id, KIND_VEHICLE, &reg)?;
+    created.vehicles.push(reg.clone());
     let mut vehicle = Vehicle::new(&reg, 100_000, Unit::MetricTon).with_type(VehicleType::Truck);
     vehicle.add_new_vehicle_to_org(&org)?;
-    tag(&mut conn, org_id, KIND_VEHICLE, &reg)?;
     vehicle.assign_driver(Some(driver.id))?;
 
     let mut customer =
         Customer::create_customer(org_id, "Sample Customer", "10 Sample Market Road, Mumbai")?;
+    created.customers.push(customer.id.to_string());
     tag(&mut conn, org_id, KIND_CUSTOMER, &customer.id.to_string())?;
     customer.update_location(19.0760, 72.8777, Some("Mumbai"))?;
 
     Ok(SampleDataSummary {
         godowns: 1,
-        stock_items: items.len(),
+        stock_items: SAMPLE_STOCK.len(),
         vehicles: 1,
         drivers: 1,
         customers: 1,
@@ -198,8 +296,10 @@ fn placeholders(n: usize) -> String {
 /// Remove exactly the rows [`load`] tagged, and what depends on them. Does
 /// nothing (all-zero summary) when no sample data is loaded. Fails with
 /// [`SampleDataError::InUse`], deleting nothing, if a dispatch to a real
-/// customer uses the sample vehicle, or stock was transferred out of the
-/// sample godown.
+/// customer uses the sample vehicle, stock was transferred to or from the
+/// sample godown, or a dispatch to the sample customer carries non-sample
+/// stock, a hired vehicle or an invoice. A real vehicle the sample driver was
+/// assigned to is unassigned.
 pub fn remove(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
     let mut conn = DbConnection::from_env().get_connection()?;
     Organization::ensure_tables(&mut conn)?;
@@ -215,6 +315,8 @@ pub fn remove(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
     let has_trips = table_exists(&mut conn, "Trips")?;
     let has_notifications = table_exists(&mut conn, "Notifications")?;
     let has_chunks = table_exists(&mut conn, "AiChunks")?;
+    let has_line_items = table_exists(&mut conn, "DispatchLineItems")?;
+    let has_invoices = table_exists(&mut conn, "Invoices")?;
 
     // Dispatches to the sample customer are sample data too.
     let mut dispatch_ids: Vec<String> = Vec::new();
@@ -228,6 +330,36 @@ pub fn remove(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
             ),
             args,
         )?;
+    }
+    // Only delete them if they are sample data through and through: no stock
+    // from a real godown (deleting it would leave that stock drawn down for
+    // good), no vehicle hire or vendor payments, no invoice.
+    if !dispatch_ids.is_empty() {
+        let mut args: Vec<Value> = dispatch_ids.iter().cloned().map(Value::from).collect();
+        let mut sql = format!(
+            "SELECT COUNT(*) FROM Dispatches d WHERE d.id IN ({}) AND (d.hire_id IS NOT NULL",
+            placeholders(dispatch_ids.len())
+        );
+        if has_line_items {
+            sql.push_str(&format!(
+                " OR EXISTS (SELECT 1 FROM DispatchLineItems li WHERE li.dispatch_id = d.id
+                   AND li.stock_description NOT IN ({}))",
+                placeholders(SAMPLE_STOCK.len())
+            ));
+            args.extend(SAMPLE_STOCK.iter().map(|s| Value::from(s.2.to_string())));
+        }
+        if has_invoices {
+            sql.push_str(" OR EXISTS (SELECT 1 FROM Invoices i WHERE i.dispatch_id = d.id)");
+        }
+        sql.push(')');
+        let n: Option<i64> = conn.exec_first(sql, args)?;
+        if n.unwrap_or(0) > 0 {
+            return Err(SampleDataError::InUse(
+                "A dispatch to the sample customer carries your own stock, a hired vehicle \
+                 or an invoice; cancel or delete it first"
+                    .into(),
+            ));
+        }
     }
 
     if has_dispatches && !vehicles.is_empty() {
@@ -312,21 +444,13 @@ pub fn remove(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
             args,
         )?;
     }
-    // Vehicle documents and maintenance cascade from the vehicle, stock from
-    // the godown.
-    for (table, col, ids) in [
-        ("Vehicle", "registration_number", &vehicles),
-        ("Drivers", "id", &drivers),
-        ("Godowns", "id", &godowns),
-        ("Customers", "id", &customers),
-    ] {
-        for id in ids {
-            tx.exec_drop(
-                format!("DELETE FROM {table} WHERE {col} = :id AND org_id = :org"),
-                params! { "id" => id, "org" => &org },
-            )?;
-        }
-    }
+    let ids = SampleIds {
+        godowns,
+        vehicles,
+        drivers,
+        customers,
+    };
+    delete_entities(&mut tx, &org, &ids)?;
     tx.exec_drop(
         "DELETE FROM SampleData WHERE org_id = :org",
         params! { "org" => &org },
@@ -335,10 +459,11 @@ pub fn remove(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
 
     if has_chunks {
         // Search-index rows are best effort, as everywhere else.
-        for id in godowns
+        for id in ids
+            .godowns
             .iter()
-            .chain(&vehicles)
-            .chain(&customers)
+            .chain(&ids.vehicles)
+            .chain(&ids.customers)
             .chain(&dispatch_ids)
         {
             if let Err(e) = conn.exec_drop(
@@ -351,11 +476,11 @@ pub fn remove(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
     }
 
     Ok(SampleDataSummary {
-        godowns: godowns.len(),
+        godowns: ids.godowns.len(),
         stock_items,
-        vehicles: vehicles.len(),
-        drivers: drivers.len(),
-        customers: customers.len(),
+        vehicles: ids.vehicles.len(),
+        drivers: ids.drivers.len(),
+        customers: ids.customers.len(),
         dispatches: dispatch_ids.len(),
     })
 }
