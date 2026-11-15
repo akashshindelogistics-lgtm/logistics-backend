@@ -50,6 +50,7 @@ HTTP request                                  worker thread
 | Dispatch, stock, hire and status writes | Request, one transaction | The caller needs the result, and partial writes corrupt stock |
 | `Notifications` rows | Request, same transaction | The dashboard shows them immediately, even with workers off |
 | AI notification copy, SMS and email | `notification` consumer | Slow external calls |
+| Proof-of-delivery photo re-check | `pod_photo_check` consumer on `dispatch.delivered` | Slow vision call; see `docs/file-uploads.md` |
 | Delay alerts | Scanner publishes; consumer sends | One retrying send path |
 | AI search indexing | Request, best effort, after commit | A local DB write: a queue would add writes and allow stale overwrites |
 | `assistant/reindex` | Request | Returns a count the dashboard shows; going async needs a frontend change |
@@ -91,5 +92,6 @@ thread-local.
 3. Queue, worker and retention.
 4. Move notifications and delay alerts onto it.
 
-Later: `assistant/reindex` as a job (with a frontend PR), proof-of-delivery photo
-checks and SMS tracking links as consumers, and an SSE consumer for live dashboards.
+5. Proof-of-delivery photo checks as the `pod_photo_check` consumer.
+
+Later: `assistant/reindex` as a job (with a frontend PR), SMS tracking links as consumers, and an SSE consumer for live dashboards.

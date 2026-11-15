@@ -8,6 +8,7 @@ use crate::logistics::dispatch::challan::Challan;
 use crate::logistics::dispatch::dispatch::{
     DispatchLineItemInput, DispatchOrder, DispatchStatus, ProofOfDeliveryInput, VehicleSource,
 };
+use crate::logistics::dispatch::pod_review::{self, PodPhotoFlag};
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::upload::upload::UploadedFile;
 use actix_web::{HttpResponse, Responder, get, post, put, web};
@@ -63,6 +64,39 @@ pub struct DispatchOrderListResponse {
     pub success: bool,
     pub message: String,
     pub data: Option<Vec<DispatchOrder>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct PodPhotoFlagListResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<Vec<PodPhotoFlag>>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/dispatches/pod-flags",
+    tag = "Dispatch",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Delivered dispatches whose proof-of-delivery photo is doubtful or could not be checked", body = PodPhotoFlagListResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[get("/dispatches/pod-flags")]
+pub async fn list_pod_photo_flags(auth: AuthenticatedOrg) -> impl Responder {
+    match pod_review::list_flagged(auth.org_id) {
+        Ok(flags) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: format!("Retrieved {} flagged photos", flags.len()),
+            data: Some(flags),
+        }),
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to list flagged photos: {err}"),
+            data: None,
+        }),
+    }
 }
 
 /// Load a dispatch by id and verify it belongs to `auth_org_id`, or build the

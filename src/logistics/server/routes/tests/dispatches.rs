@@ -1009,3 +1009,13 @@ async fn test_any_role_can_print_a_challan() {
     let resp = get_challan(&app, dispatch.id, Some(&staff)).await;
     assert_eq!(resp.status().as_u16(), 200);
 }
+
+#[actix_web::test]
+async fn test_pod_flags_requires_a_token() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let req = test::TestRequest::get()
+        .uri("/api/dispatches/pod-flags")
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 401);
+}

@@ -34,7 +34,7 @@ fn stock_left() -> i64 {
 
 fn pending_events(event_type: &str) -> i64 {
     scalar(&format!(
-        "SELECT COUNT(*) FROM EventDeliveries d JOIN Events e ON e.id = d.event_id
+        "SELECT COUNT(DISTINCT d.event_id) FROM EventDeliveries d JOIN Events e ON e.id = d.event_id
          WHERE d.status = 'PENDING' AND e.event_type = '{event_type}'"
     ))
 }

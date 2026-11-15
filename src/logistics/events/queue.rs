@@ -1,6 +1,7 @@
 //! Storage for events and per-consumer deliveries. Nothing outside this file
 //! knows how the queue is stored.
 
+use crate::logistics::dispatch::pod_review::CONSUMER_NAME as POD_PHOTO_CONSUMER;
 use crate::logistics::notification::consumer::CONSUMER_NAME as NOTIFICATION_CONSUMER;
 use mysql::prelude::*;
 use mysql::*;
@@ -64,8 +65,8 @@ impl EventType {
     /// The consumers that receive this event.
     pub fn subscribers(self) -> &'static [&'static str] {
         match self {
+            EventType::DispatchDelivered => &[NOTIFICATION_CONSUMER, POD_PHOTO_CONSUMER],
             EventType::DispatchCreated
-            | EventType::DispatchDelivered
             | EventType::DispatchRunningLate
             | EventType::VehicleAwaitedTooLong
             | EventType::InvoiceRaised => &[NOTIFICATION_CONSUMER],

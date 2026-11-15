@@ -76,6 +76,8 @@ pub const EXPOSED: &[&str] = &[
     "list_org_vehicle_expenses",
     "list_org_vehicle_maintenance",
     "list_orgs",
+    "list_pod_photo_flags",
+    "list_pod_photo_flags",
     "list_stock_categories",
     "list_stock_transfers",
     "list_vehicle_documents",
