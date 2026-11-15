@@ -161,7 +161,11 @@ outcome, which sets the notification's `delivery_status` to `DELIVERED` or
 
 1. Pick a long random secret (e.g. `openssl rand -hex 32`) and set
    `MSG91_WEBHOOK_SECRET` (in `deploy/.env` for the Docker deploy), then restart
-   the API. While it is unset or empty the endpoint answers `401` to everything.
+   the API and Caddy (in `~/logistics-deploy`: `docker compose --env-file .env
+   up -d --no-deps --force-recreate api caddy`), so Caddy also picks up the log
+   redaction below. While the secret is unset or empty the endpoint answers
+   `401` to everything. The deploy workflows validate the Caddyfile and then
+   recreate Caddy on every rollout.
 2. In the MSG91 panel, open the delivery-report webhook settings (SMS ›
    Webhook / "DLR URL"), choose `POST`, and enter
    `https://<DOMAIN>/api/public/msg91/delivery-reports?secret=<MSG91_WEBHOOK_SECRET>`.

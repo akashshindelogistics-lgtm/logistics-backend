@@ -57,5 +57,10 @@ jobs:
             sed -i "s#^API_IMAGE=.*#API_IMAGE=ghcr.io/${OWNER}/logistics-api:${{ github.event.inputs.image_tag }}#" .env
             docker compose --env-file .env pull
             docker compose --env-file .env up -d --remove-orphans
+            # The Caddyfile is a bind mount, so `up -d` does not recreate caddy when
+            # only that file changed. Validate the new file first (a bad one fails
+            # the job while the old Caddy keeps serving), then recreate caddy.
+            docker compose --env-file .env run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+            docker compose --env-file .env up -d --no-deps --force-recreate caddy
             docker image prune -f
             docker compose --env-file .env ps
