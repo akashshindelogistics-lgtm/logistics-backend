@@ -366,6 +366,22 @@ impl Notification {
             .collect())
     }
 
+    /// The body to record when this customer SMS goes out as the link version
+    /// of its DLT template (see `docs/notifications.md`), without the brand
+    /// sign-off. `None` for a message that has no link version.
+    pub(crate) fn sms_link_body(&self, link: &str) -> Option<String> {
+        let short_id = &self.dispatch_id.to_string()[..8];
+        match self.sms_template()? {
+            SmsTemplate::DispatchCreatedCustomer => Some(format!(
+                "Your order (ref {short_id}) has been dispatched and is on its way. Track it: {link}"
+            )),
+            SmsTemplate::DispatchRunningLate if self.recipient_kind == "customer" => Some(format!(
+                "Your order (ref {short_id}) is running behind its expected delivery time. Track it: {link}"
+            )),
+            _ => None,
+        }
+    }
+
     /// Values for [`Self::sms_template`]'s variables, in template order.
     pub(crate) fn sms_vars(&self, customer_name: &str) -> Vec<String> {
         let name = sms_var(customer_name);

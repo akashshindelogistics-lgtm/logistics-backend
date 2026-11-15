@@ -28,6 +28,10 @@ const MSG91_FLOW_URL: &str = "https://control.msg91.com/api/v5/flow/";
 /// DLT rejects a template variable value longer than this.
 const SMS_VAR_MAX_CHARS: usize = 40;
 
+/// Default for `MSG91_LINK_MAX_CHARS`: the usual length limit of DLT's
+/// `{#url#}` variable. A longer tracking link is sent as the plain template.
+const SMS_LINK_MAX_CHARS: usize = 100;
+
 /// Why a delivery attempt didn't end in a sent message.
 #[derive(Debug)]
 pub enum DeliveryError {
@@ -85,6 +89,14 @@ impl SmsTemplate {
             SmsTemplate::DispatchRunningLate => Some(SmsTemplate::DispatchRunningLateLink),
             _ => None,
         }
+    }
+
+    /// Whether this template carries the tracking link.
+    pub(crate) fn has_link(self) -> bool {
+        matches!(
+            self,
+            SmsTemplate::DispatchCreatedCustomerLink | SmsTemplate::DispatchRunningLateLink
+        )
     }
 }
 
@@ -188,21 +200,27 @@ async fn send_via_msg91(
     Ok(())
 }
 
-/// Send a customer SMS with a tracking link when there is one and the link
-/// version of the template has an ID; otherwise the plain template. `vars` are
-/// the plain template's (`[name, ref]`); the link version takes `[ref, link]`,
-/// since DLT allows two variables. The link is not cut to 40 characters: a cut
-/// link wouldn't work.
+/// Send a customer SMS with a tracking link when there is one, it fits in
+/// `MSG91_LINK_MAX_CHARS` (default [`SMS_LINK_MAX_CHARS`]) and the link version
+/// of the template has an ID; otherwise the plain template. `vars` are the
+/// plain template's (`[name, ref]`); the link version takes `[ref, link]`,
+/// since DLT allows two variables. The link is never cut: a cut link wouldn't
+/// work, and a value longer than its DLT variable gets the SMS dropped, so a
+/// too-long link falls back to the plain SMS instead. Returns the template sent.
 pub async fn send_sms_with_link(
     to: &str,
     template: SmsTemplate,
     vars: &[String],
     link: Option<&str>,
-) -> Result<(), DeliveryError> {
-    let (template, vars) = choose_link_template(template, vars, link, |t| {
+) -> Result<SmsTemplate, DeliveryError> {
+    let max_chars = non_blank_env("MSG91_LINK_MAX_CHARS")
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(SMS_LINK_MAX_CHARS);
+    let (template, vars) = choose_link_template(template, vars, link, max_chars, |t| {
         non_blank_env(t.env_key()).is_some()
     });
-    send_sms(to, template, &vars).await
+    send_sms(to, template, &vars).await?;
+    Ok(template)
 }
 
 /// The template and variables [`send_sms_with_link`] sends.
@@ -210,9 +228,11 @@ fn choose_link_template(
     template: SmsTemplate,
     vars: &[String],
     link: Option<&str>,
+    max_chars: usize,
     has_id: impl Fn(SmsTemplate) -> bool,
 ) -> (SmsTemplate, Vec<String>) {
     if let (Some(link), Some(linked)) = (link, template.with_link())
+        && link.chars().count() <= max_chars
         && has_id(linked)
         && let Some(short_id) = vars.get(1)
     {
@@ -535,8 +555,13 @@ mod tests {
     fn link_template_is_used_only_with_a_link_and_an_id() {
         let vars = vec!["Asha".to_string(), "a1b2c3d4".to_string()];
         let url = "https://x.example/track/t";
-        let (t, v) =
-            choose_link_template(SmsTemplate::DispatchRunningLate, &vars, Some(url), |_| true);
+        let (t, v) = choose_link_template(
+            SmsTemplate::DispatchRunningLate,
+            &vars,
+            Some(url),
+            100,
+            |_| true,
+        );
         assert_eq!(t, SmsTemplate::DispatchRunningLateLink);
         assert_eq!(v, vec!["a1b2c3d4".to_string(), url.to_string()]);
         for (template, link, has_id) in [
@@ -544,9 +569,32 @@ mod tests {
             (SmsTemplate::DispatchRunningLate, Some(url), false),
             (SmsTemplate::DispatchDelivered, Some(url), true),
         ] {
-            let (t, v) = choose_link_template(template, &vars, link, |_| has_id);
+            let (t, v) = choose_link_template(template, &vars, link, 100, |_| has_id);
             assert_eq!((t, v), (template, vars.clone()));
         }
+    }
+
+    #[test]
+    fn a_link_longer_than_the_limit_falls_back_to_the_plain_template() {
+        let vars = vec!["Asha".to_string(), "a1b2c3d4".to_string()];
+        let url = "https://x.example/track/t";
+        let len = url.chars().count();
+        let (t, _) = choose_link_template(
+            SmsTemplate::DispatchCreatedCustomer,
+            &vars,
+            Some(url),
+            len,
+            |_| true,
+        );
+        assert_eq!(t, SmsTemplate::DispatchCreatedCustomerLink);
+        let (t, v) = choose_link_template(
+            SmsTemplate::DispatchCreatedCustomer,
+            &vars,
+            Some(url),
+            len - 1,
+            |_| true,
+        );
+        assert_eq!((t, v), (SmsTemplate::DispatchCreatedCustomer, vars));
     }
 
     #[actix_web::test]

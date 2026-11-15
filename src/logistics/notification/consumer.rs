@@ -61,8 +61,27 @@ async fn send(
             let link = tracking_url
                 .as_deref()
                 .filter(|_| n.recipient_kind != "driver");
-            delivery::send_sms_with_link(&n.recipient, template, &vars, link).await
+            let sent = delivery::send_sms_with_link(&n.recipient, template, &vars, link).await?;
+            if sent.has_link()
+                && let Some(link) = link
+            {
+                record_link_body(&n, link);
+            }
+            Ok(())
         }
+    }
+}
+
+/// Record the link wording on a row sent as a link template, so its body is
+/// the text that went out. Logged, not retried: the message has gone.
+fn record_link_body(n: &Notification, link: &str) {
+    if let Some(body) = n.sms_link_body(link)
+        && let Err(err) = Notification::update_body(n, &body)
+    {
+        eprintln!(
+            "notification consumer: sent {} but couldn't record its body: {err}",
+            n.id
+        );
     }
 }
 
@@ -371,6 +390,39 @@ mod tests {
             vec![("asha@example.com".to_string(), rows[0].body.clone())]
         );
         assert_eq!(statuses(dispatch), vec![NotificationStatus::Sent]);
+    }
+
+    #[actix_web::test]
+    async fn a_link_sms_records_the_link_wording() {
+        let _db = TestDb::create();
+        let org = Organization::create_organization("Link Co", "1 St").expect("org");
+        let mut customer = Customer::create_customer(org.id, "Asha", "1 Rd").expect("customer");
+        customer
+            .set_contact(Some("+91 98888 11111".into()), None)
+            .expect("contact");
+        let dispatch = Uuid::new_v4();
+        let rows = enqueue(org.id, &customer, dispatch);
+        let sms = &rows[0];
+        assert_eq!(sms.channel, NotificationChannel::Sms);
+        assert!(sms.body.starts_with("Hi Asha"), "{}", sms.body);
+
+        let link = "https://x.example/track/t";
+        record_link_body(sms, link);
+
+        let short_id = &dispatch.to_string()[..8];
+        let stored = Notification::list_by_dispatch(dispatch).expect("list");
+        assert_eq!(
+            stored[0].body,
+            format!(
+                "Your order (ref {short_id}) has been dispatched and is on its way. Track it: {link}"
+            )
+        );
+        // The driver's SMS has no link version and keeps its text.
+        record_link_body(&rows[1], link);
+        assert_eq!(
+            Notification::list_by_dispatch(dispatch).expect("list")[1].body,
+            rows[1].body
+        );
     }
 
     #[actix_web::test]

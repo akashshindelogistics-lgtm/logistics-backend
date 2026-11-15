@@ -136,19 +136,36 @@ Set up, once:
 | `MSG91_TEMPLATE_DISPATCH_RUNNING_LATE` | `Hi {#var#}, your order (ref {#var#}) is running behind its expected delivery time. We're sorry for the delay. - BRAND` | customer name, order ref |
 
 Optional link versions, used instead of the above for a customer SMS when the
-dispatch has a tracking link and the variable below is set (otherwise the plain
-template is sent, without a link). They have no name variable, because DLT allows
-two and the link can't be the last word. The link isn't cut to 40 characters, so
-register the link variable to allow a URL of that length.
+dispatch has a tracking link, the link is at most `MSG91_LINK_MAX_CHARS`
+characters (default 100) and the variable below is set. Otherwise the plain
+template is sent, without a link. They have no name variable, because DLT allows
+two and the link can't be the last word.
 
 | Variable holding the ID | DLT template wording | `VAR1`, `VAR2` |
 | --- | --- | --- |
-| `MSG91_TEMPLATE_DISPATCH_CREATED_CUSTOMER_LINK` | `Your order (ref {#var#}) has been dispatched and is on its way. Track it: {#var#} - BRAND` | order ref, tracking link |
-| `MSG91_TEMPLATE_DISPATCH_RUNNING_LATE_LINK` | `Your order (ref {#var#}) is running behind its expected delivery time. Track it: {#var#} - BRAND` | order ref, tracking link |
+| `MSG91_TEMPLATE_DISPATCH_CREATED_CUSTOMER_LINK` | `Your order (ref {#var#}) has been dispatched and is on its way. Track it: {#url#} - BRAND` | order ref, tracking link |
+| `MSG91_TEMPLATE_DISPATCH_RUNNING_LATE_LINK` | `Your order (ref {#var#}) is running behind its expected delivery time. Track it: {#url#} - BRAND` | order ref, tracking link |
 
-Replace `BRAND` with the registered business name. The text is duplicated in
-`Notification::record_*`, so change both together; the `body` recorded there
-leaves out the brand sign-off, which lives in the template.
+The link is `PUBLIC_APP_URL/track/` plus a 36-character token, about 70
+characters, and is never cut. A plain `{#var#}` is limited to 30 characters on
+most DLT portals (40 on MSG91), and operators drop a message whose variable is
+too long, after MSG91 has replied with success, so the row still shows `SENT`.
+To register them:
+
+- Use DLT's URL variable type, `{#url#}`, for the link, as above, not `{#var#}`.
+  If the portal's `{#url#}` limit is lower than 100, set `MSG91_LINK_MAX_CHARS`
+  to it, so a longer link falls back to the plain SMS instead of being dropped.
+- Whitelist the `PUBLIC_APP_URL` domain on the DLT portal against the sender ID
+  and these templates. Since TRAI's October 2024 rule, operators block SMS
+  with a URL whose domain isn't whitelisted. This needs a domain the business
+  owns: a shared host such as `*.ngrok-free.dev` may not be accepted.
+- In MSG91, map `{#url#}` to `##VAR2##` like the other variables.
+
+Replace `BRAND` with the registered business name. The plain text is duplicated
+in `Notification::record_*` and the link text in `Notification::sms_link_body`,
+so change both together; the `body` recorded there leaves out the brand sign-off,
+which lives in the template. When the link version is sent, the row's `body` is
+updated to the link text.
 
 MSG91's DLT rules shaped these: at most two variables, each value at most 40
 characters (longer customer names are cut), the brand in every template, and a
