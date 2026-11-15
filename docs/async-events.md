@@ -55,6 +55,22 @@ HTTP request                                  worker thread
 | `assistant/reindex` | Request | Returns a count the dashboard shows; going async needs a frontend change |
 | GPS pings | Request | One small update |
 
+## Live dashboard stream
+
+`GET /api/events/stream` is a Server-Sent Events feed of the caller's org
+events (bearer token in the `Authorization` header, so browsers need a
+fetch-based reader rather than `EventSource`). Each frame has `id` (event id),
+`event` (the type, e.g. `dispatch.status_changed`) and `data` (the JSON
+payload). Only events created after connecting are sent, with no replay; a
+client should refetch its data when it reconnects.
+
+It is not a queue consumer: it polls the org's `Events` rows every 2 seconds
+(a `: keepalive` comment goes out every ~14 idle seconds), so it needs no
+delivery rows and works whether or not workers are enabled. Every dispatch
+status change publishes `dispatch.status_changed` (`dispatch_id`, `from`,
+`status`) in the same transaction, with no subscribers. The dashboard-side
+subscription belongs to logistics-frontend.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -92,4 +108,4 @@ thread-local.
 4. Move notifications and delay alerts onto it.
 
 Later: `assistant/reindex` as a job (with a frontend PR), proof-of-delivery photo
-checks and SMS tracking links as consumers, and an SSE consumer for live dashboards.
+checks and SMS tracking links as consumers, and the dashboard's use of the SSE stream (backend done, frontend pending).

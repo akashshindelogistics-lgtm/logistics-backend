@@ -37,6 +37,8 @@ pub enum EventType {
     /// A hired dispatch has waited too long for a truck to be assigned.
     VehicleAwaitedTooLong,
     InvoiceRaised,
+    /// Any dispatch status change. Only the live dashboard stream reads it.
+    DispatchStatusChanged,
 }
 
 impl EventType {
@@ -47,6 +49,7 @@ impl EventType {
             EventType::DispatchRunningLate => "dispatch.running_late",
             EventType::VehicleAwaitedTooLong => "dispatch.awaiting_vehicle_delayed",
             EventType::InvoiceRaised => "invoice.raised",
+            EventType::DispatchStatusChanged => "dispatch.status_changed",
         }
     }
 
@@ -57,6 +60,7 @@ impl EventType {
             "dispatch.running_late" => Some(EventType::DispatchRunningLate),
             "dispatch.awaiting_vehicle_delayed" => Some(EventType::VehicleAwaitedTooLong),
             "invoice.raised" => Some(EventType::InvoiceRaised),
+            "dispatch.status_changed" => Some(EventType::DispatchStatusChanged),
             _ => None,
         }
     }
@@ -69,6 +73,8 @@ impl EventType {
             | EventType::DispatchRunningLate
             | EventType::VehicleAwaitedTooLong
             | EventType::InvoiceRaised => &[NOTIFICATION_CONSUMER],
+            // No consumer does work for it; the SSE stream reads `Events` directly.
+            EventType::DispatchStatusChanged => &[],
         }
     }
 }
@@ -193,6 +199,34 @@ pub(crate) fn publish_to(
         )?;
     }
     Ok(true)
+}
+
+/// An org's events created at or after `since` (unix seconds), oldest first.
+/// The live dashboard stream polls this; it needs no delivery rows.
+pub fn list_for_org_since(
+    conn: &mut PooledConn,
+    org_id: Uuid,
+    since: i64,
+    limit: u32,
+) -> Result<Vec<Event>, Box<dyn Error>> {
+    let rows: Vec<(String, String, String, i64)> = conn.exec(
+        "SELECT id, event_type, payload, created_at FROM Events
+         WHERE org_id = :org_id AND created_at >= :since
+         ORDER BY created_at, id
+         LIMIT :limit",
+        params! { "org_id" => org_id.to_string(), "since" => since, "limit" => limit },
+    )?;
+    rows.into_iter()
+        .map(|(id, event_type, payload, created_at)| {
+            Ok(Event {
+                id: Uuid::parse_str(&id)?,
+                org_id,
+                event_type,
+                payload: serde_json::from_str(&payload)?,
+                created_at,
+            })
+        })
+        .collect()
 }
 
 /// Claim up to `limit` due deliveries for `consumer`. `SKIP LOCKED` lets

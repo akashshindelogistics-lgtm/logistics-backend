@@ -113,6 +113,7 @@ pub const EXPOSED: &[&str] = &[
 
 /// Operations chat can't use, and why.
 pub const EXCLUDED: &[(&str, &str)] = &[
+    ("stream_events", "never-ending event stream for dashboards"),
     ("auth_login", "takes a password"),
     ("user_login", "takes a password"),
     ("signup", "public, takes a password"),

@@ -854,6 +854,18 @@ impl DispatchOrder {
             None => Vec::new(),
         };
 
+        crate::logistics::events::queue::publish(
+            conn,
+            self.org_id,
+            crate::logistics::events::queue::EventType::DispatchStatusChanged,
+            serde_json::json!({
+                "dispatch_id": self.id,
+                "from": self.status.as_str(),
+                "status": next.as_str(),
+            }),
+            None,
+        )?;
+
         tx.commit()?;
 
         // `self` only changes once the write has really happened.
@@ -1275,9 +1287,11 @@ mod tests {
     }
 
     fn sample_order(status: DispatchStatus) -> DispatchOrder {
+        // A real org: status changes publish an event with a foreign key to it.
+        let org = Organization::create_organization("Sample Co", "1 Depot Rd").expect("org");
         DispatchOrder {
             id: Uuid::new_v4(),
-            org_id: Uuid::new_v4(),
+            org_id: org.id,
             customer_id: Uuid::new_v4(),
             vehicle_registration_number: Some("TEST-001".to_string()),
             vehicle_source: Default::default(),
