@@ -1606,6 +1606,7 @@ dependencies = [
  "actix-http",
  "actix-multipart",
  "actix-web",
+ "base64 0.23.1",
  "bcrypt",
  "futures-util",
  "jsonwebtoken",

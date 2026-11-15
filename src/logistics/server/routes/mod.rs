@@ -24,6 +24,7 @@ use crate::logistics::godown::transfer::StockTransfer;
 use crate::logistics::notification::notification::{
     Notification, NotificationChannel, NotificationEvent, NotificationStatus,
 };
+use crate::logistics::orgs::onboarding::{OnboardingStatus, OnboardingStep};
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::reports::{
     CategoryUnits, DeliveryPerformance, DispatchVolumePoint, GodownInventory, HireMargin,
@@ -33,6 +34,7 @@ use crate::logistics::stock::category::StockCategory;
 use crate::logistics::stock::stock::Stock;
 use crate::logistics::user::user::{OrgRole, OrgUser};
 use crate::logistics::vehicle::document::{ComplianceDocType, ComplianceStatus, VehicleDocument};
+use crate::logistics::vehicle::location_history::LocationHistoryPoint;
 use crate::logistics::vehicle::maintenance::{MaintenanceStatus, VehicleMaintenance};
 use crate::logistics::vehicle::vehicle::{Location, Unit, Vehicle, VehicleType};
 use crate::logistics::vendor::hire::{HireStatus, VehicleHire, VendorPayment};
@@ -128,6 +130,9 @@ impl Modify for SecurityAddon {
         user_login,
         signup,
         auth_me,
+        verify_email,
+        resend_verification,
+        auth_session,
         list_org_users,
         add_org_user,
         update_org_user,
@@ -137,11 +142,14 @@ impl Modify for SecurityAddon {
         create_org,
         update_org,
         update_org_location,
+        get_onboarding,
+        dismiss_onboarding,
         delete_org,
         list_vehicles,
         add_vehicle,
         edit_vehicle,
         update_vehicle_location,
+        vehicle_location_history,
         track_vehicle_location,
         rotate_vehicle_tracker_key,
         report_driver_location,
@@ -206,6 +214,7 @@ impl Modify for SecurityAddon {
         reindex_assistant,
         get_daily_digest,
         get_reorder_suggestions,
+        get_production_plan,
         create_dispatch_invoice,
         get_dispatch_invoice,
         update_invoice,
@@ -264,7 +273,7 @@ impl Modify for SecurityAddon {
             Notification, NotificationEvent, NotificationChannel, NotificationStatus,
             Trip, TripStatus,
             OrgSummary,
-            OrgResponse, OrgListResponse, VehicleResponse, VehicleListResponse,
+            OrgResponse, OrgListResponse, OnboardingResponse, OnboardingStatus, OnboardingStep, VehicleResponse, VehicleListResponse,
             VehicleDocumentResponse, VehicleDocumentListResponse,
             StockResponse, GodownResponse, GodownListResponse,
             StockTransferResponse, StockTransferListResponse,
@@ -284,6 +293,7 @@ impl Modify for SecurityAddon {
             UploadedFileResponse, UploadedFileRef,
             AssistantAskPayload, AssistantAnswer, AssistantSource, AssistantAnswerResponse,
             AssistantReindexResult, AssistantReindexResponse,
+            ProductionRun, ProductionPlanResponse,
             AgentSettings, AgentSettingsResponse, AgentRunResponse, AgentRunListResponse,
             AgentActionResponse, AgentActionListResponse,
             crate::logistics::agent::store::AutonomyMode,
@@ -300,7 +310,7 @@ impl Modify for SecurityAddon {
             crate::logistics::agent::store::AgentAction,
             crate::logistics::import::csv_import::ImportReport,
             crate::logistics::import::csv_import::RowError,
-            LocationResponse, OrgSummaryListResponse, EmptyResponse,
+            LocationResponse, LocationHistoryResponse, LocationHistoryPoint, OrgSummaryListResponse, EmptyResponse,
         )
     ),
     tags(
@@ -367,6 +377,9 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(user_login)
             .service(signup)
             .service(auth_me)
+            .service(verify_email)
+            .service(resend_verification)
+            .service(auth_session)
             .service(list_org_users)
             .service(add_org_user)
             .service(update_org_user)
@@ -376,11 +389,14 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(create_org)
             .service(update_org)
             .service(update_org_location)
+            .service(get_onboarding)
+            .service(dismiss_onboarding)
             .service(delete_org)
             .service(list_vehicles)
             .service(add_vehicle)
             .service(edit_vehicle)
             .service(update_vehicle_location)
+            .service(vehicle_location_history)
             .service(track_vehicle_location)
             .service(public_track_dispatch)
             .service(rotate_vehicle_tracker_key)
@@ -445,6 +461,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(reindex_assistant)
             .service(get_daily_digest)
             .service(get_reorder_suggestions)
+            .service(get_production_plan)
             .service(create_dispatch_invoice)
             .service(get_dispatch_invoice)
             .service(update_invoice)

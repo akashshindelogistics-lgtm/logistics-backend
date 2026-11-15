@@ -155,7 +155,9 @@ fn nothing_exposed_takes_a_password() {
 fn every_field_that_looks_like_a_credential_is_accounted_for() {
     use utoipa::OpenApi;
     let spec = serde_json::to_value(crate::logistics::server::routes::ApiDoc::openapi()).unwrap();
-    let not_secret = ["input_tokens", "output_tokens"];
+    // `key` is OnboardingStep's checklist step name (e.g. "godown"). Name any
+    // real credential `*_key`/`api_key` so it is still caught.
+    let not_secret = ["input_tokens", "output_tokens", "key"];
     let looks_secret = ["token", "key", "secret", "password", "hash", "credential"];
     let mut unknown = Vec::new();
     for (schema, body) in spec["components"]["schemas"].as_object().unwrap() {

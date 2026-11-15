@@ -277,6 +277,9 @@ All routes are served under the `/api` prefix.
 |---|---|---|
 | POST | `/api/auth/login` | Log in to an organization (org-owner password — always Admin) |
 | POST | `/api/auth/signup` | Self-serve signup (public): `{org_name, address, owner_name, email, password, accept_terms}` creates the org and its first Admin user in one transaction and returns a user-scoped token like `user-login`. `400` for a weak password (8–72 chars, a letter and a digit) or `accept_terms: false`, `409` for a taken email, `429` over the per-IP limit (`SIGNUP_RATE_LIMIT`, default 5 per hour; behind a reverse proxy set `TRUSTED_PROXY=1` to key on the rightmost `X-Forwarded-For` entry instead of the socket peer) |
+| POST | `/api/auth/verify-email` | Public. `{token}` from the signup email marks the address verified; `400` for an unknown, expired (24 h) or already used token |
+| POST | `/api/auth/resend-verification` | Mail a fresh link to the signed-in team member (`400` if already verified, `429` within a minute of the last one) |
+| GET | `/api/auth/session` | `{role, user_id, email, email_verified, needs_admin_user}` for the dashboard banners: verify-your-email, and "create your first Admin user" (add one with `POST /api/orgs/{id}/users`, role `ADMIN`) |
 | POST | `/api/auth/user-login` | Log in as a team member with email + password |
 | GET | `/api/auth/me` | Get the authenticated organization |
 | GET | `/api/auth/orgs` | List organizations available for login |
@@ -285,6 +288,8 @@ All routes are served under the `/api` prefix.
 | GET/POST | `/api/orgs` | List / create organizations |
 | GET/PUT/DELETE | `/api/orgs/{id}` | Get, update, or delete an organization |
 | PUT | `/api/orgs/{id}/location` | Update an organization's location |
+| GET | `/api/orgs/{id}/onboarding` | New-org setup checklist (`{steps: [{key, required, done}], dismissed}`), derived from the org's real data; any member |
+| PUT | `/api/orgs/{id}/onboarding/dismiss` | Hide the setup checklist (Admin only); returns the updated status |
 | GET/POST | `/api/orgs/{id}/godowns` | List / create an organization's godowns (warehouses) |
 | GET/PUT/DELETE | `/api/godowns/{gid}` | Get, rename/re-address, or delete a godown |
 | PUT | `/api/godowns/{gid}/location` | Update a godown's location |
@@ -295,6 +300,7 @@ All routes are served under the `/api` prefix.
 | GET/DELETE | `/api/vehicles`, `/api/vehicles/{reg}` | List vehicles / remove one |
 | PUT | `/api/vehicles/{reg}` | Update a vehicle's capacity, unit and (optionally) `vehicle_type` |
 | PUT | `/api/vehicles/{reg}/location` | Update a vehicle's location (org login) |
+| GET | `/api/vehicles/{reg}/location-history` | Positions the vehicle reported between `?from=` and `?to=` (unix seconds, default the last 24 h), oldest first, at most 5000. Kept for `LOCATION_HISTORY_RETENTION_DAYS` (default 30) |
 | POST | `/api/track/{tracker_key}` | GPS device push: record `{latitude, longitude}` for the vehicle that key belongs to — no login |
 | POST | `/api/vehicles/{reg}/tracker-key/rotate` | Issue a fresh tracker key, invalidating the old one |
 | PUT | `/api/vehicles/{reg}/driver` | Assign (or clear) the vehicle's driver |
