@@ -105,3 +105,31 @@ async fn test_vehicle_expense_validation_and_org_isolation() {
         .to_request();
     assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
 }
+
+#[actix_web::test]
+async fn test_vehicle_expense_rejects_trip_run_by_other_vehicle() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, dispatch, auth) = setup_dispatch(&app, "Expense Mismatch Co").await;
+    // The dispatch was run by DISP-VH-001; tag it from a different truck.
+    add_vehicle_via_api(&app, org.id, &auth, "KA07-EX-2222").await;
+
+    let req = test::TestRequest::post()
+        .uri("/api/vehicles/KA07-EX-2222/expenses")
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(expense_payload(Some(dispatch.id), 4_200))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: ApiResponse<String> = test::read_body_json(resp).await;
+    assert_eq!(body.message, "trip was run by a different vehicle");
+
+    // Nothing was logged against either truck.
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/orgs/{}/vehicle-expenses", org.id))
+        .insert_header(("Authorization", auth))
+        .to_request();
+    let list: ApiResponse<Vec<VehicleExpense>> =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert!(list.data.unwrap().is_empty());
+}

@@ -90,7 +90,7 @@ pub async fn list_vehicle_expenses(
     request_body = VehicleExpensePayload,
     responses(
         (status = 201, description = "Expense logged", body = VehicleExpenseResponse),
-        (status = 400, description = "Invalid amount, litres or date", body = EmptyResponse),
+        (status = 400, description = "Invalid amount, litres or date, or the trip was run by a different vehicle", body = EmptyResponse),
         (status = 404, description = "Vehicle or trip not found in this organization", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse)
     )
@@ -108,7 +108,15 @@ pub async fn add_vehicle_expense(
     let body = payload.into_inner();
     if let Some(trip_id) = body.trip_id {
         match Trip::get_by_id(trip_id) {
-            Ok(Some(trip)) if trip.org_id == auth.org_id => {}
+            Ok(Some(trip)) if trip.org_id == auth.org_id => {
+                if trip.vehicle_registration_number.as_deref() != Some(reg.as_str()) {
+                    return HttpResponse::BadRequest().json(ApiResponse::<String> {
+                        success: false,
+                        message: "trip was run by a different vehicle".to_string(),
+                        data: None,
+                    });
+                }
+            }
             Ok(_) => {
                 return HttpResponse::NotFound().json(ApiResponse::<String> {
                     success: false,
