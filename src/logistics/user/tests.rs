@@ -1,4 +1,4 @@
-use super::user::{OrgRole, OrgUser, ResendOutcome, UserError};
+use super::user::{MAX_VERIFICATION_SENDS, OrgRole, OrgUser, ResendOutcome, UserError};
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::test_support::TestDb;
 
@@ -238,4 +238,57 @@ fn admin_created_users_need_no_verification_and_org_has_admin_tracks_users() {
     );
     OrgUser::create(org.id, "A", "a@example.com", "hunter2pw", OrgRole::Admin).unwrap();
     assert!(OrgUser::org_has_admin(org.id).unwrap());
+}
+
+#[test]
+fn resend_is_capped_per_window_and_the_window_resets() {
+    use crate::logistics::db::connection::DbConnection;
+    use mysql::{params, prelude::*};
+    let _db = TestDb::create();
+    let (user, _) = signup("cap@example.com");
+    let mut conn = DbConnection::from_env().get_connection().unwrap();
+    let mut past_cooldown = || {
+        conn.exec_drop(
+            "UPDATE OrgUsers SET email_verification_expires_at = 1 WHERE id = :id",
+            params! { "id" => user.id.to_string() },
+        )
+        .unwrap();
+    };
+    // Signup was send 1.
+    for _ in 1..MAX_VERIFICATION_SENDS {
+        past_cooldown();
+        assert!(matches!(
+            OrgUser::resend_verification(user.id).unwrap(),
+            ResendOutcome::Issued(_)
+        ));
+    }
+    past_cooldown();
+    assert_eq!(
+        OrgUser::resend_verification(user.id).unwrap(),
+        ResendOutcome::LimitReached
+    );
+
+    // Once the window has passed, the count starts again.
+    let mut conn = DbConnection::from_env().get_connection().unwrap();
+    conn.exec_drop(
+        "UPDATE OrgUsers SET email_verification_window_start = :start,
+                email_verification_expires_at = 1 WHERE id = :id",
+        params! {
+            // Long before the current 24 h window.
+            "start" => 1_i64,
+            "id" => user.id.to_string(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        OrgUser::resend_verification(user.id).unwrap(),
+        ResendOutcome::Issued(_)
+    ));
+    let sends: Option<i64> = conn
+        .exec_first(
+            "SELECT email_verification_sends FROM OrgUsers WHERE id = :id",
+            params! { "id" => user.id.to_string() },
+        )
+        .unwrap();
+    assert_eq!(sends, Some(1));
 }

@@ -458,7 +458,7 @@ pub async fn verify_email(payload: web::Json<VerifyEmailPayload>) -> impl Respon
         (status = 202, description = "A new verification email was queued", body = EmptyResponse),
         (status = 400, description = "Email already verified, or not a user login", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse),
-        (status = 429, description = "Asked again within a minute", body = EmptyResponse)
+        (status = 429, description = "Asked again within a minute, or the daily limit of verification emails was reached", body = EmptyResponse)
     )
 )]
 #[post("/auth/resend-verification")]
@@ -502,6 +502,10 @@ pub async fn resend_verification(auth: AuthenticatedOrg) -> impl Responder {
         Ok(ResendOutcome::TooSoon) => fail(
             actix_web::http::StatusCode::TOO_MANY_REQUESTS,
             "a verification email was just sent, wait a minute before asking again",
+        ),
+        Ok(ResendOutcome::LimitReached) => fail(
+            actix_web::http::StatusCode::TOO_MANY_REQUESTS,
+            "too many verification emails were sent today, try again tomorrow",
         ),
         Err(err) => fail(
             actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,

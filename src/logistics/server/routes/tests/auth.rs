@@ -467,3 +467,51 @@ async fn test_session_requires_a_token() {
         .to_request();
     assert_eq!(test::call_service(&app, req).await.status().as_u16(), 401);
 }
+
+#[actix_web::test]
+async fn test_resend_verification_is_capped_per_day() {
+    use crate::logistics::db::connection::DbConnection;
+    use crate::logistics::user::user::MAX_VERIFICATION_SENDS;
+    use mysql::{params, prelude::*};
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (_, user, _) = OrgUser::signup(
+        "Capped Org",
+        "1 St",
+        "Owner",
+        "capped@example.com",
+        "passw0rd1",
+    )
+    .unwrap();
+    let login = test::TestRequest::post()
+        .uri("/api/auth/user-login")
+        .set_json(&UserLoginPayload {
+            email: "capped@example.com".into(),
+            password: "passw0rd1".into(),
+        })
+        .to_request();
+    let login: ApiResponse<LoginData> =
+        test::read_body_json(test::call_service(&app, login).await).await;
+    let login = login.data.unwrap();
+    let mut conn = DbConnection::from_env().get_connection().unwrap();
+    macro_rules! resend {
+        () => {{
+            // Move past the one-minute cooldown so only the daily cap applies.
+            conn.exec_drop(
+                "UPDATE OrgUsers SET email_verification_expires_at = 1 WHERE id = :id",
+                params! { "id" => user.id.to_string() },
+            )
+            .unwrap();
+            let req = test::TestRequest::post()
+                .uri("/api/auth/resend-verification")
+                .insert_header(bearer_for(&login))
+                .to_request();
+            test::call_service(&app, req).await.status().as_u16()
+        }};
+    }
+    // The signup email counts as the first send.
+    for i in 1..MAX_VERIFICATION_SENDS {
+        assert_eq!(resend!(), 202, "resend {i}");
+    }
+    assert_eq!(resend!(), 429, "over the daily cap");
+}

@@ -140,6 +140,12 @@ pub fn validate_password(password: &str, email: &str) -> Result<(), UserError> {
 pub const VERIFICATION_TTL_SECS: i64 = 24 * 3600;
 /// Minimum gap between two verification emails to the same user.
 pub const RESEND_COOLDOWN_SECS: i64 = 60;
+/// Most verification emails (signup included) one user can be sent in
+/// [`VERIFICATION_SEND_WINDOW_SECS`]. Every one goes through the shared
+/// mail transport, whose daily quota the live org's notifications rely on.
+pub const MAX_VERIFICATION_SENDS: i64 = 5;
+/// The window [`MAX_VERIFICATION_SENDS`] applies to.
+pub const VERIFICATION_SEND_WINDOW_SECS: i64 = 24 * 3600;
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -167,6 +173,9 @@ pub enum ResendOutcome {
     NotPending,
     /// A token was issued less than [`RESEND_COOLDOWN_SECS`] ago.
     TooSoon,
+    /// [`MAX_VERIFICATION_SENDS`] emails were already sent in the current
+    /// [`VERIFICATION_SEND_WINDOW_SECS`].
+    LimitReached,
 }
 
 fn normalise_email(email: &str) -> String {
@@ -189,6 +198,8 @@ impl OrgUser {
                 email_verified_at BIGINT DEFAULT NULL,
                 email_verification_hash VARCHAR(64) DEFAULT NULL,
                 email_verification_expires_at BIGINT DEFAULT NULL,
+                email_verification_sends INT DEFAULT NULL,
+                email_verification_window_start BIGINT DEFAULT NULL,
                 CONSTRAINT fk_org_user_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
             )",
         )?;
@@ -203,6 +214,8 @@ impl OrgUser {
             ("email_verified_at", "BIGINT NULL"),
             ("email_verification_hash", "VARCHAR(64) NULL"),
             ("email_verification_expires_at", "BIGINT NULL"),
+            ("email_verification_sends", "INT NULL"),
+            ("email_verification_window_start", "BIGINT NULL"),
         ] {
             let has_column: Option<i64> = conn.exec_first(
                 "SELECT 1 FROM information_schema.columns
@@ -310,8 +323,10 @@ impl OrgUser {
         )?;
         let inserted = tx.exec_drop(
             "INSERT INTO OrgUsers (id, org_id, name, email, password_hash, role, is_active, terms_accepted_at,
-                                   email_verification_hash, email_verification_expires_at)
-             VALUES (:id, :org_id, :name, :email, :password_hash, :role, TRUE, :terms, :vhash, :vexpires)",
+                                   email_verification_hash, email_verification_expires_at,
+                                   email_verification_sends, email_verification_window_start)
+             VALUES (:id, :org_id, :name, :email, :password_hash, :role, TRUE, :terms, :vhash, :vexpires,
+                     1, :terms)",
             params! {
                 "id" => user.id.to_string(),
                 "org_id" => user.org_id.to_string(),
@@ -403,35 +418,63 @@ impl OrgUser {
     }
 
     /// Issue a new verification token for a user whose email is pending,
-    /// replacing the old one.
+    /// replacing the old one. The cooldown and the per-window cap are checked
+    /// in the `UPDATE` itself, so concurrent requests cannot both pass them.
     pub fn resend_verification(id: Uuid) -> Result<ResendOutcome, Box<dyn Error>> {
         let mut conn = DbConnection::from_env().get_connection()?;
         Self::ensure_table(&mut conn)?;
-        let row: Option<(Option<String>, Option<i64>)> = conn.exec_first(
-            "SELECT email_verification_hash, email_verification_expires_at FROM OrgUsers WHERE id = :id",
-            params! { "id" => id.to_string() },
-        )?;
         let now = now_secs();
-        let Some((Some(_), expires)) = row else {
-            return Ok(ResendOutcome::NotPending);
-        };
-        // The token was issued at `expires - TTL`.
-        if let Some(expires) = expires
-            && now - (expires - VERIFICATION_TTL_SECS) < RESEND_COOLDOWN_SECS
-        {
-            return Ok(ResendOutcome::TooSoon);
-        }
         let token = new_verification_token();
+        // The current token was issued at `expires - TTL`, so the cooldown has
+        // passed once `expires <= now + TTL - COOLDOWN`. MySQL applies the SET
+        // assignments left to right, so `sends` is computed from the old
+        // `window_start` before that is moved.
         conn.exec_drop(
-            "UPDATE OrgUsers SET email_verification_hash = :hash, email_verification_expires_at = :expires
-             WHERE id = :id",
+            "UPDATE OrgUsers SET
+                email_verification_sends = IF(email_verification_window_start IS NULL
+                        OR email_verification_window_start <= :window_floor,
+                    1, COALESCE(email_verification_sends, 0) + 1),
+                email_verification_window_start = IF(email_verification_window_start IS NULL
+                        OR email_verification_window_start <= :window_floor,
+                    :now, email_verification_window_start),
+                email_verification_hash = :hash,
+                email_verification_expires_at = :expires
+             WHERE id = :id
+               AND email_verification_hash IS NOT NULL
+               AND (email_verification_expires_at IS NULL
+                    OR email_verification_expires_at <= :cooldown_ceiling)
+               AND (email_verification_window_start IS NULL
+                    OR email_verification_window_start <= :window_floor
+                    OR COALESCE(email_verification_sends, 0) < :max_sends)",
             params! {
                 "id" => id.to_string(),
+                "now" => now,
                 "hash" => hash_token(&token),
                 "expires" => now + VERIFICATION_TTL_SECS,
+                "cooldown_ceiling" => now + VERIFICATION_TTL_SECS - RESEND_COOLDOWN_SECS,
+                "window_floor" => now - VERIFICATION_SEND_WINDOW_SECS,
+                "max_sends" => MAX_VERIFICATION_SENDS,
             },
         )?;
-        Ok(ResendOutcome::Issued(token))
+        if conn.affected_rows() == 1 {
+            return Ok(ResendOutcome::Issued(token));
+        }
+        // Nothing was issued; work out why, for the response message only.
+        let row: Option<(Option<String>, Option<i64>, Option<i64>)> = conn.exec_first(
+            "SELECT email_verification_hash, email_verification_sends, email_verification_window_start
+             FROM OrgUsers WHERE id = :id",
+            params! { "id" => id.to_string() },
+        )?;
+        Ok(match row {
+            Some((Some(_), Some(sends), Some(start)))
+                if sends >= MAX_VERIFICATION_SENDS
+                    && start > now - VERIFICATION_SEND_WINDOW_SECS =>
+            {
+                ResendOutcome::LimitReached
+            }
+            Some((Some(_), _, _)) => ResendOutcome::TooSoon,
+            _ => ResendOutcome::NotPending,
+        })
     }
 
     /// When the user accepted the terms, as unix seconds (`None` for users

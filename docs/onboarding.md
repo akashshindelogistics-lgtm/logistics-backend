@@ -160,7 +160,11 @@ convention.
   email is unverified. Customer emails are unaffected. The account itself works
   before verification.
 - **Resend:** `POST /api/auth/resend-verification` for the signed-in user, at
-  most once a minute (derived from the token's expiry, nothing extra stored).
+  most once a minute (derived from the token's expiry) and at most 5 emails,
+  the signup one included, per user per 24 h (`email_verification_sends` and
+  `email_verification_window_start`, patched in like the other columns). Both
+  limits are checked inside the `UPDATE` that issues the token, so concurrent
+  requests can't both pass. Either limit answers `429`.
 - **Banners:** `GET /api/auth/session` returns `email_verified` and
   `needs_admin_user` (the org has no active Admin user). The latter prompts
   orgs that only have the shared org password; the prompt is completed with the

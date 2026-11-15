@@ -450,6 +450,8 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             email_verified_at BIGINT DEFAULT NULL,
             email_verification_hash VARCHAR(64) DEFAULT NULL,
             email_verification_expires_at BIGINT DEFAULT NULL,
+            email_verification_sends INT DEFAULT NULL,
+            email_verification_window_start BIGINT DEFAULT NULL,
             CONSTRAINT fk_org_user_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
         )",
     )
