@@ -404,10 +404,10 @@ pub async fn run_due_orgs() -> Result<usize, String> {
             Err(e) => eprintln!("agent run skipped for org {org_id}: {e}"),
         }
         // Only worth a model call when there's something new to read.
-        if crate::logistics::inbound::count_received(org_id).unwrap_or(0) > 0 {
-            if let Err(e) = run_order_intake(org_id, "schedule", &config).await {
-                eprintln!("order intake skipped for org {org_id}: {e}");
-            }
+        if crate::logistics::inbound::count_received(org_id).unwrap_or(0) > 0
+            && let Err(e) = run_order_intake(org_id, "schedule", &config).await
+        {
+            eprintln!("order intake skipped for org {org_id}: {e}");
         }
     }
     Ok(completed)
