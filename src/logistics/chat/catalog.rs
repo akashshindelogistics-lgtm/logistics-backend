@@ -170,6 +170,14 @@ pub const EXCLUDED: &[(&str, &str)] = &[
         "reject_agent_action",
         "agent controls stay on the Agent Inbox page",
     ),
+    (
+        "receive_inbound_message",
+        "public webhook for the email or WhatsApp gateway",
+    ),
+    (
+        "list_inbound_messages",
+        "text written by outsiders, shown on the Agent Inbox page",
+    ),
     ("ask_assistant", "chat answers questions itself"),
     ("reindex_assistant", "maintenance"),
     ("health_check", "not useful to people"),

@@ -509,6 +509,7 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
     crate::logistics::orgs::sample_data::ensure_table(conn).expect("migrate: create SampleData");
     crate::logistics::agent::store::ensure_tables(conn).expect("migrate: create agent tables");
     crate::logistics::chat::store::ensure_tables(conn).expect("migrate: create chat tables");
+    crate::logistics::inbound::ensure_tables(conn).expect("migrate: create inbound table");
 }
 
 /// A private, uniquely-named MySQL database scoped to exactly one test.

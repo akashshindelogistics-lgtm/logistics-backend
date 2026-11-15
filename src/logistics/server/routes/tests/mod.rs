@@ -46,6 +46,7 @@ mod gst;
 mod health;
 mod hires;
 mod imports;
+mod inbound;
 mod maintenance;
 mod notifications;
 mod orgs;
