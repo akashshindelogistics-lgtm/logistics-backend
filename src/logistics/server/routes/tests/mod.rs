@@ -15,7 +15,7 @@ use crate::logistics::driver::driver::Driver;
 use crate::logistics::godown::godown::Godown;
 use crate::logistics::godown::transfer::StockTransfer;
 use crate::logistics::notification::notification::{
-    Notification, NotificationChannel, NotificationEvent, NotificationStatus,
+    DeliveryStatus, Notification, NotificationChannel, NotificationEvent, NotificationStatus,
 };
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::reports::OpsReport;

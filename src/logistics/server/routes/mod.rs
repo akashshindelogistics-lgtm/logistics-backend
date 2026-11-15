@@ -57,6 +57,7 @@ mod billing;
 mod chat;
 mod common;
 mod customers;
+mod delivery_reports;
 mod dispatches;
 mod driver_app;
 mod drivers;
@@ -86,6 +87,7 @@ pub use billing::*;
 pub use chat::*;
 pub use common::*;
 pub use customers::*;
+pub use delivery_reports::*;
 pub use dispatches::*;
 pub use driver_app::*;
 pub use drivers::*;
@@ -246,6 +248,7 @@ impl Modify for SecurityAddon {
         import_template,
         import_org_csv,
         list_dispatch_notifications,
+        msg91_delivery_reports,
         list_org_notifications,
         get_agent_settings,
         update_agent_settings,
@@ -422,6 +425,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(vehicle_location_history)
             .service(track_vehicle_location)
             .service(public_track_dispatch)
+            .service(msg91_delivery_reports)
             .service(rotate_vehicle_tracker_key)
             .service(report_driver_location)
             .service(driver_me)

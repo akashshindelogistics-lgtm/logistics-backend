@@ -152,7 +152,7 @@ async fn send_via_msg91(
     template_id: &str,
     to: &str,
     vars: &[String],
-) -> Result<(), DeliveryError> {
+) -> Result<Option<String>, DeliveryError> {
     let mobile = normalize_indian_mobile(to)
         .ok_or_else(|| DeliveryError::ProviderError("Not an Indian mobile number".to_string()))?;
 
@@ -189,15 +189,17 @@ async fn send_via_msg91(
     let text = resp.text().await.unwrap_or_default();
     // A rejected request can still come back as HTTP 200, with `"type": "error"`.
     // "success" means MSG91 queued the request, not that the phone got it.
-    let accepted = status.is_success()
-        && serde_json::from_str::<serde_json::Value>(&text)
-            .is_ok_and(|reply| reply["type"] == "success");
-    if !accepted {
+    let reply = serde_json::from_str::<serde_json::Value>(&text).unwrap_or_default();
+    if !(status.is_success() && reply["type"] == "success") {
         return Err(DeliveryError::ProviderError(format!(
             "MSG91 error ({status}): {text}"
         )));
     }
-    Ok(())
+    // On success `message` is the request ID that delivery reports quote.
+    Ok(reply["message"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_string))
 }
 
 /// Send a customer SMS with a tracking link when there is one, it fits in
@@ -206,21 +208,22 @@ async fn send_via_msg91(
 /// plain template's (`[name, ref]`); the link version takes `[ref, link]`,
 /// since DLT allows two variables. The link is never cut: a cut link wouldn't
 /// work, and a value longer than its DLT variable gets the SMS dropped, so a
-/// too-long link falls back to the plain SMS instead. Returns the template sent.
+/// too-long link falls back to the plain SMS instead. Returns the template sent
+/// and MSG91's request ID (see [`send_sms`]).
 pub async fn send_sms_with_link(
     to: &str,
     template: SmsTemplate,
     vars: &[String],
     link: Option<&str>,
-) -> Result<SmsTemplate, DeliveryError> {
+) -> Result<(SmsTemplate, Option<String>), DeliveryError> {
     let max_chars = non_blank_env("MSG91_LINK_MAX_CHARS")
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(SMS_LINK_MAX_CHARS);
     let (template, vars) = choose_link_template(template, vars, link, max_chars, |t| {
         non_blank_env(t.env_key()).is_some()
     });
-    send_sms(to, template, &vars).await?;
-    Ok(template)
+    let request_id = send_sms(to, template, &vars).await?;
+    Ok((template, request_id))
 }
 
 /// The template and variables [`send_sms_with_link`] sends.
@@ -243,11 +246,12 @@ fn choose_link_template(
 
 /// Send one templated SMS. `NotConfigured` without `MSG91_AUTH_KEY` or without
 /// an ID for this template, so templates can be approved and added one by one.
+/// Returns MSG91's request ID, which its delivery reports use to name the message.
 pub async fn send_sms(
     to: &str,
     template: SmsTemplate,
     vars: &[String],
-) -> Result<(), DeliveryError> {
+) -> Result<Option<String>, DeliveryError> {
     let config = Msg91Config::from_env().ok_or(DeliveryError::NotConfigured)?;
     let template_id = non_blank_env(template.env_key()).ok_or(DeliveryError::NotConfigured)?;
     send_via_msg91(&config, &template_id, to, vars).await

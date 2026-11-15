@@ -61,7 +61,17 @@ async fn send(
             let link = tracking_url
                 .as_deref()
                 .filter(|_| n.recipient_kind != "driver");
-            let sent = delivery::send_sms_with_link(&n.recipient, template, &vars, link).await?;
+            let (sent, request_id) =
+                delivery::send_sms_with_link(&n.recipient, template, &vars, link).await?;
+            if let Some(request_id) = request_id
+                && let Err(err) = Notification::set_provider_ref(n.id, &request_id)
+            {
+                // Without it a delivery report can't be matched to this row.
+                eprintln!(
+                    "notification consumer: couldn't store MSG91 id for {}: {err}",
+                    n.id
+                );
+            }
             if sent.has_link()
                 && let Some(link) = link
             {

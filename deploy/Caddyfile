@@ -11,8 +11,17 @@
 
 	reverse_proxy api:8080
 
+	# The MSG91 delivery-report webhook carries its secret in `?secret=`;
+	# keep it out of the access log.
 	log {
 		output stdout
-		format console
+		format filter {
+			wrap console
+			fields {
+				request>uri query {
+					replace secret REDACTED
+				}
+			}
+		}
 	}
 }
