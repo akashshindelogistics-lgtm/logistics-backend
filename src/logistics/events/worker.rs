@@ -6,6 +6,7 @@ use crate::logistics::db::connection::DbConnection;
 use crate::logistics::notification::consumer::NotificationConsumer;
 use crate::logistics::notification::delay_alerts;
 use crate::logistics::server::metrics;
+use crate::logistics::vehicle::location_history;
 use futures_util::FutureExt;
 use futures_util::future::LocalBoxFuture;
 use std::error::Error;
@@ -21,6 +22,7 @@ const BATCH_SIZE: u32 = 10;
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const DELAY_SCAN_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const RETENTION_SECS: i64 = 30 * 24 * 3600;
+const LOCATION_HISTORY_PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
 const DEFAULT_WORKERS: usize = 2;
 const MAX_WORKERS: usize = 16;
 
@@ -194,14 +196,58 @@ async fn scan_forever() {
     }
 }
 
-/// Start the consumers and the delay-alert scan, if enabled. Off by default: a
-/// dev server on the local database must not message real customers.
+/// Location-history retention. Runs once at startup, then hourly, whatever
+/// `EVENT_WORKERS_ENABLED` says: it sends nothing, and without it the table
+/// grows for ever on deployments that keep customer messaging off.
+async fn prune_location_history_forever() {
+    loop {
+        if let Err(err) = location_history::prune_expired() {
+            eprintln!("location history retention failed: {err}");
+        }
+        tokio::time::sleep(LOCATION_HISTORY_PRUNE_INTERVAL).await;
+    }
+}
+
+/// The background threads [`start_from_env`] starts.
+#[derive(Debug, PartialEq)]
+struct BackgroundPlan {
+    location_history_pruner: bool,
+    consumers: usize,
+    delay_scanner: bool,
+}
+
+fn background_plan(enabled: Option<&str>, worker_count: Option<&str>) -> BackgroundPlan {
+    let enabled = parse_enabled(enabled);
+    BackgroundPlan {
+        location_history_pruner: true,
+        consumers: if enabled {
+            parse_worker_count(worker_count)
+        } else {
+            0
+        },
+        delay_scanner: enabled,
+    }
+}
+
+/// Start location-history retention, and the consumers and the delay-alert
+/// scan if enabled. Those two are off by default: a dev server on the local
+/// database must not message real customers.
 pub fn start_from_env() {
-    if !parse_enabled(std::env::var("EVENT_WORKERS_ENABLED").ok().as_deref()) {
+    let plan = background_plan(
+        std::env::var("EVENT_WORKERS_ENABLED").ok().as_deref(),
+        std::env::var("EVENT_WORKER_COUNT").ok().as_deref(),
+    );
+    if plan.location_history_pruner {
+        spawn_runtime_thread(
+            "location-history-pruner".to_string(),
+            prune_location_history_forever,
+        );
+    }
+    if !plan.delay_scanner {
         println!("Event workers are off (set EVENT_WORKERS_ENABLED=true to enable them).");
         return;
     }
-    let count = parse_worker_count(std::env::var("EVENT_WORKER_COUNT").ok().as_deref());
+    let count = plan.consumers;
     println!("Starting {count} event worker(s).");
     for i in 0..count {
         spawn_runtime_thread(format!("event-worker-{i}"), consume_forever);
@@ -221,6 +267,29 @@ mod tests {
         for on in [Some("true"), Some("TRUE"), Some(" 1 ")] {
             assert!(parse_enabled(on), "{on:?}");
         }
+    }
+
+    #[test]
+    fn location_history_retention_runs_with_workers_off() {
+        for off in [None, Some("false"), Some("0")] {
+            assert_eq!(
+                background_plan(off, Some("4")),
+                BackgroundPlan {
+                    location_history_pruner: true,
+                    consumers: 0,
+                    delay_scanner: false,
+                },
+                "{off:?}"
+            );
+        }
+        assert_eq!(
+            background_plan(Some("true"), Some("4")),
+            BackgroundPlan {
+                location_history_pruner: true,
+                consumers: 4,
+                delay_scanner: true,
+            }
+        );
     }
 
     #[test]

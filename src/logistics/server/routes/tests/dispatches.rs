@@ -532,6 +532,156 @@ async fn test_update_dispatch_status_delivered_with_proof_succeeds() {
     assert!(fetched.proof_of_delivery.is_some());
 }
 
+/// Upload a (fake) PNG for `org_id` via `POST /api/orgs/{id}/uploads` and
+/// return its `/api/uploads/{id}` URL.
+async fn upload_pod_png(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse,
+        Error = actix_web::Error,
+    >,
+    org_id: Uuid,
+    auth: &str,
+) -> String {
+    let boundary = "PodBoundary1234";
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/orgs/{}/uploads", org_id))
+        .insert_header(("Authorization", auth.to_string()))
+        .insert_header((
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        ))
+        .set_payload(multipart_body(
+            boundary,
+            "pod.png",
+            "image/png",
+            b"fake png bytes for a pod test",
+        ))
+        .to_request();
+    let resp = test::call_service(app, req).await;
+    assert_eq!(resp.status().as_u16(), 200, "upload should succeed");
+    test::read_body_json::<ApiResponse<UploadedFileRef>, _>(resp)
+        .await
+        .data
+        .unwrap()
+        .url
+}
+
+async fn deliver_with_proof_url(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse,
+        Error = actix_web::Error,
+    >,
+    dispatch_id: Uuid,
+    auth: &str,
+    url: &str,
+) -> actix_web::dev::ServiceResponse {
+    let req = test::TestRequest::put()
+        .uri(&format!("/api/dispatches/{}/status", dispatch_id))
+        .insert_header(("Authorization", auth.to_string()))
+        .set_json(&UpdateDispatchStatusPayload {
+            status: DispatchStatus::Delivered,
+            proof_of_delivery: Some(ProofOfDeliveryPayload {
+                receiver_name: "Priya Sharma".to_string(),
+                signature_or_photo_url: url.to_string(),
+            }),
+            return_to_godown_id: None,
+        })
+        .to_request();
+    test::call_service(app, req).await
+}
+
+// The proof-of-delivery vision check fails open. CI has no
+// ANTHROPIC_API_KEY, and with one set the fake PNG bytes are rejected by the
+// API, so either way the check can't run and the delivery must go through.
+#[actix_web::test]
+async fn test_delivered_with_own_org_upload_url_succeeds_when_the_check_cannot_run() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (dispatch_id, auth) = advance_to_in_transit(&app, "POD Upload Org").await;
+    let org_id = DispatchOrder::get_by_id(dispatch_id)
+        .unwrap()
+        .unwrap()
+        .org_id;
+    let url = upload_pod_png(&app, org_id, &auth).await;
+    assert!(url.starts_with("/api/uploads/"));
+
+    let resp = deliver_with_proof_url(&app, dispatch_id, &auth, &url).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let updated = test::read_body_json::<ApiResponse<DispatchOrder>, _>(resp)
+        .await
+        .data
+        .unwrap();
+    assert_eq!(updated.status, DispatchStatus::Delivered);
+    assert_eq!(
+        updated.proof_of_delivery.unwrap().signature_or_photo_url,
+        url
+    );
+}
+
+#[actix_web::test]
+async fn test_delivered_with_absolute_upload_url_succeeds_when_the_check_cannot_run() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (dispatch_id, auth) = advance_to_in_transit(&app, "POD Abs Upload Org").await;
+    let org_id = DispatchOrder::get_by_id(dispatch_id)
+        .unwrap()
+        .unwrap()
+        .org_id;
+    let url = format!(
+        "https://api.example.com{}",
+        upload_pod_png(&app, org_id, &auth).await
+    );
+
+    let resp = deliver_with_proof_url(&app, dispatch_id, &auth, &url).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let fetched = DispatchOrder::get_by_id(dispatch_id).unwrap().unwrap();
+    assert_eq!(fetched.status, DispatchStatus::Delivered);
+}
+
+#[actix_web::test]
+async fn test_delivered_with_another_orgs_upload_id_succeeds_without_a_check() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (other_org, other_auth) = setup_org(&app, "POD Other Org").await;
+    let foreign_url = upload_pod_png(&app, other_org.id, &other_auth).await;
+    let (dispatch_id, auth) = advance_to_in_transit(&app, "POD Own Org").await;
+
+    // Pins current behaviour: another org's upload is never read or sent to
+    // the model, and the URL is stored as an opaque proof string.
+    let resp = deliver_with_proof_url(&app, dispatch_id, &auth, &foreign_url).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let fetched = DispatchOrder::get_by_id(dispatch_id).unwrap().unwrap();
+    assert_eq!(fetched.status, DispatchStatus::Delivered);
+}
+
+#[actix_web::test]
+async fn test_redelivering_with_an_upload_gets_the_transition_error() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (dispatch_id, auth) = advance_to_in_transit(&app, "POD Retry Org").await;
+    let org_id = DispatchOrder::get_by_id(dispatch_id)
+        .unwrap()
+        .unwrap()
+        .org_id;
+    let url = upload_pod_png(&app, org_id, &auth).await;
+    let resp = deliver_with_proof_url(&app, dispatch_id, &auth, &url).await;
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // A retried "Confirm Delivery" is an illegal DELIVERED -> DELIVERED move:
+    // the state-machine error, never the "upload a clearer one" message.
+    let resp = deliver_with_proof_url(&app, dispatch_id, &auth, &url).await;
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: ApiResponse<String> = test::read_body_json(resp).await;
+    assert!(!body.success);
+    assert!(
+        !body.message.contains("clearer"),
+        "unexpected: {}",
+        body.message
+    );
+}
+
 #[actix_web::test]
 async fn test_dispatch_stock_returns_403_for_different_org() {
     let _db = TestDb::create();

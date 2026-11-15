@@ -771,13 +771,25 @@ impl DispatchOrder {
         let mut tx = conn.start_transaction(TxOpts::default())?;
         let conn = &mut tx;
 
+        // Guarded on the status the legality check above ran against, so a
+        // stale `self` (another request moved the dispatch meanwhile) can't
+        // overwrite it. This runs first in the transaction: on a mismatch the
+        // early return drops `tx`, which rolls back, so nothing else is written.
         conn.exec_drop(
-            "UPDATE Dispatches SET status = :status WHERE id = :id",
+            "UPDATE Dispatches SET status = :status WHERE id = :id AND status = :prev",
             params! {
                 "status" => next.as_str(),
                 "id" => self.id.to_string(),
+                "prev" => self.status.as_str(),
             },
         )?;
+        if conn.affected_rows() == 0 {
+            return Err(format!(
+                "Cannot transition dispatch from {} to {}: its status was changed by another request; reload it and try again",
+                self.status, next
+            )
+            .into());
+        }
 
         if let Some(godown_id) = credit_godown {
             self.credit_line_items_back(conn, godown_id)?;
@@ -1434,6 +1446,36 @@ mod tests {
         let fetched = DispatchOrder::get_by_id(order.id).unwrap().unwrap();
         assert_eq!(fetched.status, Pending);
         assert_eq!(fetched.status_history.len(), 1);
+    }
+
+    #[test]
+    fn test_transition_from_a_stale_copy_fails_and_leaves_the_db_unchanged() {
+        let _db = TestDb::create();
+        let (org, _godown_id, order) = in_transit_order_with_godown();
+
+        // Two copies loaded while IN_TRANSIT; the first returns the dispatch.
+        let mut stale = DispatchOrder::get_by_id(order.id).unwrap().unwrap();
+        let mut other = DispatchOrder::get_by_id(order.id).unwrap().unwrap();
+        other
+            .transition_to(Returned, None, None)
+            .expect("IN_TRANSIT -> RETURNED is legal");
+        assert_eq!(org_stock_qty(org.id, "Cement"), 130);
+
+        // The stale copy still says IN_TRANSIT, but the row is RETURNED.
+        let result = stale.transition_to(Delivered, Some(sample_proof()), None);
+        assert!(result.is_err(), "a stale copy must not overwrite RETURNED");
+        assert_eq!(stale.status, InTransit, "self is untouched on failure");
+        assert!(stale.proof_of_delivery.is_none());
+
+        let fetched = DispatchOrder::get_by_id(order.id).unwrap().unwrap();
+        assert_eq!(fetched.status, Returned);
+        assert!(fetched.proof_of_delivery.is_none(), "no proof row written");
+        assert_eq!(
+            fetched.status_history.last().map(|e| e.status),
+            Some(Returned),
+            "no history entry for the rejected transition"
+        );
+        assert_eq!(org_stock_qty(org.id, "Cement"), 130, "stock unchanged");
     }
 
     #[test]

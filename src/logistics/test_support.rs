@@ -46,7 +46,8 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             longitude DOUBLE DEFAULT NULL,
             last_updated_at BIGINT DEFAULT NULL,
             location_address VARCHAR(255) DEFAULT NULL,
-            gstin VARCHAR(15) DEFAULT NULL
+            gstin VARCHAR(15) DEFAULT NULL,
+            onboarding_dismissed BOOLEAN NOT NULL DEFAULT FALSE
         )",
     )
     .expect("migrate: create Orgs");
@@ -467,6 +468,11 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             role VARCHAR(32) NOT NULL,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             terms_accepted_at BIGINT DEFAULT NULL,
+            email_verified_at BIGINT DEFAULT NULL,
+            email_verification_hash VARCHAR(64) DEFAULT NULL,
+            email_verification_expires_at BIGINT DEFAULT NULL,
+            email_verification_sends INT DEFAULT NULL,
+            email_verification_window_start BIGINT DEFAULT NULL,
             CONSTRAINT fk_org_user_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
         )",
     )
