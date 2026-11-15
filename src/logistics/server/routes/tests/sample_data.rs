@@ -418,3 +418,50 @@ async fn test_sample_data_marker_blocks_a_second_load() {
     assert_eq!(count("Godowns", org.id), 0);
     assert_eq!(count("Drivers", org.id), 0);
 }
+
+#[actix_web::test]
+async fn test_sample_data_remove_clears_pod_photo_flags_of_its_dispatches() {
+    use crate::logistics::dispatch::pod_review;
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth) = setup_org(&app, "Sample Pod Flags Org").await;
+    let uri = format!("/api/orgs/{}/sample-data", org.id);
+    let req = test::TestRequest::post()
+        .uri(&uri)
+        .insert_header(("Authorization", auth.clone()))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 201);
+
+    let customer = Customer::list_by_org(org.id).unwrap().remove(0);
+    let dispatch = Organization::get_by_id(org.id)
+        .unwrap()
+        .unwrap()
+        .dispatch_stock_to_customer(
+            &customer,
+            &[DispatchLineItemInput {
+                stock_description: "Sample Rice Bags".into(),
+                requested_quantity: 10,
+            }],
+        )
+        .expect("dispatch against sample data");
+
+    // The sample dispatch's photo was flagged, and so was a real one's.
+    let real_dispatch = Uuid::new_v4();
+    let mut conn = crate::logistics::db::connection::DbConnection::from_env()
+        .get_connection()
+        .unwrap();
+    pod_review::ensure_table(&mut conn).expect("table");
+    for id in [dispatch.id, real_dispatch] {
+        exec(
+            "INSERT INTO PodPhotoChecks (dispatch_id, org_id, verdict, reason, checked_at)
+             VALUES (?, ?, 'DOUBTFUL', 'x', 1)",
+            vec![id.to_string().into(), org.id.to_string().into()],
+        );
+    }
+    assert_eq!(pod_review::list_flagged(org.id).unwrap().len(), 2);
+
+    assert_eq!(delete_status(&app, &uri, &auth).await, 200);
+    let left = pod_review::list_flagged(org.id).unwrap();
+    assert_eq!(left.len(), 1, "a deleted dispatch is still flagged");
+    assert_eq!(left[0].dispatch_id, real_dispatch);
+}
