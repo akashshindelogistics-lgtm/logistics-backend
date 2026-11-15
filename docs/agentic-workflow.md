@@ -159,7 +159,14 @@ agent actions notify people exactly as dashboard actions do.
 ops analyst, data quality.
 
 **Phase 4: driver signals.** Status actions in the Android app, then the delivery
-monitor and trip planner.
+monitor and trip planner. Backend built: both agents run in `SHADOW` whatever the
+org's mode (a code cap in `Agent::mode_cap`, raised only once their record
+justifies it). The delivery monitor can request `advance_dispatch` to `LOADED` or
+`IN_TRANSIT` and read vehicle positions, never `DELIVERED` or `RETURNED`. The trip
+planner is read-only plus `raise_alert` suggestions. Still to do: the Android
+status actions (logistics-android), which give the monitor its driver signal.
+`POST /api/orgs/{id}/agents/run?agent=delivery_monitor|trip_planner` runs one now;
+the scheduler runs all three.
 
 **Phase 5: billing.** Raise on delivery and send reminders. Payment recording
 stays human.

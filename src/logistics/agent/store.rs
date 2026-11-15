@@ -41,6 +41,18 @@ impl AutonomyMode {
         }
     }
 
+    /// The mode an agent that is capped at `cap` actually works in. `Off` stays
+    /// `Off`, so the kill switch still wins.
+    pub fn capped_at(self, cap: AutonomyMode) -> AutonomyMode {
+        let rank = |m: AutonomyMode| match m {
+            AutonomyMode::Off => 0,
+            AutonomyMode::Shadow => 1,
+            AutonomyMode::Supervised => 2,
+            AutonomyMode::Autonomous => 3,
+        };
+        if rank(self) <= rank(cap) { self } else { cap }
+    }
+
     /// Anything unrecognised is `Off`, so a bad stored value can't widen access.
     pub fn from_db(s: &str) -> Self {
         match s {
