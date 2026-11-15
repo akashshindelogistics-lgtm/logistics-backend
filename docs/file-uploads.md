@@ -109,3 +109,26 @@ where its own API lives — `uploadedFileHref()` in `src/api/uploads.ts`:
   signature/photo" link and fetch it directly to confirm it resolves to the
   uploaded bytes with the right content type. `npm run test:e2e:demo:uploads`
   is the standalone headed walkthrough (`file-uploads.demo.ts`).
+
+## Photo verification
+
+When a dispatch is moved to `DELIVERED` with a proof whose
+`signature_or_photo_url` is one of this backend's uploads
+(`/api/uploads/{id}`, same org), a vision call to Claude
+(`ai::pod_check`) checks the image is plausibly a signature or a photo of the
+delivered goods. A clear "no" returns `400` and the dispatch stays put.
+
+The check **fails open**: no `ANTHROPIC_API_KEY`, an API/network error, an
+unclear reply, or an external URL / `data:` URI (never fetched) all let the
+delivery through — a flaky third party must not block deliveries.
+Every check that could not run is logged to stderr (`proof-of-delivery check
+skipped for upload {id} ...`) with the reason, so a missing or rotated key
+shows up in the logs instead of silently disabling the check.
+
+The check runs only when the dispatch can legally move to `DELIVERED`; an
+illegal transition gets the usual state-machine `400` without an API call.
+
+**Size limit:** the Messages API rejects an image whose base64 payload is over
+5 MB (5,242,880 bytes), i.e. a raw file over about 3.75 MiB — below this
+pipeline's 5 MiB `MAX_UPLOAD_BYTES`. Such an upload is skipped (fail open, with
+a log line) rather than sent; it is not downscaled.

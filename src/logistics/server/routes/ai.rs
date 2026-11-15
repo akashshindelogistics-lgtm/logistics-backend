@@ -276,3 +276,79 @@ pub async fn get_reorder_suggestions(
         }),
     }
 }
+
+/// One line of the production plan: a stock item below its threshold and how
+/// many units to make to restock it.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ProductionRun {
+    pub godown_name: String,
+    pub description: String,
+    pub quantity_on_hand: i64,
+    pub weekly_velocity: f64,
+    /// Units to produce. `0` when there's no recent dispatch activity to
+    /// estimate demand from.
+    pub quantity_to_produce: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ProductionPlanResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<Vec<ProductionRun>>,
+}
+
+/// Production planning for manufacturers (e.g. AAC block plants), where low
+/// stock means "make more", not "buy more". Same computation as the reorder
+/// suggestions, returned as a structured "schedule production run" list,
+/// largest run first. No AI call. See `docs/godowns.md`.
+#[utoipa::path(
+    get,
+    path = "/api/orgs/{id}/production-plan",
+    tag = "AI Assistant",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Organization UUID")),
+    responses(
+        (status = 200, description = "Production runs to schedule", body = ProductionPlanResponse),
+        (status = 403, description = "Forbidden", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[get("/orgs/{id}/production-plan")]
+pub async fn get_production_plan(path: web::Path<Uuid>, auth: AuthenticatedOrg) -> impl Responder {
+    let org_id = path.into_inner();
+    if org_id != auth.org_id {
+        return HttpResponse::Forbidden().json(ApiResponse::<String> {
+            success: false,
+            message:
+                "Access denied: you can only view the production plan for your own organization"
+                    .to_string(),
+            data: None,
+        });
+    }
+
+    match crate::logistics::ai::reorder::compute_reorder_suggestions(org_id) {
+        Ok(suggestions) => {
+            let mut runs: Vec<ProductionRun> = suggestions
+                .into_iter()
+                .map(|s| ProductionRun {
+                    godown_name: s.godown_name,
+                    description: s.description,
+                    quantity_on_hand: s.quantity_on_hand,
+                    weekly_velocity: s.weekly_velocity,
+                    quantity_to_produce: s.suggested_reorder_quantity,
+                })
+                .collect();
+            runs.sort_by_key(|a| std::cmp::Reverse(a.quantity_to_produce));
+            HttpResponse::Ok().json(ApiResponse {
+                success: true,
+                message: "Production plan computed".to_string(),
+                data: Some(runs),
+            })
+        }
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to compute production plan: {}", err),
+            data: None,
+        }),
+    }
+}

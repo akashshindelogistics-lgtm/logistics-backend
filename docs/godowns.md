@@ -47,6 +47,7 @@ Orgs ──1:N──▶ Godowns ──1:N──▶ Stock
 | DELETE | `/api/godowns/{gid}/stock/{desc}` | Remove a stock item |
 | POST | `/api/godowns/{gid}/transfer` | Move a stock item to another godown of the same org |
 | GET | `/api/orgs/{id}/stock-transfers` | Transfer history for the org, newest first |
+| GET | `/api/orgs/{id}/production-plan` | For manufacturers (low stock means *make more*): stock below its `reorder_threshold` as a "schedule production run" list, largest `quantity_to_produce` first. Same velocity-based quantity as the AI reorder suggestions, no AI call |
 
 Every `/api/godowns/{gid}...` route loads the godown, checks
 `godown.org_id == authenticated org`, and returns `403` otherwise. The old

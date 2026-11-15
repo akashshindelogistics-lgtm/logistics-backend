@@ -82,7 +82,8 @@ impl Organization {
                 longitude DOUBLE DEFAULT NULL,
                 last_updated_at BIGINT DEFAULT NULL,
                 location_address VARCHAR(255) DEFAULT NULL,
-                gstin VARCHAR(15) DEFAULT NULL
+                gstin VARCHAR(15) DEFAULT NULL,
+                onboarding_dismissed BOOLEAN NOT NULL DEFAULT FALSE
             )",
             (),
         )?;
@@ -139,7 +140,8 @@ impl Organization {
                 longitude DOUBLE DEFAULT NULL,
                 last_updated_at BIGINT DEFAULT NULL,
                 location_address VARCHAR(255) DEFAULT NULL,
-                gstin VARCHAR(15) DEFAULT NULL
+                gstin VARCHAR(15) DEFAULT NULL,
+                onboarding_dismissed BOOLEAN NOT NULL DEFAULT FALSE
             )",
             (),
         )?;
@@ -869,7 +871,8 @@ impl Organization {
                 longitude DOUBLE DEFAULT NULL,
                 last_updated_at BIGINT DEFAULT NULL,
                 location_address VARCHAR(255) DEFAULT NULL,
-                gstin VARCHAR(15) DEFAULT NULL
+                gstin VARCHAR(15) DEFAULT NULL,
+                onboarding_dismissed BOOLEAN NOT NULL DEFAULT FALSE
             )",
             (),
         )?;
@@ -967,13 +970,15 @@ impl Organization {
 
     /// Delete the org and everything it owns. Most tables follow through
     /// `ON DELETE CASCADE`; `Dispatches` and `OrgCredentials` have no foreign key
-    /// to `Orgs`, and files on disk aren't in the database at all.
+    /// to `Orgs`, nor does `VehicleLocationHistory`, and files on disk aren't in
+    /// the database at all.
     pub fn remove_organization(&self) -> Result<(), Box<dyn Error>> {
         let db_connection = DbConnection::from_env();
         let mut conn = db_connection.get_connection()?;
         crate::logistics::dispatch::dispatch::ensure_tables(&mut conn)?;
         crate::logistics::auth::auth::OrgCredentials::ensure_table(&mut conn)?;
         crate::logistics::upload::upload::UploadedFile::ensure_table(&mut conn)?;
+        crate::logistics::vehicle::location_history::ensure_table(&mut conn)?;
 
         let id = self.id.to_string();
         let files: Vec<String> = conn.exec(
@@ -985,6 +990,7 @@ impl Organization {
         for sql in [
             "DELETE FROM Dispatches WHERE org_id = :id",
             "DELETE FROM OrgCredentials WHERE org_id = :id",
+            "DELETE FROM VehicleLocationHistory WHERE org_id = :id",
             "DELETE FROM Orgs WHERE id = :id",
         ] {
             tx.exec_drop(sql, params! { "id" => &id })?;
@@ -1728,8 +1734,25 @@ mod tests {
             .expect("dispatch");
         }
 
+        use crate::logistics::vehicle::location_history;
+        for (org, reg) in [(&gone, "GONE-1"), (&stays, "STAYS-1")] {
+            crate::logistics::vehicle::vehicle::Vehicle::new(reg, 10, Unit::MetricTon)
+                .add_new_vehicle_to_org(org)
+                .expect("vehicle");
+            location_history::record(reg, "manual", 1.0, 1.0, 1, None, None).expect("history");
+        }
+
         gone.remove_organization().expect("remove");
 
+        let history_rows = |org: &Organization, conn: &mut mysql::PooledConn| -> Option<i64> {
+            conn.exec_first(
+                "SELECT COUNT(*) FROM VehicleLocationHistory WHERE org_id = :org",
+                params! { "org" => org.id.to_string() },
+            )
+            .unwrap()
+        };
+        assert_eq!(history_rows(&gone, &mut conn), Some(0));
+        assert_eq!(history_rows(&stays, &mut conn), Some(1));
         assert!(DispatchOrder::list_by_org(gone.id).unwrap().is_empty());
         assert_eq!(DispatchOrder::list_by_org(stays.id).unwrap().len(), 1);
         assert!(
