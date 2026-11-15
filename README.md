@@ -277,6 +277,9 @@ All routes are served under the `/api` prefix.
 |---|---|---|
 | POST | `/api/auth/login` | Log in to an organization (org-owner password — always Admin) |
 | POST | `/api/auth/signup` | Self-serve signup (public): `{org_name, address, owner_name, email, password, accept_terms}` creates the org and its first Admin user in one transaction and returns a user-scoped token like `user-login`. `400` for a weak password (8–72 chars, a letter and a digit) or `accept_terms: false`, `409` for a taken email, `429` over the per-IP limit (`SIGNUP_RATE_LIMIT`, default 5 per hour; behind a reverse proxy set `TRUSTED_PROXY=1` to key on the rightmost `X-Forwarded-For` entry instead of the socket peer) |
+| POST | `/api/auth/verify-email` | Public. `{token}` from the signup email marks the address verified; `400` for an unknown, expired (24 h) or already used token |
+| POST | `/api/auth/resend-verification` | Mail a fresh link to the signed-in team member (`400` if already verified, `429` within a minute of the last one) |
+| GET | `/api/auth/session` | `{role, user_id, email, email_verified, needs_admin_user}` for the dashboard banners: verify-your-email, and "create your first Admin user" (add one with `POST /api/orgs/{id}/users`, role `ADMIN`) |
 | POST | `/api/auth/user-login` | Log in as a team member with email + password |
 | GET | `/api/auth/me` | Get the authenticated organization |
 | GET | `/api/auth/orgs` | List organizations available for login |
