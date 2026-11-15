@@ -970,8 +970,8 @@ impl Organization {
 
     /// Delete the org and everything it owns. Most tables follow through
     /// `ON DELETE CASCADE`; `Dispatches` and `OrgCredentials` have no foreign key
-    /// to `Orgs`, nor does `VehicleLocationHistory`, and files on disk aren't in
-    /// the database at all.
+    /// to `Orgs`, nor do `VehicleLocationHistory` and `PodPhotoChecks`, and files
+    /// on disk aren't in the database at all.
     pub fn remove_organization(&self) -> Result<(), Box<dyn Error>> {
         let db_connection = DbConnection::from_env();
         let mut conn = db_connection.get_connection()?;
@@ -979,6 +979,7 @@ impl Organization {
         crate::logistics::auth::auth::OrgCredentials::ensure_table(&mut conn)?;
         crate::logistics::upload::upload::UploadedFile::ensure_table(&mut conn)?;
         crate::logistics::vehicle::location_history::ensure_table(&mut conn)?;
+        crate::logistics::dispatch::pod_review::ensure_table(&mut conn)?;
 
         let id = self.id.to_string();
         let files: Vec<String> = conn.exec(
@@ -991,6 +992,7 @@ impl Organization {
             "DELETE FROM Dispatches WHERE org_id = :id",
             "DELETE FROM OrgCredentials WHERE org_id = :id",
             "DELETE FROM VehicleLocationHistory WHERE org_id = :id",
+            "DELETE FROM PodPhotoChecks WHERE org_id = :id",
             "DELETE FROM Orgs WHERE id = :id",
         ] {
             tx.exec_drop(sql, params! { "id" => &id })?;
@@ -1742,7 +1744,29 @@ mod tests {
             location_history::record(reg, "manual", 1.0, 1.0, 1, None, None).expect("history");
         }
 
+        let mut pod_conn = DbConnection::from_env().get_connection().expect("connect");
+        crate::logistics::dispatch::pod_review::ensure_table(&mut pod_conn).expect("table");
+        for org in [&gone, &stays] {
+            pod_conn
+                .exec_drop(
+                    "INSERT INTO PodPhotoChecks (dispatch_id, org_id, verdict, reason, checked_at)
+                     VALUES (:d, :org, 'DOUBTFUL', 'x', 1)",
+                    params! { "d" => Uuid::new_v4().to_string(), "org" => org.id.to_string() },
+                )
+                .expect("pod check");
+        }
+
         gone.remove_organization().expect("remove");
+
+        let pod_rows = |org: &Organization, conn: &mut mysql::PooledConn| -> Option<i64> {
+            conn.exec_first(
+                "SELECT COUNT(*) FROM PodPhotoChecks WHERE org_id = :org",
+                params! { "org" => org.id.to_string() },
+            )
+            .unwrap()
+        };
+        assert_eq!(pod_rows(&gone, &mut pod_conn), Some(0));
+        assert_eq!(pod_rows(&stays, &mut pod_conn), Some(1));
 
         let history_rows = |org: &Organization, conn: &mut mysql::PooledConn| -> Option<i64> {
             conn.exec_first(

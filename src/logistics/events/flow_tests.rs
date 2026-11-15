@@ -219,6 +219,35 @@ async fn delivery_publishes_only_for_the_delivered_status() {
 }
 
 #[actix_web::test]
+async fn delivery_publishes_even_when_the_customer_is_gone() {
+    let _db = TestDb::create();
+    let (org, c) = setup();
+    let mut order = org
+        .dispatch_stock_to_customer(&c, &line())
+        .expect("dispatch");
+    to_in_transit(&mut order);
+    c.delete().expect("delete customer");
+
+    delivered(&mut order).expect("delivered");
+
+    // Nobody to notify, but the photo check still gets the event.
+    assert_eq!(
+        scalar(
+            "SELECT COUNT(*) FROM EventDeliveries d JOIN Events e ON e.id = d.event_id
+             WHERE d.status = 'PENDING' AND e.event_type = 'dispatch.delivered'
+               AND d.consumer = 'pod_photo_check'"
+        ),
+        1
+    );
+    assert!(
+        !Notification::list_by_dispatch(order.id)
+            .expect("list")
+            .iter()
+            .any(|n| n.event == NotificationEvent::DispatchDelivered)
+    );
+}
+
+#[actix_web::test]
 async fn the_consumer_finishes_a_real_event_without_any_provider() {
     // SAFETY: matches the other notification tests that clear these keys.
     unsafe {

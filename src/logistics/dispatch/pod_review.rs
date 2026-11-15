@@ -41,7 +41,7 @@ pub struct PodPhotoFlag {
     pub checked_at: i64,
 }
 
-fn ensure_table(conn: &mut PooledConn) -> Result<(), Box<dyn Error>> {
+pub(crate) fn ensure_table(conn: &mut PooledConn) -> Result<(), Box<dyn Error>> {
     conn.query_drop(
         "CREATE TABLE IF NOT EXISTS PodPhotoChecks (
             dispatch_id VARCHAR(36) PRIMARY KEY,
