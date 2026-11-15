@@ -5,9 +5,9 @@ name: Claude agent
 # as `agent:review`. Only the repo owner's label counts: this repo is public, so
 # issue text from anyone else must never start an agent with write access.
 # Every hour (or on "Run workflow") the `pick` job also starts the next
-# `agent:ready` issue by priority, oldest first, unless an agent is already working:
-# labels added before the agent existed never fire a `labeled` event. Each
-# successful run then starts the next one, so the queue drains without waiting
+# `agent:ready` issues by priority, oldest first, up to MAX_AGENTS working at
+# once: labels added before the agent existed never fire a `labeled` event. Each
+# successful run then starts the next batch, so the queue drains without waiting
 # for the hourly schedule. The agent picks its recommended approach instead of
 # asking, and labels such PRs `agent:decided`.
 # Setup: run `/install-github-app` in Claude Code once (installs the Claude
@@ -19,44 +19,74 @@ on:
     - cron: "17 * * * *"
   workflow_dispatch:
 
-concurrency:
-  group: claude-agent-issue-${{ github.event.issue.number || 'picker' }}
-
 jobs:
   pick:
-    if: github.event_name != 'issues'
+    # Label events go through here too, so every claim happens inside the picker's
+    # concurrency group and a label run can't race a scheduled picker for the same issue.
+    if: >-
+      github.event_name != 'issues' || (
+        github.event.label.name == 'agent:ready' &&
+        github.event.sender.login == github.repository_owner)
+    # One picker at a time, so two runs can't pick the same issue before it is claimed.
+    concurrency:
+      group: claude-agent-picker
     runs-on: ubuntu-latest
     permissions:
-      issues: read
+      issues: write
     outputs:
-      issue: ${{ steps.pick.outputs.issue }}
+      issues: ${{ steps.pick.outputs.issues }}
     steps:
       - id: pick
         env:
           GH_TOKEN: ${{ github.token }}
+          MAX_AGENTS: 4
+          EVENT_ISSUE: ${{ github.event.issue.number }}
         run: |
-          if [ -n "$(gh issue list -R "$GITHUB_REPOSITORY" --label agent:working --state open --json number --jq '.[].number')" ]; then
-            echo "An agent is already working on an issue; not starting another."
-            exit 0
+          if [ "$GITHUB_EVENT_NAME" = issues ]; then
+            # The owner labelled one issue: take just that one, unless a picker already claimed it.
+            labels=$(gh issue view "$EVENT_ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
+            if grep -qx agent:ready <<<"$labels"; then issues="[$EVENT_ISSUE]"; else issues="[]"; fi
+            echo "Labelled: #$EVENT_ISSUE; picked: $issues"
+          else
+            working=$(gh issue list -R "$GITHUB_REPOSITORY" --label agent:working --state open --limit 300 --json number --jq length)
+            slots=$((MAX_AGENTS - working))
+            if [ "$slots" -le 0 ]; then
+              echo "$working agents already working (max $MAX_AGENTS); not starting another."
+              exit 0
+            fi
+            # priority:A before B before C before none; oldest first within a priority.
+            issues=$(gh issue list -R "$GITHUB_REPOSITORY" --label agent:ready --state open --limit 300 \
+              --json number,labels,createdAt \
+              --jq 'map(. + {p: ([.labels[].name | select(startswith("priority:"))][0] // "priority:Z")})
+                    | sort_by(.p, .createdAt) | .[:'"$slots"'] | map(.number)' | jq -c .)
+            echo "Picked: $issues ($working already working, max $MAX_AGENTS)"
           fi
-          # priority:A before B before C before none; oldest first within a priority.
-          issue=$(gh issue list -R "$GITHUB_REPOSITORY" --label agent:ready --state open --limit 300 \
-            --json number,labels,createdAt \
-            --jq 'map(. + {p: ([.labels[].name | select(startswith("priority:"))][0] // "priority:Z")})
-                  | sort_by(.p, .createdAt) | .[0].number // empty')
-          echo "Picked: ${issue:-nothing}"
-          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+          # Claim here, inside the picker's concurrency group, so the next picker skips them.
+          # Only issues whose claim went through get a `work` leg (and its release-on-failure
+          # step); a failed claim is put back to agent:ready for a later picker.
+          claimed=()
+          for n in $(jq -r '.[]' <<<"$issues"); do
+            if gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent:ready --add-label agent:working; then
+              claimed+=("$n")
+            else
+              echo "::warning::Could not claim #$n; leaving it agent:ready for the next picker."
+              gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent:working --add-label agent:ready || true
+            fi
+          done
+          claimed_json=$(printf '%s\n' "${claimed[@]}" | jq -sc 'map(select(. != null))')
+          echo "Claimed: $claimed_json"
+          if [ "$claimed_json" != "[]" ]; then echo "issues=$claimed_json" >> "$GITHUB_OUTPUT"; fi
 
   work:
     needs: pick
-    # `pick` is skipped for label events, so `always()` lets this job still run then.
-    if: >-
-      always() && (
-        (github.event_name == 'issues' &&
-         github.event.label.name == 'agent:ready' &&
-         github.event.sender.login == github.repository_owner) ||
-        (github.event_name != 'issues' && needs.pick.outputs.issue != '')
-      )
+    if: needs.pick.outputs.issues != ''
+    strategy:
+      # A cancelled sibling would skip "Release the issue on failure" and leave its issue stuck.
+      fail-fast: false
+      matrix:
+        issue: ${{ fromJSON(needs.pick.outputs.issues) }}
+    concurrency:
+      group: claude-agent-issue-${{ matrix.issue }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -66,7 +96,7 @@ jobs:
       id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
-      ISSUE: ${{ github.event.issue.number || needs.pick.outputs.issue }}
+      ISSUE: ${{ matrix.issue }}
       MYSQL_HOST: 127.0.0.1
       MYSQL_PORT: 3306
       MYSQL_USER: root
@@ -88,28 +118,44 @@ jobs:
           --health-retries=10
 
     steps:
-      - name: Claim the issue
-        run: gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent:ready --add-label agent:working
+      # `pick` claimed the issue. A leg that waited in this issue's concurrency group behind an
+      # earlier run finds agent:working already gone (that run moved it to agent:review or
+      # released it), so it skips all work and leaves the labels to their owner.
+      - name: Check the issue is still claimed
+        id: claim
+        run: |
+          labels=$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
+          if grep -qx agent:working <<<"$labels"; then
+            echo "ours=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::#$ISSUE is no longer agent:working; another run already handled it. Skipping."
+            echo "ours=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/checkout@v4
+        if: steps.claim.outputs.ours == 'true'
         with:
           fetch-depth: 0
 
       - name: Make sure the agent:decided label exists
+        if: steps.claim.outputs.ours == 'true'
         run: gh label create agent:decided -R "$GITHUB_REPOSITORY" --color FBCA04 --force --description "Agent chose an approach on its own; see Decisions made in the PR"
 
       # The PAT goes to the board steps only, never to the agent below.
       - name: Show the issue as In Progress on the board
+        if: steps.claim.outputs.ours == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
         run: bash .github/scripts/board-status.sh "$ISSUE" "In Progress"
 
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.claim.outputs.ours == 'true'
         with:
           components: rustfmt, clippy
 
       - uses: actions/cache@v4
+        if: steps.claim.outputs.ours == 'true'
         with:
           path: |
             ~/.cargo/registry
@@ -120,9 +166,11 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Create test database
+        if: steps.claim.outputs.ours == 'true'
         run: mysql -h 127.0.0.1 -u root -ppassword -e "CREATE DATABASE IF NOT EXISTS logistics_test;"
 
       - uses: anthropics/claude-code-action@v1
+        if: steps.claim.outputs.ours == 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The `next` job re-dispatches this workflow with github.token, so those runs' actor is
@@ -167,7 +215,8 @@ jobs:
             to build at all.
 
       - name: Release the issue on failure
-        if: failure()
+        # Not for a skipped leg: its issue belongs to the run that already handled it.
+        if: failure() && steps.claim.outputs.ours != 'false'
         run: |
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent:working
           gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "The agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -175,7 +224,7 @@ jobs:
       # A draft PR waiting for review stays In Progress; a question or a failure goes back to Todo.
       # Done comes from the board's own "item closed" rule when the PR merges and closes the issue.
       - name: Update the board after the run
-        if: always()
+        if: always() && steps.claim.outputs.ours != 'false'
         continue-on-error: true
         env:
           PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
@@ -192,10 +241,9 @@ jobs:
   # workflow's own token may trigger. The chain stops when `pick` finds nothing ready, and it
   # does not continue after a failure, so a broken setup can't strip the label off every issue.
   # This is its own job so that `actions: write` never reaches the agent's token in `work`.
-  # `always()` stops a skipped `pick` (label events) from skipping this job too.
   next:
     needs: work
-    if: always() && needs.work.result == 'success'
+    if: needs.work.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       actions: write
