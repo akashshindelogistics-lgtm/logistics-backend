@@ -94,7 +94,7 @@ completion is stored.
 `done` comes from queries the app already has (counts of godowns, stock rows,
 vehicles, drivers, a vehicle with an assigned active driver, customers with a
 location, dispatches, org users beyond the owner, vehicles with a recent
-location). Because it is derived, data added through the API or CSV import
+location from a GPS tracker or driver phone). Because it is derived, data added through the API or CSV import
 ticks the checklist too, and it can never disagree with reality.
 
 The only stored state is `Organization.onboarding_dismissed` (bool), set by

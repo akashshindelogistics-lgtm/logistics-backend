@@ -510,3 +510,77 @@ async fn test_onboarding_other_org_is_403() {
         assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
     }
 }
+
+fn step_done(s: &crate::logistics::orgs::onboarding::OnboardingStatus, key: &str) -> bool {
+    s.steps.iter().find(|s| s.key == key).unwrap().done
+}
+
+#[actix_web::test]
+async fn test_onboarding_gps_tracker_needs_a_device_location() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth) = setup_org(&app, "Onboard Tracker Org").await;
+    let vehicle = super::vehicles::register_vehicle(&app, org.id, &auth, "ONB-TRK-1").await;
+
+    // A location typed in by a person is not a connected tracker.
+    let req = test::TestRequest::put()
+        .uri("/api/vehicles/ONB-TRK-1/location")
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(&LocationPayload {
+            latitude: 19.0,
+            longitude: 72.8,
+            address: None,
+        })
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+    let status = get_onboarding_status(&app, org.id, &auth).await;
+    assert!(step_done(&status, "vehicle"));
+    assert!(!step_done(&status, "gps_tracker"));
+
+    // A push from the vehicle's tracker ticks it.
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/track/{}", vehicle.tracker_key))
+        .set_json(&TrackLocationPayload {
+            latitude: 18.5,
+            longitude: 73.8,
+        })
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+    let status = get_onboarding_status(&app, org.id, &auth).await;
+    assert!(step_done(&status, "gps_tracker"));
+}
+
+#[actix_web::test]
+async fn test_onboarding_invite_team_counts_a_second_admin() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, org_auth) = setup_org(&app, "Onboard Admins Org").await;
+
+    // The first Admin is the owner, so the step is still open.
+    let owner = add_user_and_login(
+        &app,
+        org.id,
+        &org_auth,
+        "onboard-owner@example.com",
+        OrgRole::Admin,
+    )
+    .await;
+    assert!(!step_done(
+        &get_onboarding_status(&app, org.id, &owner).await,
+        "invite_team"
+    ));
+
+    // A co-owner invited as Admin is a team member beyond the owner.
+    add_user_and_login(
+        &app,
+        org.id,
+        &owner,
+        "onboard-coowner@example.com",
+        OrgRole::Admin,
+    )
+    .await;
+    assert!(step_done(
+        &get_onboarding_status(&app, org.id, &owner).await,
+        "invite_team"
+    ));
+}

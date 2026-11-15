@@ -119,13 +119,21 @@ impl Organization {
             &mut conn,
             "SELECT 1 FROM Dispatches WHERE org_id = :org_id LIMIT 1",
         )?;
+        // "Org users beyond the owner": a second active user of any role. An
+        // org created by org password has no owner user, so any active
+        // non-Admin also counts there (`OWNER` is a legacy spelling of Admin).
         let invite_team = exists(
             &mut conn,
-            "SELECT 1 FROM OrgUsers WHERE org_id = :org_id AND role <> 'ADMIN' LIMIT 1",
+            "SELECT 1 FROM OrgUsers WHERE org_id = :org_id AND is_active = TRUE
+             HAVING COUNT(*) > 1 OR SUM(role NOT IN ('ADMIN', 'OWNER')) > 0",
         )?;
+        // Only a location pushed by a device counts (a hardware tracker or a
+        // paired driver phone), not one a person typed in. The column is
+        // ensured by `Self::ensure_tables` (via `ensure_tracker_key_column`).
         let gps_tracker = exists(
             &mut conn,
-            "SELECT 1 FROM Vehicle WHERE org_id = :org_id AND last_updated_at >= :recent_after LIMIT 1",
+            "SELECT 1 FROM Vehicle WHERE org_id = :org_id AND last_updated_at >= :recent_after
+               AND location_source IN ('gps_tracker', 'driver_phone') LIMIT 1",
         )?;
 
         let step = |key: &str, required: bool, done: bool| OnboardingStep {
