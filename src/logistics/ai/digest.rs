@@ -167,49 +167,9 @@ pub async fn generate_daily_digest(org_id: Uuid) -> Result<String, String> {
         );
     }
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())?;
-
     let prompt = build_digest_prompt(&stale_dispatches, &expiring_documents, &low_stock);
 
-    let client = crate::logistics::http::client();
-    let mut request = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01");
-
-    // Identity-linked API keys (issued against a user rather than a single
-    // workspace) must name the target workspace explicitly, or the API rejects
-    // the call with `workspace_id_required`. Workspace-scoped keys don't need
-    // this, so the header is only sent when `ANTHROPIC_WORKSPACE_ID` is set.
-    if let Ok(workspace_id) = std::env::var("ANTHROPIC_WORKSPACE_ID")
-        && !workspace_id.trim().is_empty()
-    {
-        request = request.header("anthropic-workspace-id", workspace_id);
-    }
-
-    let resp = request
-        .json(&serde_json::json!({
-            "model": super::MODEL,
-            "max_tokens": super::MAX_TOKENS,
-            "output_config": { "effort": "low" },
-            "messages": [{ "role": "user", "content": prompt }]
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to reach Anthropic API: {}", e))?;
-
-    if !resp.status().is_success() {
-        let err = resp.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API error: {}", err));
-    }
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse API response: {}", e))?;
-
-    super::response_text(&json).map(|s| s.to_string())
+    super::client::complete(prompt, super::client::Effort::Low).await
 }
 
 #[cfg(test)]

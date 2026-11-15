@@ -162,3 +162,57 @@ async fn test_invoice_routes_403_for_a_different_org() {
         .to_request();
     assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
 }
+
+#[actix_web::test]
+async fn test_partial_payments_via_api() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (_org, dispatch, auth) = setup_dispatch(&app, "Part Pay Org").await;
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/dispatches/{}/invoice", dispatch.id))
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(&InvoicePayload {
+            amount: 1000,
+            due_on: billing_date_offset(15),
+        })
+        .to_request();
+    let inv: ApiResponse<Invoice> = test::read_body_json(test::call_service(&app, req).await).await;
+    let inv = inv.data.unwrap();
+
+    let pay = |amount: i64, mode: PaymentMode| {
+        test::TestRequest::post()
+            .uri(&format!("/api/invoices/{}/payments", inv.id))
+            .insert_header(("Authorization", auth.clone()))
+            .set_json(&PaymentPayload {
+                amount,
+                mode,
+                paid_on: None,
+                reference: Some("UTR123".into()),
+            })
+            .to_request()
+    };
+
+    let resp = test::call_service(&app, pay(300, PaymentMode::Upi)).await;
+    assert_eq!(resp.status().as_u16(), 201);
+    let part: ApiResponse<Invoice> = test::read_body_json(resp).await;
+    let part = part.data.unwrap();
+    assert_eq!((part.amount_paid, part.balance), (300, 700));
+    assert_eq!(part.status, PaymentStatus::PartiallyPaid);
+
+    // More than the balance -> 400.
+    let resp = test::call_service(&app, pay(701, PaymentMode::Cash)).await;
+    assert_eq!(resp.status().as_u16(), 400);
+
+    let resp = test::call_service(&app, pay(700, PaymentMode::Neft)).await;
+    let done: ApiResponse<Invoice> = test::read_body_json(resp).await;
+    assert_eq!(done.data.unwrap().status, PaymentStatus::Paid);
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/invoices/{}/payments", inv.id))
+        .insert_header(("Authorization", auth))
+        .to_request();
+    let list: ApiResponse<Vec<InvoicePayment>> =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    assert_eq!(list.data.unwrap().len(), 2);
+}

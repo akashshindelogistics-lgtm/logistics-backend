@@ -131,10 +131,9 @@ fn build_answer_content(
 }
 
 /// The full answer text (every `text` block, since citations split the reply
-/// into several) and the indexes of the search results it cited. Turns a
-/// refusal or a reply with no text into an error, like [`super::response_text`].
-fn parse_cited_answer(json: &serde_json::Value) -> Result<(String, Vec<usize>), String> {
-    super::response_text(json)?;
+/// into several) and the indexes of the search results it cited. Refusals and
+/// replies with no text are already errors in [`super::client::complete_blocks`].
+fn parse_cited_answer(json: &serde_json::Value) -> (String, Vec<usize>) {
     let mut answer = String::new();
     let mut cited = Vec::new();
     for block in json["content"].as_array().into_iter().flatten() {
@@ -151,7 +150,7 @@ fn parse_cited_answer(json: &serde_json::Value) -> Result<(String, Vec<usize>), 
             }
         }
     }
-    Ok((answer, cited))
+    (answer, cited)
 }
 
 /// Answer `question` for `org_id`, grounded in that org's indexed data plus
@@ -171,50 +170,11 @@ pub async fn answer_question(org_id: Uuid, question: &str) -> Result<AssistantAn
         });
     }
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())?;
-
     let ops_snapshot = build_ops_snapshot_text(&report);
     let content = build_answer_content(question, &chunks, &ops_snapshot);
 
-    let client = crate::logistics::http::client();
-    let mut request = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01");
-
-    // Identity-linked API keys (issued against a user rather than a single
-    // workspace) must name the target workspace explicitly, or the API rejects
-    // the call with `workspace_id_required`. Workspace-scoped keys don't need
-    // this, so the header is only sent when `ANTHROPIC_WORKSPACE_ID` is set.
-    if let Ok(workspace_id) = std::env::var("ANTHROPIC_WORKSPACE_ID")
-        && !workspace_id.trim().is_empty()
-    {
-        request = request.header("anthropic-workspace-id", workspace_id);
-    }
-
-    let resp = request
-        .json(&serde_json::json!({
-            "model": super::MODEL,
-            "max_tokens": super::MAX_TOKENS,
-            "output_config": { "effort": "low" },
-            "messages": [{ "role": "user", "content": content }]
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to reach Anthropic API: {}", e))?;
-
-    if !resp.status().is_success() {
-        let err = resp.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API error: {}", err));
-    }
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse API response: {}", e))?;
-
-    let (answer, cited) = parse_cited_answer(&json)?;
+    let json = super::client::complete_blocks(content, super::client::Effort::Medium).await?;
+    let (answer, cited) = parse_cited_answer(&json);
 
     let sources = chunks
         .iter()
@@ -295,15 +255,9 @@ mod tests {
                 {"type": "search_result_location", "search_result_index": 0, "source": "b"}]},
             {"type": "text", "text": " No source here."}
         ]});
-        let (answer, cited) = parse_cited_answer(&resp).unwrap();
+        let (answer, cited) = parse_cited_answer(&resp);
         assert_eq!(answer, "Dispatched on Monday. No source here.");
         assert_eq!(cited, vec![1, 0]);
-    }
-
-    #[test]
-    fn parse_cited_answer_errors_on_refusal() {
-        let resp = serde_json::json!({"stop_reason": "refusal", "content": []});
-        assert!(parse_cited_answer(&resp).is_err());
     }
 
     fn sample_report() -> OpsReport {

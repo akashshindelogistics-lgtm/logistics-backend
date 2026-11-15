@@ -53,7 +53,10 @@ pub const EXPOSED: &[&str] = &[
     "get_godown",
     "get_ops_report",
     "get_ops_report_summary",
+    "dismiss_onboarding",
+    "get_onboarding",
     "get_org",
+    "get_production_plan",
     "get_reorder_suggestions",
     "get_trip",
     "list_agent_actions",
@@ -79,6 +82,8 @@ pub const EXPOSED: &[&str] = &[
     "list_vendor_payments",
     "list_vendors",
     "pay_invoice",
+    "record_invoice_payment",
+    "list_invoice_payments",
     "record_vehicle_maintenance_mileage",
     "record_vendor_payment",
     "set_stock_category_hsn",
@@ -107,6 +112,12 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ("auth_login", "takes a password"),
     ("user_login", "takes a password"),
     ("signup", "public, takes a password"),
+    ("verify_email", "public, takes a single-use secret token"),
+    (
+        "resend_verification",
+        "account maintenance, not a chat action",
+    ),
+    ("auth_session", "dashboard banner state only"),
     ("auth_orgs", "sign-in page only"),
     ("create_org", "takes a password"),
     ("add_org_user", "takes a password"),
@@ -120,12 +131,18 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ("driver_me", "for the driver's phone"),
     ("track_vehicle_location", "for GPS trackers"),
     (
+        "vehicle_location_history",
+        "thousands of map points, for the trip map",
+    ),
+    (
         "public_track_dispatch",
         "for customers holding a tracking link",
     ),
     ("latest_driver_app", "for the driver's phone"),
     ("download_driver_app", "binary download"),
     ("export_org_csv", "file download for the dashboard"),
+    ("import_template", "file download for the dashboard"),
+    ("import_org_csv", "multipart file upload for the dashboard"),
     ("upload_file", "the chat composer uploads files itself"),
     ("get_uploaded_file", "binary download"),
     ("dispatch_challan_pdf", "binary download"),
@@ -159,7 +176,12 @@ pub const EXCLUDED: &[(&str, &str)] = &[
 ];
 
 /// Writes that move money. Shown as a warning card, like deletes.
-const DANGEROUS: &[&str] = &["pay_invoice", "record_vendor_payment", "update_invoice"];
+const DANGEROUS: &[&str] = &[
+    "pay_invoice",
+    "record_invoice_payment",
+    "record_vendor_payment",
+    "update_invoice",
+];
 
 #[derive(Debug, Clone)]
 pub struct Operation {

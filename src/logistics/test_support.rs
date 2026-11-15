@@ -46,7 +46,8 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             longitude DOUBLE DEFAULT NULL,
             last_updated_at BIGINT DEFAULT NULL,
             location_address VARCHAR(255) DEFAULT NULL,
-            gstin VARCHAR(15) DEFAULT NULL
+            gstin VARCHAR(15) DEFAULT NULL,
+            onboarding_dismissed BOOLEAN NOT NULL DEFAULT FALSE
         )",
     )
     .expect("migrate: create Orgs");
@@ -412,6 +413,21 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
     .expect("migrate: create Invoices");
 
     conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS InvoicePayments (
+            id VARCHAR(36) PRIMARY KEY,
+            invoice_id VARCHAR(36) NOT NULL,
+            amount BIGINT NOT NULL,
+            mode VARCHAR(10) NOT NULL,
+            paid_on VARCHAR(10) NOT NULL,
+            reference VARCHAR(100) DEFAULT NULL,
+            INDEX idx_invoice_payments_invoice (invoice_id),
+            CONSTRAINT fk_invoice_payment_invoice
+                FOREIGN KEY (invoice_id) REFERENCES Invoices(id) ON DELETE CASCADE
+        )",
+    )
+    .expect("migrate: create InvoicePayments");
+
+    conn.query_drop(
         "CREATE TABLE IF NOT EXISTS OrgCredentials (
             org_id VARCHAR(36) PRIMARY KEY,
             org_name VARCHAR(255) NOT NULL,
@@ -447,6 +463,11 @@ pub fn migrate(conn: &mut mysql::PooledConn) {
             role VARCHAR(32) NOT NULL,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             terms_accepted_at BIGINT DEFAULT NULL,
+            email_verified_at BIGINT DEFAULT NULL,
+            email_verification_hash VARCHAR(64) DEFAULT NULL,
+            email_verification_expires_at BIGINT DEFAULT NULL,
+            email_verification_sends INT DEFAULT NULL,
+            email_verification_window_start BIGINT DEFAULT NULL,
             CONSTRAINT fk_org_user_org FOREIGN KEY (org_id) REFERENCES Orgs(id) ON DELETE CASCADE
         )",
     )

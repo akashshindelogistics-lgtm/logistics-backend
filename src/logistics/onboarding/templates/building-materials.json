@@ -1,0 +1,101 @@
+{
+  "template": "building-materials",
+  "org": {
+    "name": "REPLACE ME",
+    "address": "REPLACE ME",
+    "location": {
+      "latitude": 0,
+      "longitude": 0
+    },
+    "planning_density_kg_per_m3": 650
+  },
+  "godowns": [
+    {
+      "name": "Main Plant",
+      "address": "REPLACE ME",
+      "location": {
+        "latitude": 0,
+        "longitude": 0
+      },
+      "max_capacity": 500000
+    }
+  ],
+  "stock": [
+    {
+      "godown": "Main Plant",
+      "description": "AAC Block 600x200x100",
+      "category": "AAC Block",
+      "size_mm": [
+        600,
+        200,
+        100
+      ],
+      "quantity": 0,
+      "reorder_threshold": 500,
+      "pieces_per_pallet": 160
+    },
+    {
+      "godown": "Main Plant",
+      "description": "AAC Block 600x200x150",
+      "category": "AAC Block",
+      "size_mm": [
+        600,
+        200,
+        150
+      ],
+      "quantity": 0,
+      "reorder_threshold": 500,
+      "pieces_per_pallet": 160
+    },
+    {
+      "godown": "Main Plant",
+      "description": "AAC Block 600x200x200",
+      "category": "AAC Block",
+      "size_mm": [
+        600,
+        200,
+        200
+      ],
+      "quantity": 0,
+      "reorder_threshold": 500,
+      "pieces_per_pallet": 160
+    },
+    {
+      "godown": "Main Plant",
+      "description": "AAC Block 600x200x250",
+      "category": "AAC Block",
+      "size_mm": [
+        600,
+        200,
+        250
+      ],
+      "quantity": 0,
+      "reorder_threshold": 500,
+      "pieces_per_pallet": 160
+    },
+    {
+      "godown": "Main Plant",
+      "description": "AAC Block 600x200x300",
+      "category": "AAC Block",
+      "size_mm": [
+        600,
+        200,
+        300
+      ],
+      "quantity": 0,
+      "reorder_threshold": 500,
+      "pieces_per_pallet": 160
+    },
+    {
+      "godown": "Main Plant",
+      "description": "Block Jointing Mortar (25 kg bag)",
+      "category": "Building Materials",
+      "volume_in_size": 1,
+      "quantity": 0
+    }
+  ],
+  "drivers": [],
+  "vehicles": [],
+  "customers": [],
+  "users": []
+}
