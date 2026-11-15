@@ -19,8 +19,8 @@ internal alerts, amounts or dates.
 
 The customer's created and running-late emails end with a tracking link
 when `PUBLIC_APP_URL` is set. See [customer-tracking.md](customer-tracking.md).
-An SMS doesn't carry the link yet: its [DLT template](#sending-sms-through-msg91)
-has no variable for it.
+An SMS carries it only when the link versions of its
+[DLT templates](#sending-sms-through-msg91) are registered and set.
 
 ## AI-personalized copy
 
@@ -134,6 +134,17 @@ Set up, once:
 | `MSG91_TEMPLATE_DISPATCH_CREATED_DRIVER` | `New trip assigned: dispatch {#var#} to {#var#}. - BRAND` | order ref, customer name |
 | `MSG91_TEMPLATE_DISPATCH_DELIVERED` | `Hi {#var#}, your order (ref {#var#}) has been delivered. Thank you! - BRAND` | customer name, order ref |
 | `MSG91_TEMPLATE_DISPATCH_RUNNING_LATE` | `Hi {#var#}, your order (ref {#var#}) is running behind its expected delivery time. We're sorry for the delay. - BRAND` | customer name, order ref |
+
+Optional link versions, used instead of the above for a customer SMS when the
+dispatch has a tracking link and the variable below is set (otherwise the plain
+template is sent, without a link). They have no name variable, because DLT allows
+two and the link can't be the last word. The link isn't cut to 40 characters, so
+register the link variable to allow a URL of that length.
+
+| Variable holding the ID | DLT template wording | `VAR1`, `VAR2` |
+| --- | --- | --- |
+| `MSG91_TEMPLATE_DISPATCH_CREATED_CUSTOMER_LINK` | `Your order (ref {#var#}) has been dispatched and is on its way. Track it: {#var#} - BRAND` | order ref, tracking link |
+| `MSG91_TEMPLATE_DISPATCH_RUNNING_LATE_LINK` | `Your order (ref {#var#}) is running behind its expected delivery time. Track it: {#var#} - BRAND` | order ref, tracking link |
 
 Replace `BRAND` with the registered business name. The text is duplicated in
 `Notification::record_*`, so change both together; the `body` recorded there

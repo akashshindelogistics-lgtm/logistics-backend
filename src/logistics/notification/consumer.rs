@@ -32,8 +32,9 @@ impl Consumer for NotificationConsumer {
             .as_str()
             .unwrap_or_default()
             .to_string();
+        let tracking_url = event.payload["tracking_url"].as_str().map(str::to_string);
         Box::pin(process_event(event, attempt, move |n| {
-            send(n, customer_name.clone())
+            send(n, customer_name.clone(), tracking_url.clone())
         }))
     }
 
@@ -44,7 +45,11 @@ impl Consumer for NotificationConsumer {
     }
 }
 
-async fn send(n: Notification, customer_name: String) -> Result<(), DeliveryError> {
+async fn send(
+    n: Notification,
+    customer_name: String,
+    tracking_url: Option<String>,
+) -> Result<(), DeliveryError> {
     match n.channel {
         NotificationChannel::Email => {
             delivery::send_email(&n.recipient, &n.email_subject(), &n.body).await
@@ -52,7 +57,11 @@ async fn send(n: Notification, customer_name: String) -> Result<(), DeliveryErro
         NotificationChannel::Sms => {
             let template = n.sms_template().ok_or(DeliveryError::NotConfigured)?;
             let vars = n.sms_vars(&customer_name);
-            delivery::send_sms(&n.recipient, template, &vars).await
+            // The driver's SMS never carries the link.
+            let link = tracking_url
+                .as_deref()
+                .filter(|_| n.recipient_kind != "driver");
+            delivery::send_sms_with_link(&n.recipient, template, &vars, link).await
         }
     }
 }

@@ -57,6 +57,10 @@ pub enum SmsTemplate {
     DispatchCreatedDriver,
     DispatchDelivered,
     DispatchRunningLate,
+    /// Created, with a tracking link in place of the customer's name.
+    DispatchCreatedCustomerLink,
+    /// Running late, with a tracking link in place of the customer's name.
+    DispatchRunningLateLink,
 }
 
 impl SmsTemplate {
@@ -67,6 +71,19 @@ impl SmsTemplate {
             SmsTemplate::DispatchCreatedDriver => "MSG91_TEMPLATE_DISPATCH_CREATED_DRIVER",
             SmsTemplate::DispatchDelivered => "MSG91_TEMPLATE_DISPATCH_DELIVERED",
             SmsTemplate::DispatchRunningLate => "MSG91_TEMPLATE_DISPATCH_RUNNING_LATE",
+            SmsTemplate::DispatchCreatedCustomerLink => {
+                "MSG91_TEMPLATE_DISPATCH_CREATED_CUSTOMER_LINK"
+            }
+            SmsTemplate::DispatchRunningLateLink => "MSG91_TEMPLATE_DISPATCH_RUNNING_LATE_LINK",
+        }
+    }
+
+    /// The version of this template with a tracking-link variable, if it has one.
+    fn with_link(self) -> Option<SmsTemplate> {
+        match self {
+            SmsTemplate::DispatchCreatedCustomer => Some(SmsTemplate::DispatchCreatedCustomerLink),
+            SmsTemplate::DispatchRunningLate => Some(SmsTemplate::DispatchRunningLateLink),
+            _ => None,
         }
     }
 }
@@ -169,6 +186,39 @@ async fn send_via_msg91(
         )));
     }
     Ok(())
+}
+
+/// Send a customer SMS with a tracking link when there is one and the link
+/// version of the template has an ID; otherwise the plain template. `vars` are
+/// the plain template's (`[name, ref]`); the link version takes `[ref, link]`,
+/// since DLT allows two variables. The link is not cut to 40 characters: a cut
+/// link wouldn't work.
+pub async fn send_sms_with_link(
+    to: &str,
+    template: SmsTemplate,
+    vars: &[String],
+    link: Option<&str>,
+) -> Result<(), DeliveryError> {
+    let (template, vars) = choose_link_template(template, vars, link, |t| {
+        non_blank_env(t.env_key()).is_some()
+    });
+    send_sms(to, template, &vars).await
+}
+
+/// The template and variables [`send_sms_with_link`] sends.
+fn choose_link_template(
+    template: SmsTemplate,
+    vars: &[String],
+    link: Option<&str>,
+    has_id: impl Fn(SmsTemplate) -> bool,
+) -> (SmsTemplate, Vec<String>) {
+    if let (Some(link), Some(linked)) = (link, template.with_link())
+        && has_id(linked)
+        && let Some(short_id) = vars.get(1)
+    {
+        return (linked, vec![short_id.clone(), link.to_string()]);
+    }
+    (template, vars.to_vec())
 }
 
 /// Send one templated SMS. `NotConfigured` without `MSG91_AUTH_KEY` or without
@@ -479,6 +529,24 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/api/v5/flow/"),
         };
         (config, handle)
+    }
+
+    #[test]
+    fn link_template_is_used_only_with_a_link_and_an_id() {
+        let vars = vec!["Asha".to_string(), "a1b2c3d4".to_string()];
+        let url = "https://x.example/track/t";
+        let (t, v) =
+            choose_link_template(SmsTemplate::DispatchRunningLate, &vars, Some(url), |_| true);
+        assert_eq!(t, SmsTemplate::DispatchRunningLateLink);
+        assert_eq!(v, vec!["a1b2c3d4".to_string(), url.to_string()]);
+        for (template, link, has_id) in [
+            (SmsTemplate::DispatchRunningLate, None, true),
+            (SmsTemplate::DispatchRunningLate, Some(url), false),
+            (SmsTemplate::DispatchDelivered, Some(url), true),
+        ] {
+            let (t, v) = choose_link_template(template, &vars, link, |_| has_id);
+            assert_eq!((t, v), (template, vars.clone()));
+        }
     }
 
     #[actix_web::test]
