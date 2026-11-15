@@ -1,6 +1,7 @@
 use super::*;
 use crate::logistics::events::queue::{self, EventType};
 use actix_web::body::MessageBody;
+use mysql::params;
 use mysql::prelude::Queryable;
 
 #[actix_web::test]
@@ -117,7 +118,7 @@ async fn test_stream_pages_past_a_full_second_of_events() {
     }
     tx.exec_drop(
         "UPDATE Events SET created_at = :t WHERE org_id = :org",
-        mysql::params! { "t" => second, "org" => org.id.to_string() },
+        params! { "t" => second, "org" => org.id.to_string() },
     )
     .unwrap();
     queue::publish(
@@ -130,7 +131,7 @@ async fn test_stream_pages_past_a_full_second_of_events() {
     .unwrap();
     tx.exec_drop(
         "UPDATE Events SET created_at = :t WHERE org_id = :org AND payload LIKE '%AFTER_BURST%'",
-        mysql::params! { "t" => second + 1, "org" => org.id.to_string() },
+        params! { "t" => second + 1, "org" => org.id.to_string() },
     )
     .unwrap();
     tx.commit().unwrap();
