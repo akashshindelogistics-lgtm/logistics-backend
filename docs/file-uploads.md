@@ -132,3 +132,23 @@ illegal transition gets the usual state-machine `400` without an API call.
 5 MB (5,242,880 bytes), i.e. a raw file over about 3.75 MiB — below this
 pipeline's 5 MiB `MAX_UPLOAD_BYTES`. Such an upload is skipped (fail open, with
 a log line) rather than sent; it is not downscaled.
+
+### Background re-check and review
+
+The check above fails open, so a photo can reach `DELIVERED` unchecked. The
+`pod_photo_check` consumer (`dispatch::pod_review`, on `dispatch.delivered`)
+checks it again after delivery, with the event queue's retries, and records the
+outcome in `PodPhotoChecks`:
+
+| Verdict | Meaning | Listed for a person |
+|---|---|---|
+| `OK` | Plausibly a signature or delivery photo | no |
+| `NOT_CHECKED` | Not one of this backend's uploads (never fetched) | no |
+| `DOUBTFUL` | The model said it clearly is not | yes |
+| `UNCHECKED` | The check failed on every retry (no key, API down, oversize) | yes |
+
+`GET /api/dispatches/pod-flags` returns the signed-in org's `DOUBTFUL` and
+`UNCHECKED` dispatches, newest first. It only reads: the delivery is never
+reversed. There is no "reviewed" state yet. Like every consumer, it only runs
+with `EVENT_WORKERS_ENABLED=true`, and a real run needs `ANTHROPIC_API_KEY`.
+

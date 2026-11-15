@@ -50,6 +50,7 @@ HTTP request                                  worker thread
 | Dispatch, stock, hire and status writes | Request, one transaction | The caller needs the result, and partial writes corrupt stock |
 | `Notifications` rows | Request, same transaction | The dashboard shows them immediately, even with workers off |
 | AI notification copy, SMS and email | `notification` consumer | Slow external calls |
+| Proof-of-delivery photo re-check | `pod_photo_check` consumer on `dispatch.delivered` | Slow vision call; see `docs/file-uploads.md` |
 | Delay alerts | Scanner publishes; consumer sends | One retrying send path |
 | AI search indexing | Request, best effort, after commit | A local DB write: a queue would add writes and allow stale overwrites |
 | `assistant/reindex` | `assistant_reindexer` consumer, on its own thread | Walks every row of the org. `POST` returns a job at once (202); `GET` shows its `chunks_indexed` count. Runs with workers off too |
@@ -97,6 +98,6 @@ thread-local.
 
 5. `assistant/reindex` as a job (`ai::reindex_job`, table `AssistantReindexJobs`). The
    dashboard must poll `GET /api/orgs/{id}/assistant/reindex` (frontend PR pending).
+6. Proof-of-delivery photo checks as the `pod_photo_check` consumer.
 
-Later: proof-of-delivery photo
-checks and SMS tracking links as consumers, and an SSE consumer for live dashboards.
+Later: SMS tracking links as consumers, and an SSE consumer for live dashboards.

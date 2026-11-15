@@ -767,7 +767,8 @@ impl DispatchOrder {
         };
 
         // Looked up first: the transaction below holds locks, so it stays
-        // short. A customer that can't be found just isn't notified.
+        // short. A customer that can't be found just isn't notified; the
+        // delivered event is still published below.
         let notify_customer = if next == DispatchStatus::Delivered {
             Customer::get_by_id(self.customer_id).ok().flatten()
         } else {
@@ -847,11 +848,17 @@ impl DispatchOrder {
             crate::logistics::vendor::hire::VehicleHire::close_if_finished(conn, hire_id)?;
         }
 
-        let notifs = match &notify_customer {
-            Some(customer) => {
-                Notification::enqueue_dispatch_delivered(conn, self.org_id, self.id, customer)?
-            }
-            None => Vec::new(),
+        // Published on every delivery, customer or not: the photo check
+        // consumes the same event.
+        let notifs = if next == DispatchStatus::Delivered {
+            Notification::enqueue_dispatch_delivered(
+                conn,
+                self.org_id,
+                self.id,
+                notify_customer.as_ref(),
+            )?
+        } else {
+            Vec::new()
         };
 
         tx.commit()?;
@@ -1536,6 +1543,11 @@ mod tests {
     fn test_full_happy_path_lifecycle() {
         let _db = TestDb::create();
         let mut order = sample_order(Pending);
+        // A real org: delivering publishes `dispatch.delivered`, and `Events`
+        // has a foreign key to `Orgs`.
+        order.org_id = Organization::create_organization("Lifecycle Co", "1 Rd")
+            .expect("org")
+            .id;
         order.save().expect("save");
 
         for next in [Confirmed, Loaded, InTransit, Delivered] {

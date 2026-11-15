@@ -4,6 +4,7 @@
 use super::queue::{self, Claimed, Event};
 use crate::logistics::ai::reindex_job::ReindexConsumer;
 use crate::logistics::db::connection::DbConnection;
+use crate::logistics::dispatch::pod_review::PodPhotoConsumer;
 use crate::logistics::notification::consumer::NotificationConsumer;
 use crate::logistics::notification::delay_alerts;
 use crate::logistics::server::metrics;
@@ -52,7 +53,7 @@ pub trait Consumer {
 /// The consumers that run when `EVENT_WORKERS_ENABLED` is on. They send
 /// messages to real people.
 pub fn registered_consumers() -> Vec<Box<dyn Consumer>> {
-    vec![Box::new(NotificationConsumer)]
+    vec![Box::new(NotificationConsumer), Box::new(PodPhotoConsumer)]
 }
 
 /// Consumers that only touch this deployment's own database. They run on

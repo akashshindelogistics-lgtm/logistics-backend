@@ -314,6 +314,7 @@ pub fn remove(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
     let has_transfers = table_exists(&mut conn, "StockTransfers")?;
     let has_trips = table_exists(&mut conn, "Trips")?;
     let has_notifications = table_exists(&mut conn, "Notifications")?;
+    let has_pod_checks = table_exists(&mut conn, "PodPhotoChecks")?;
     let has_chunks = table_exists(&mut conn, "AiChunks")?;
     let has_line_items = table_exists(&mut conn, "DispatchLineItems")?;
     let has_invoices = table_exists(&mut conn, "Invoices")?;
@@ -427,6 +428,14 @@ pub fn remove(org_id: Uuid) -> Result<SampleDataSummary, SampleDataError> {
         if has_notifications {
             tx.exec_drop(
                 format!("DELETE FROM Notifications WHERE dispatch_id IN ({ph})"),
+                args(),
+            )?;
+        }
+        // Photo-check outcomes have no foreign key either; left behind they
+        // keep the deleted dispatches on the review list.
+        if has_pod_checks {
+            tx.exec_drop(
+                format!("DELETE FROM PodPhotoChecks WHERE dispatch_id IN ({ph})"),
                 args(),
             )?;
         }

@@ -214,6 +214,7 @@ impl Modify for SecurityAddon {
         update_customer_gstin,
         delete_customer,
         list_dispatches,
+        list_pod_photo_flags,
         dispatch_stock,
         update_dispatch_status,
         dispatch_challan_pdf,
@@ -307,7 +308,8 @@ impl Modify for SecurityAddon {
             DriverMe, DriverMeVehicle, DriverMeResponse,
             DriverAppRelease, DriverAppReleaseResponse,
             VendorResponse, VendorListResponse, VehicleHireResponse, VehicleHireListResponse,
-            DispatchOrderResponse, DispatchOrderListResponse,
+            DispatchOrderResponse, DispatchOrderListResponse, PodPhotoFlagListResponse,
+            crate::logistics::dispatch::pod_review::PodPhotoFlag,
             PublicTracking, PublicVehiclePosition, PublicTrackingResponse,
             InvoiceResponse, InvoiceListResponse, CustomerBillingResponse,
             OpsReportResponse, ImportReportResponse, UserResponse, UserListResponse, NotificationListResponse,
@@ -476,6 +478,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(update_customer_gstin)
             .service(delete_customer)
             .service(list_dispatches)
+            .service(list_pod_photo_flags)
             .service(dispatch_stock)
             .service(update_dispatch_status)
             .service(dispatch_challan_pdf)

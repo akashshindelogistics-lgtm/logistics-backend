@@ -36,7 +36,7 @@ fn record_delivered(
     dispatch_id: Uuid,
     customer: &Customer,
 ) -> Result<Vec<Notification>, Box<dyn std::error::Error>> {
-    in_tx(|tx| Notification::enqueue_dispatch_delivered(tx, org_id, dispatch_id, customer))
+    in_tx(|tx| Notification::enqueue_dispatch_delivered(tx, org_id, dispatch_id, Some(customer)))
 }
 
 fn org() -> Organization {

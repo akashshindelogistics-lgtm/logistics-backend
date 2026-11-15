@@ -457,28 +457,37 @@ impl Notification {
     }
 
     /// Record the "your shipment was delivered" notification and publish its
-    /// event, in the caller's transaction.
+    /// event, in the caller's transaction. The event is published even with
+    /// no customer to notify (deleted, or the lookup failed): other consumers,
+    /// such as the proof-of-delivery photo check, still need it.
     pub fn enqueue_dispatch_delivered(
         tx: &mut Transaction<'_>,
         org_id: Uuid,
         dispatch_id: Uuid,
-        customer: &Customer,
+        customer: Option<&Customer>,
     ) -> Result<Vec<Notification>, Box<dyn Error>> {
-        let short_id = &dispatch_id.to_string()[..8];
-        let customer_target = Self::customer_target(customer);
-        let name = if Self::is_sms(&customer_target) {
-            sms_var(&customer.name)
-        } else {
-            customer.name.clone()
+        let notifs = match customer {
+            Some(customer) => {
+                let short_id = &dispatch_id.to_string()[..8];
+                let customer_target = Self::customer_target(customer);
+                let name = if Self::is_sms(&customer_target) {
+                    sms_var(&customer.name)
+                } else {
+                    customer.name.clone()
+                };
+                vec![Self::build(
+                    org_id,
+                    dispatch_id,
+                    NotificationEvent::DispatchDelivered,
+                    "customer",
+                    customer_target,
+                    format!(
+                        "Hi {name}, your order (ref {short_id}) has been delivered. Thank you!"
+                    ),
+                )]
+            }
+            None => Vec::new(),
         };
-        let notifs = vec![Self::build(
-            org_id,
-            dispatch_id,
-            NotificationEvent::DispatchDelivered,
-            "customer",
-            customer_target,
-            format!("Hi {name}, your order (ref {short_id}) has been delivered. Thank you!"),
-        )];
         Self::insert_all(tx, &notifs)?;
         events::queue::publish(
             tx,
@@ -486,7 +495,7 @@ impl Notification {
             EventType::DispatchDelivered,
             serde_json::json!({
                 "dispatch_id": dispatch_id,
-                "customer_name": customer.name,
+                "customer_name": customer.map(|c| c.name.as_str()),
             }),
             None,
         )?;
