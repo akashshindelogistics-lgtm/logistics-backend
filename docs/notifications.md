@@ -149,8 +149,40 @@ checks some things after replying: tried on 2026-11-03, a made-up key got
 `"type": "success"` on its first call and `Invalid authkey or Token` on the next,
 even with the `realTimeResponse` option this code sends. So after any change to
 the key or a template, confirm a test message actually arrives, and look at
-MSG91's logs if customers report missing messages. Nothing here reads delivery
-reports yet.
+MSG91's logs if customers report missing messages. Delivery reports (below)
+fill in whether the phone got it.
+
+### Delivery reports
+
+When MSG91 accepts an SMS, its request ID is stored on the notification
+(`provider_ref`, never returned by the API). MSG91 can then call back with the
+outcome, which sets the notification's `delivery_status` to `DELIVERED` or
+`FAILED`; `status` stays `SENT`.
+
+1. Pick a long random secret (e.g. `openssl rand -hex 32`) and set
+   `MSG91_WEBHOOK_SECRET` (in `deploy/.env` for the Docker deploy), then restart
+   the API. While it is unset or empty the endpoint answers `401` to everything.
+2. In the MSG91 panel, open the delivery-report webhook settings (SMS ›
+   Webhook / "DLR URL"), choose `POST`, and enter
+   `https://<DOMAIN>/api/public/msg91/delivery-reports?secret=<MSG91_WEBHOOK_SECRET>`.
+   Caddy redacts `secret` in its access logs (`deploy/Caddyfile`).
+3. Send a test SMS and check its row in
+   `GET /api/dispatches/{id}/notifications` shows `delivery_status`.
+
+The endpoint accepts a JSON body, or the legacy form-encoded `data=<json>`,
+with one entry or an array of them, each either MSG91's standard shape
+
+```json
+[{"requestId": "3563...", "report": [{"number": "919876543210", "status": "1", "desc": "DELIVERED", "date": "2026-11-15 18:00:00"}]}]
+```
+
+or a flat `{"requestId": "...", "status": "1"}` (for a custom webhook
+template). Status `1` (or desc `DELIVERED`) means delivered; `2`, `9`, `16`,
+`17` and `25` (or desc `FAILED`, `REJECTED`, `UNDELIVERED`, `BLOCKED`, `NDNC`)
+mean failed; anything else, such as pending, is ignored. Unknown request IDs
+are ignored too, and every accepted body gets a `200` so MSG91 doesn't retry.
+The body may be up to 256 KB. These codes come from MSG91's documentation and
+have not yet been checked against a live account (#313).
 
 A message stays `QUEUED` until its template ID is set, so templates can go live
 one at a time. Template text is Latin script for now: sending Hindi or Marathi

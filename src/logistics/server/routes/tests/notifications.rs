@@ -32,7 +32,7 @@ async fn test_msg91_delivery_reports_set_delivery_status() {
     let _db = TestDb::create();
     let app = test::init_service(App::new().configure(config_routes)).await;
     let (org, d, auth) = setup_dispatch(&app, "Report Org").await;
-    // SAFETY: only this test sets this variable.
+    // SAFETY: the delivery-report tests all set this to the same value.
     unsafe { std::env::set_var("MSG91_WEBHOOK_SECRET", "s3cret") };
 
     let sms = Notification::list_by_dispatch(d.id)
@@ -109,4 +109,83 @@ async fn test_msg91_delivery_reports_set_delivery_status() {
     let list = Notification::list_by_org(org.id, 10).unwrap();
     let row = list.iter().find(|n| n.id == sms.id).unwrap();
     assert_eq!(row.delivery_status, Some(DeliveryStatus::Failed));
+}
+
+#[actix_web::test]
+async fn test_msg91_delivery_reports_accept_nested_and_form_payloads() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (_org, d, _auth) = setup_dispatch(&app, "Report Shapes Org").await;
+    // SAFETY: the delivery-report tests all set this to the same value.
+    unsafe { std::env::set_var("MSG91_WEBHOOK_SECRET", "s3cret") };
+
+    let sms = Notification::list_by_dispatch(d.id)
+        .unwrap()
+        .into_iter()
+        .find(|n| n.channel == NotificationChannel::Sms && n.status == NotificationStatus::Queued)
+        .expect("driver SMS");
+    Notification::set_provider_ref(sms.id, "req-n").unwrap();
+    let url = "/api/public/msg91/delivery-reports?secret=s3cret";
+    let delivery_status = || {
+        Notification::list_by_dispatch(d.id)
+            .unwrap()
+            .into_iter()
+            .find(|n| n.id == sms.id)
+            .unwrap()
+            .delivery_status
+    };
+
+    // MSG91's standard JSON report: the per-number result sits in `report[]`.
+    let req = test::TestRequest::post()
+        .uri(url)
+        .set_json(serde_json::json!([{
+            "requestId": "req-n",
+            "userId": "1",
+            "report": [{"number": "919876543210", "status": "1", "desc": "DELIVERED", "date": "2026-11-15 18:00:00"}],
+            "senderId": "BRAND"
+        }]))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+    assert_eq!(delivery_status(), Some(DeliveryStatus::Delivered));
+
+    // Legacy webhook: form-encoded `data=<json>`, here a blocked number (17).
+    let data = r#"[{"requestId":"req-n","report":[{"number":"919876543210","status":"17","desc":"BLOCKED"}]}]"#;
+    let encoded: String = data
+        .bytes()
+        .map(|b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    let form = format!("data={encoded}");
+    let req = test::TestRequest::post()
+        .uri(url)
+        .insert_header(("Content-Type", "application/x-www-form-urlencoded"))
+        .set_payload(form)
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+    assert_eq!(delivery_status(), Some(DeliveryStatus::Failed));
+
+    // An unknown code falls back to `desc`.
+    let req = test::TestRequest::post()
+        .uri(url)
+        .set_json(serde_json::json!({"requestId": "req-n", "report": [{"status": "99", "desc": "Delivered"}]}))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+    assert_eq!(delivery_status(), Some(DeliveryStatus::Delivered));
+
+    // Code 25 (rejected) is a failure.
+    let req = test::TestRequest::post()
+        .uri(url)
+        .set_json(serde_json::json!({"requestId": "req-n", "report": [{"status": 25}]}))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+    assert_eq!(delivery_status(), Some(DeliveryStatus::Failed));
+
+    // Neither JSON nor a form `data` field.
+    let req = test::TestRequest::post()
+        .uri(url)
+        .set_payload("not a report")
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 400);
 }

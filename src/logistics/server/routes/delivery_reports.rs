@@ -16,22 +16,53 @@ pub struct DeliveryReportQuery {
     pub secret: Option<String>,
 }
 
-/// MSG91's status for a report: `1` is delivered, `2`, `9` and `16` are
-/// failures (failed, DND-blocked, rejected). Anything else (still pending)
-/// says nothing final, so it's ignored.
+/// MSG91's status for one number: `1` is delivered; `2` (failed), `9` (NDNC /
+/// DND-blocked), `16` (rejected), `17` (blocked number) and `25` (rejected by
+/// the operator) are failures. Anything else (still pending, submitted) says
+/// nothing final, so it's ignored. When the code is unknown, the `desc` text
+/// (e.g. `"DELIVERED"`) decides. The codes are from MSG91's docs and still
+/// need confirming against a live account (#313).
 fn report_status(report: &Value) -> Option<DeliveryStatus> {
-    let status = match &report["status"] {
-        Value::String(s) => s.trim().to_lowercase(),
-        Value::Number(n) => n.to_string(),
-        _ => return None,
-    };
-    match status.as_str() {
-        "1" | "delivered" => Some(DeliveryStatus::Delivered),
-        "2" | "9" | "16" | "failed" | "rejected" | "undelivered" | "blocked" => {
-            Some(DeliveryStatus::Failed)
-        }
+    let word = |v: &Value| match v {
+        Value::String(s) => Some(s.trim().to_lowercase()),
+        Value::Number(n) => Some(n.to_string()),
         _ => None,
-    }
+    };
+    [&report["status"], &report["desc"]]
+        .into_iter()
+        .filter_map(word)
+        .find_map(|status| match status.as_str() {
+            "1" | "delivered" => Some(DeliveryStatus::Delivered),
+            "2" | "9" | "16" | "17" | "25" | "failed" | "rejected" | "undelivered" | "blocked"
+            | "ndnc" => Some(DeliveryStatus::Failed),
+            _ => None,
+        })
+}
+
+/// The final status of one webhook entry. MSG91's standard report nests the
+/// per-number result in `report: [{"number", "status", "desc", "date"}]`; a
+/// flat entry carries `status` itself. Each notification is one SMS to one
+/// number, so the first final per-number status wins.
+fn entry_status(entry: &Value) -> Option<DeliveryStatus> {
+    entry["report"]
+        .as_array()
+        .and_then(|items| items.iter().find_map(report_status))
+        .or_else(|| report_status(entry))
+}
+
+/// Parses the body MSG91 posts: JSON (one entry or an array), or the legacy
+/// form-encoded `data=<json>`.
+fn parse_reports(body: &[u8]) -> Option<Vec<Value>> {
+    let value = serde_json::from_slice::<Value>(body).ok().or_else(|| {
+        let form = std::str::from_utf8(body).ok()?;
+        let fields =
+            web::Query::<std::collections::HashMap<String, String>>::from_query(form).ok()?;
+        serde_json::from_str::<Value>(fields.get("data")?).ok()
+    })?;
+    Some(match value {
+        Value::Array(items) => items,
+        single => vec![single],
+    })
 }
 
 fn report_request_id(report: &Value) -> Option<&str> {
@@ -64,16 +95,20 @@ fn secret_matches(given: Option<&str>) -> bool {
     params(("secret" = String, Query, description = "Must equal MSG91_WEBHOOK_SECRET")),
     responses(
         (status = 200, description = "Reports stored", body = EmptyResponse),
+        (status = 400, description = "Body is neither JSON nor a form data=<json> field", body = EmptyResponse),
         (status = 401, description = "Wrong or missing secret, or webhook not enabled", body = EmptyResponse)
     )
 )]
-/// Receives MSG91 delivery reports (one JSON object or an array of them) and
-/// stores delivered/failed on the matching notification. Unknown request IDs
-/// and pending statuses are ignored, so MSG91 never retries them.
+/// Receives MSG91 delivery reports (JSON, one entry or an array, or a form
+/// `data=<json>` field; flat or with a nested `report[]`) and stores
+/// delivered/failed on the matching notification. Unknown request IDs and
+/// pending statuses are ignored, so MSG91 never retries them. The body is read
+/// as raw bytes, so actix's 256 KB payload limit applies instead of the 32 KB
+/// JSON one: MSG91 batches reports.
 #[post("/public/msg91/delivery-reports")]
 pub async fn msg91_delivery_reports(
     query: web::Query<DeliveryReportQuery>,
-    body: web::Json<Value>,
+    body: web::Bytes,
 ) -> impl Responder {
     if !secret_matches(query.secret.as_deref()) {
         return HttpResponse::Unauthorized().json(ApiResponse::<String> {
@@ -82,13 +117,15 @@ pub async fn msg91_delivery_reports(
             data: None,
         });
     }
-    let body = body.into_inner();
-    let reports = match &body {
-        Value::Array(items) => items.as_slice(),
-        single => std::slice::from_ref(single),
+    let Some(reports) = parse_reports(&body) else {
+        return HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message: "Expected a JSON body or a form field data=<json>".to_string(),
+            data: None,
+        });
     };
-    for report in reports {
-        let (Some(id), Some(status)) = (report_request_id(report), report_status(report)) else {
+    for report in &reports {
+        let (Some(id), Some(status)) = (report_request_id(report), entry_status(report)) else {
             continue;
         };
         if let Err(err) = Notification::record_delivery_report(id, status) {
