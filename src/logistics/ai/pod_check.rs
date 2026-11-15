@@ -69,46 +69,18 @@ pub async fn check_upload(file: &UploadedFile) -> Result<PodVerdict, String> {
             file.byte_size
         ));
     }
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())?;
     let bytes = file
         .read_bytes()
         .map_err(|e| format!("Failed to read uploaded file: {e}"))?;
     let data = base64::engine::general_purpose::STANDARD.encode(bytes);
-
-    let mut request = crate::logistics::http::client()
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01");
-    if let Ok(workspace_id) = std::env::var("ANTHROPIC_WORKSPACE_ID")
-        && !workspace_id.trim().is_empty()
-    {
-        request = request.header("anthropic-workspace-id", workspace_id);
-    }
-
-    let resp = request
-        .json(&serde_json::json!({
-            "model": super::MODEL,
-            "max_tokens": super::MAX_TOKENS,
-            "output_config": { "effort": "low" },
-            "messages": [{ "role": "user", "content": [
-                { "type": "image", "source": {
-                    "type": "base64", "media_type": file.content_type, "data": data } },
-                { "type": "text", "text": PROMPT }
-            ]}]
-        }))
-        .send()
+    let content = serde_json::json!([
+        { "type": "image", "source": {
+            "type": "base64", "media_type": file.content_type, "data": data } },
+        { "type": "text", "text": PROMPT }
+    ]);
+    super::client::complete_content(content, super::client::Effort::Low)
         .await
-        .map_err(|e| format!("Failed to reach Anthropic API: {e}"))?;
-    if !resp.status().is_success() {
-        let err = resp.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API error: {err}"));
-    }
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse API response: {e}"))?;
-    super::response_text(&json).map(parse_verdict)
+        .map(|text| parse_verdict(&text))
 }
 
 #[cfg(test)]
