@@ -142,6 +142,25 @@ those. This lets a new user complete a dispatch in a minute. It is an add-on,
 not part of the first phase, and the tagging must be a real column, not a name
 convention.
 
+**Implemented** as `GET|POST|DELETE /api/orgs/{id}/sample-data` (POST and
+DELETE are Admin-only). The tag is a real table, `SampleData(org_id, kind,
+ref_id)`, rather than a column on five tables, so no existing table changes.
+Load creates one godown (with two stock lines), one vehicle, one driver
+assigned to it, and one customer with a location. A second load is `409`; a
+`(org_id, 'loaded', '')` marker row inserted first makes concurrent loads for
+one org exclusive, and a load that fails part-way deletes only the rows it
+created. Remove deletes exactly the tagged rows plus what hangs off them: the
+godown's stock, dispatches to the sample customer (with their line items and
+notifications), and trips of the sample vehicle. A real vehicle the sample
+driver was assigned to is unassigned, as `Driver::delete` does. It is a no-op
+when nothing is loaded, and `409` (deleting nothing) if a dispatch to a real
+customer uses the sample vehicle, stock was transferred to or from the sample
+godown, or a dispatch to the sample customer carries non-sample stock, a hired
+vehicle or an invoice. Real stock a user adds to the sample godown is removed
+with it. The chat assistant cannot call these routes.
+
+Address geocoding (section 4) is **not built**: it needs a provider decision.
+
 ## Phase 3 as built
 
 - **Transport:** the verification email goes through `send_email` (SMTP or
