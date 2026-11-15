@@ -9,6 +9,7 @@
 
 use super::metrics::{self, metrics_endpoint};
 use crate::logistics::ai::assistant::{AssistantAnswer, AssistantSource};
+use crate::logistics::ai::reindex_job::ReindexJob;
 use crate::logistics::auth::auth::OrgSummary;
 use crate::logistics::billing::invoice::{
     CustomerBillingSummary, Invoice, InvoicePayment, PaymentMode, PaymentStatus,
@@ -227,6 +228,7 @@ impl Modify for SecurityAddon {
         public_track_dispatch,
         ask_assistant,
         reindex_assistant,
+        get_assistant_reindex,
         get_daily_digest,
         get_reorder_suggestions,
         get_production_plan,
@@ -312,7 +314,7 @@ impl Modify for SecurityAddon {
             TripResponse, TripListResponse, CreateTripPayload, TripStopPayload,
             UploadedFileResponse, UploadedFileRef,
             AssistantAskPayload, AssistantAnswer, AssistantSource, AssistantAnswerResponse,
-            AssistantReindexResult, AssistantReindexResponse,
+            AssistantReindexResponse, ReindexJob,
             ProductionRun, ProductionPlanResponse,
             AgentSettings, AgentSettingsResponse, AgentRunResponse, AgentRunListResponse,
             AgentActionResponse, AgentActionListResponse,
@@ -487,6 +489,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(get_dispatch_summary)
             .service(ask_assistant)
             .service(reindex_assistant)
+            .service(get_assistant_reindex)
             .service(get_daily_digest)
             .service(get_reorder_suggestions)
             .service(get_production_plan)

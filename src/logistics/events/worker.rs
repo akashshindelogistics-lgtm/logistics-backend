@@ -2,6 +2,7 @@
 //! is blocking, so this work must stay away from the HTTP workers' threads.
 
 use super::queue::{self, Claimed, Event};
+use crate::logistics::ai::reindex_job::ReindexConsumer;
 use crate::logistics::db::connection::DbConnection;
 use crate::logistics::notification::consumer::NotificationConsumer;
 use crate::logistics::notification::delay_alerts;
@@ -44,7 +45,7 @@ pub trait Consumer {
 
 /// Every consumer that runs in production.
 pub fn registered_consumers() -> Vec<Box<dyn Consumer>> {
-    vec![Box::new(NotificationConsumer)]
+    vec![Box::new(NotificationConsumer), Box::new(ReindexConsumer)]
 }
 
 fn wake_signal() -> &'static Notify {

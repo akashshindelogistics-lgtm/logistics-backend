@@ -547,12 +547,22 @@ pub fn delete_vehicle_chunk_best_effort(registration_number: &str) {
 /// data); a single row's indexing failure does not, per the usual
 /// best-effort contract.
 pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
+    reindex_org_with_progress(org_id, &mut |_| {})
+}
+
+/// [`reindex_org`], calling `on_progress` with the running chunk count after
+/// each source kind, so a background job can report how far it got.
+pub fn reindex_org_with_progress(
+    org_id: Uuid,
+    on_progress: &mut dyn FnMut(usize),
+) -> Result<usize, Box<dyn Error>> {
     let mut count = 0usize;
 
     for customer in Customer::list_by_org(org_id)? {
         reindex_customer_best_effort(&customer);
         count += 1;
     }
+    on_progress(count);
 
     let godowns = Godown::list_by_org(org_id)?;
     for godown in &godowns {
@@ -568,11 +578,13 @@ pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
             count += 1;
         }
     }
+    on_progress(count);
 
     for vehicle in Vehicle::list_by_org(org_id)? {
         reindex_vehicle_best_effort(&vehicle, org_id);
         count += 1;
     }
+    on_progress(count);
 
     for notification in Notification::list_by_org(org_id, u32::MAX)? {
         upsert_best_effort(
@@ -583,6 +595,7 @@ pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
         );
         count += 1;
     }
+    on_progress(count);
 
     for document in VehicleDocument::list_by_org(org_id)? {
         upsert_best_effort(
@@ -593,6 +606,7 @@ pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
         );
         count += 1;
     }
+    on_progress(count);
 
     for dispatch in DispatchOrder::list_by_org(org_id)? {
         if let Ok(Some(customer)) = Customer::get_by_id(dispatch.customer_id) {
@@ -605,6 +619,7 @@ pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
             count += 1;
         }
     }
+    on_progress(count);
 
     Ok(count)
 }

@@ -52,7 +52,7 @@ HTTP request                                  worker thread
 | AI notification copy, SMS and email | `notification` consumer | Slow external calls |
 | Delay alerts | Scanner publishes; consumer sends | One retrying send path |
 | AI search indexing | Request, best effort, after commit | A local DB write: a queue would add writes and allow stale overwrites |
-| `assistant/reindex` | Request | Returns a count the dashboard shows; going async needs a frontend change |
+| `assistant/reindex` | `assistant_reindexer` consumer | Walks every row of the org. `POST` returns a job at once (202); `GET` shows its `chunks_indexed` count |
 | GPS pings | Request | One small update |
 
 ## Configuration
@@ -91,5 +91,8 @@ thread-local.
 3. Queue, worker and retention.
 4. Move notifications and delay alerts onto it.
 
-Later: `assistant/reindex` as a job (with a frontend PR), proof-of-delivery photo
+5. `assistant/reindex` as a job (`ai::reindex_job`, table `AssistantReindexJobs`). The
+   dashboard must poll `GET /api/orgs/{id}/assistant/reindex` (frontend PR pending).
+
+Later: proof-of-delivery photo
 checks and SMS tracking links as consumers, and an SSE consumer for live dashboards.

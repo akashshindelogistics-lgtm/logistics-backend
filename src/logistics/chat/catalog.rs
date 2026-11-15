@@ -172,6 +172,7 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ),
     ("ask_assistant", "chat answers questions itself"),
     ("reindex_assistant", "maintenance"),
+    ("get_assistant_reindex", "maintenance"),
     ("health_check", "not useful to people"),
     ("list_chat_conversations", "chat's own routes"),
     ("create_chat_conversation", "chat's own routes"),

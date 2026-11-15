@@ -1,6 +1,7 @@
 //! Storage for events and per-consumer deliveries. Nothing outside this file
 //! knows how the queue is stored.
 
+use crate::logistics::ai::reindex_job::CONSUMER_NAME as REINDEX_CONSUMER;
 use crate::logistics::notification::consumer::CONSUMER_NAME as NOTIFICATION_CONSUMER;
 use mysql::prelude::*;
 use mysql::*;
@@ -37,6 +38,8 @@ pub enum EventType {
     /// A hired dispatch has waited too long for a truck to be assigned.
     VehicleAwaitedTooLong,
     InvoiceRaised,
+    /// An org asked for its assistant index to be rebuilt.
+    AssistantReindexRequested,
 }
 
 impl EventType {
@@ -47,6 +50,7 @@ impl EventType {
             EventType::DispatchRunningLate => "dispatch.running_late",
             EventType::VehicleAwaitedTooLong => "dispatch.awaiting_vehicle_delayed",
             EventType::InvoiceRaised => "invoice.raised",
+            EventType::AssistantReindexRequested => "assistant.reindex_requested",
         }
     }
 
@@ -57,6 +61,7 @@ impl EventType {
             "dispatch.running_late" => Some(EventType::DispatchRunningLate),
             "dispatch.awaiting_vehicle_delayed" => Some(EventType::VehicleAwaitedTooLong),
             "invoice.raised" => Some(EventType::InvoiceRaised),
+            "assistant.reindex_requested" => Some(EventType::AssistantReindexRequested),
             _ => None,
         }
     }
@@ -69,6 +74,7 @@ impl EventType {
             | EventType::DispatchRunningLate
             | EventType::VehicleAwaitedTooLong
             | EventType::InvoiceRaised => &[NOTIFICATION_CONSUMER],
+            EventType::AssistantReindexRequested => &[REINDEX_CONSUMER],
         }
     }
 }
