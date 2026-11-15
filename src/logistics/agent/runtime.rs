@@ -264,6 +264,18 @@ fn handle_tool_call(
     }
 }
 
+/// The mode an agent acts in. The org has one mode; the billing agent is
+/// capped at `SHADOW` until it has its own setting, so moving the dispatch
+/// desk up never lets billing email customers without a shadow period. `OFF`
+/// still stops everything.
+pub fn effective_mode(agent: &str, org_mode: AutonomyMode) -> AutonomyMode {
+    if agent == BILLING && org_mode != AutonomyMode::Off {
+        AutonomyMode::Shadow
+    } else {
+        org_mode
+    }
+}
+
 /// Put one write through validation, repeat detection and the autonomy policy.
 fn request_action(
     agent: &'static str,
@@ -278,8 +290,9 @@ fn request_action(
     }
     let reason = tools::reason(input)?;
     let dedupe_key = tools::validate(org_id, def.name, input)?;
-    let mode = store::get_mode(org_id)?;
-    if let Some(status) = store::existing_action(org_id, &dedupe_key, mode)? {
+    let mode = effective_mode(agent, store::get_mode(org_id)?);
+    let window = tools::repeat_window(def.name);
+    if let Some(status) = store::existing_action(org_id, &dedupe_key, mode, window)? {
         return Ok(format!(
             "Already handled ({}). Don't request it again.",
             status.as_str()

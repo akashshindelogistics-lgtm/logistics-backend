@@ -282,8 +282,8 @@ pub fn validate(org_id: Uuid, name: &str, input: &Value) -> Result<String, Strin
             if invoice.status != PaymentStatus::Overdue {
                 return Err("Only an overdue invoice gets a reminder".to_string());
             }
-            // One reminder a week per invoice.
-            Ok(format!("reminder:{}:{}", invoice.id, now_unix() / WEEK))
+            // One reminder a week per invoice: see `repeat_window`.
+            Ok(format!("reminder:{}", invoice.id))
         }
         "raise_alert" => {
             let severity = string_arg(input, "severity")?;
@@ -299,6 +299,12 @@ pub fn validate(org_id: Uuid, name: &str, input: &Value) -> Result<String, Strin
         }
         other => Err(format!("{other} isn't an action")),
     }
+}
+
+/// How long (seconds) an earlier action with the same dedupe key stops a new
+/// one. `None` means for good.
+pub fn repeat_window(name: &str) -> Option<i64> {
+    (name == "send_reminder").then_some(WEEK)
 }
 
 /// Carry out a write. Goes through the same model code as the dashboard's

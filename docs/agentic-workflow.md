@@ -202,14 +202,16 @@ riskiest, since it's the first time outsiders' text directly drives agents.
 
 A second agent, `billing`, shares the loop, gate and audit trail with the dispatch
 desk but has its own prompt and tools. The scheduler runs both for each org whose
-mode isn't `OFF`; `POST /api/orgs/{id}/agents/run?agent=billing` runs it now
+mode isn't `OFF`. Until it has its own mode setting, the billing agent stays in
+`SHADOW` whatever the org's mode (`OFF` still stops it), so moving the dispatch
+desk up never lets billing act without its shadow period; `POST /api/orgs/{id}/agents/run?agent=billing` runs it now
 (`dispatch_desk` is the default).
 
 | Tool | Risk | Does |
 | --- | --- | --- |
 | `list_billing_work` | Read | Delivered dispatches with no invoice, and overdue invoices. No customer details |
-| `raise_invoice` | Sensitive | Raises the invoice and emails the customer. Always waits for a person, even in `AUTONOMOUS`, since it sets an amount |
-| `send_reminder` | Operational | Emails an overdue invoice's customer. At most one a week per invoice |
+| `raise_invoice` | Sensitive | Raises the invoice and emails the customer. Once billing leaves `SHADOW`, always waits for a person, even in `AUTONOMOUS`, since it sets an amount |
+| `send_reminder` | Operational | Emails an overdue invoice's customer. At most one in any rolling 7 days per invoice, and none while one waits for approval |
 | `raise_alert` | Internal | As for the dispatch desk |
 
 There is no tool to record a payment or edit an invoice. In `SHADOW`, both are only
