@@ -57,7 +57,8 @@ and books a "market truck" for the trip. This plan adds that path.
   the per-hire GPS tracker key are not started (they ship as separate PRs).
   A hired dispatch still `AWAITING_VEHICLE` more than
   `AWAITING_VEHICLE_ALERT_HOURS` (4, fleet-wide) after creation emails the
-  org's active ADMIN users once (`VEHICLE_AWAITED_TOO_LONG`). It is internal:
+  org's active ADMIN users once per hire (`VEHICLE_AWAITED_TOO_LONG`; a hired
+  trip's stops share one alert). It is internal:
   the customer is not told. It runs in the same 15-minute scan as the
   running-late alert; see [delay-alerts.md](delay-alerts.md).
 

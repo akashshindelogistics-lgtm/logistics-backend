@@ -16,8 +16,11 @@ use crate::logistics::db::connection::DbConnection;
 use crate::logistics::dispatch::dispatch::DispatchOrder;
 use crate::logistics::events::worker;
 use crate::logistics::notification::notification::{Notification, NotificationEvent};
+use crate::logistics::vendor::hire::VehicleHire;
 use mysql::TxOpts;
+use std::collections::HashMap;
 use std::error::Error;
+use uuid::Uuid;
 
 /// Scan every `IN_TRANSIT` dispatch across every organization, and for each
 /// one that's running late and hasn't already been alerted on, queue a
@@ -42,42 +45,76 @@ pub async fn scan_and_alert() -> Result<usize, Box<dyn Error>> {
         }
     }
 
-    let waiting: Vec<DispatchOrder> = DispatchOrder::list_awaiting_vehicle()?
+    // A hired trip has one AWAITING_VEHICLE dispatch per stop, all waiting
+    // on the same hire, so alert once per hire rather than once per stop.
+    let mut by_hire: HashMap<Uuid, Vec<DispatchOrder>> = HashMap::new();
+    for dispatch in DispatchOrder::list_awaiting_vehicle()?
         .into_iter()
         .filter(|d| d.is_awaiting_vehicle_too_long())
-        .collect();
-    for dispatch in &waiting {
-        match alert_awaiting_vehicle(dispatch).await {
+    {
+        match dispatch.hire_id {
+            Some(hire_id) => by_hire.entry(hire_id).or_default().push(dispatch),
+            None => eprintln!(
+                "delay-alert scan: dispatch {} is AWAITING_VEHICLE with no hire",
+                dispatch.id
+            ),
+        }
+    }
+    for (hire_id, mut stops) in by_hire {
+        stops.sort_by_key(|d| d.stop_sequence);
+        match alert_awaiting_vehicle(hire_id, &stops).await {
             Ok(true) => sent += 1,
             Ok(false) => {}
-            Err(err) => eprintln!("delay-alert scan: dispatch {}: {err}", dispatch.id),
+            Err(err) => eprintln!("delay-alert scan: hire {hire_id}: {err}"),
         }
     }
     Ok(sent)
 }
 
-/// Email the org's admins that a hired dispatch still has no truck. Once per
-/// dispatch. Returns whether a new alert was queued.
-async fn alert_awaiting_vehicle(dispatch: &DispatchOrder) -> Result<bool, Box<dyn Error>> {
-    let already_alerted = Notification::list_by_dispatch(dispatch.id)?
-        .iter()
-        .any(|n| n.event == NotificationEvent::VehicleAwaitedTooLong);
-    if already_alerted {
-        return Ok(false);
-    }
-    let Some(customer) = Customer::get_by_id(dispatch.customer_id)? else {
+/// Email the org's admins that a hire's dispatches (one per stop, in trip
+/// order) still have no truck. Once per hire. Returns whether a new alert was
+/// queued.
+async fn alert_awaiting_vehicle(
+    hire_id: Uuid,
+    dispatches: &[DispatchOrder],
+) -> Result<bool, Box<dyn Error>> {
+    let Some(first) = dispatches.first() else {
         return Ok(false);
     };
+    for dispatch in dispatches {
+        let already_alerted = Notification::list_by_dispatch(dispatch.id)?
+            .iter()
+            .any(|n| n.event == NotificationEvent::VehicleAwaitedTooLong);
+        if already_alerted {
+            return Ok(false);
+        }
+    }
+    let vendor_name = VehicleHire::get_by_id(hire_id)?
+        .map(|h| h.vendor_name)
+        .unwrap_or_default();
+    let mut stops = Vec::with_capacity(dispatches.len());
+    for dispatch in dispatches {
+        let name = Customer::get_by_id(dispatch.customer_id)?
+            .map(|c| c.name)
+            .unwrap_or_else(|| "a deleted customer".to_string());
+        stops.push((dispatch.id, name));
+    }
+    let hours_waiting = dispatches
+        .iter()
+        .map(|d| d.hours_waiting())
+        .max()
+        .unwrap_or(0);
 
     let mut conn = DbConnection::from_env().get_connection()?;
     Notification::prepare_tables(&mut conn)?;
     let mut tx = conn.start_transaction(TxOpts::default())?;
     let Some(notifs) = Notification::enqueue_vehicle_awaited_too_long(
         &mut tx,
-        dispatch.org_id,
-        dispatch.id,
-        &customer,
-        dispatch.hours_waiting(),
+        first.org_id,
+        hire_id,
+        &vendor_name,
+        &stops,
+        hours_waiting,
     )?
     else {
         return Ok(false);
@@ -130,13 +167,17 @@ mod tests {
     use crate::logistics::dispatch::dispatch::{
         DispatchLineItemInput, DispatchStatus, ProofOfDeliveryInput,
     };
+    use crate::logistics::dispatch::trip::Trip;
     use crate::logistics::driver::driver::Driver;
     use crate::logistics::godown::godown::Godown;
     use crate::logistics::notification::notification::NotificationStatus;
     use crate::logistics::orgs::orgs::Organization;
     use crate::logistics::stock::stock::Stock;
     use crate::logistics::test_support::TestDb;
+    use crate::logistics::user::user::{OrgRole, OrgUser};
     use crate::logistics::vehicle::vehicle::{Unit, Vehicle};
+    use crate::logistics::vendor::hire::HireAssignment;
+    use crate::logistics::vendor::vendor::{VehicleVendor, VendorInput};
     use mysql::params;
     use mysql::prelude::*;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -303,5 +344,125 @@ mod tests {
             .expect("delivered");
 
         assert_eq!(scan_and_alert().await.expect("scan"), 0);
+    }
+
+    /// A two-stop trip on one truck hired from a vendor, for an org with one
+    /// active admin and no own vehicles, every stop backdated `hours_ago`
+    /// hours. Returns the trip (stops in order) and its hire.
+    fn hired_trip_hours_ago(hours_ago: i64) -> (Trip, VehicleHire) {
+        let org = Organization::create_organization("Hire Co", "Pune").expect("org");
+        OrgUser::create(
+            org.id,
+            "Owner",
+            "owner@example.com",
+            "password1",
+            OrgRole::Admin,
+        )
+        .expect("admin");
+        let godown = Godown::create(org.id, "Main", "MIDC", None).expect("godown");
+        Stock::new(2, 100, "Cement")
+            .add_to_godown(godown.id)
+            .expect("stock");
+        let mut first = Customer::create_customer(org.id, "First", "Baner").expect("customer");
+        first
+            .update_location(18.56, 73.78, Some("Baner"))
+            .expect("location");
+        let mut second = Customer::create_customer(org.id, "Second", "Aundh").expect("customer");
+        second
+            .update_location(18.55, 73.80, Some("Aundh"))
+            .expect("location");
+        let vendor = VehicleVendor::create(
+            org.id,
+            VendorInput {
+                name: "Sharma Roadlines".into(),
+                phone: "+91 1".into(),
+                ..Default::default()
+            },
+        )
+        .expect("vendor");
+
+        let line = |quantity| {
+            [DispatchLineItemInput {
+                stock_description: "Cement".to_string(),
+                requested_quantity: quantity,
+            }]
+        };
+        let (lines_a, lines_b) = (line(3), line(4));
+        let stops: Vec<(&Customer, &[DispatchLineItemInput])> =
+            vec![(&first, &lines_a[..]), (&second, &lines_b[..])];
+        let trip = org
+            .dispatch_trip_on_hired_vehicle(&stops, false, vendor.id)
+            .expect("hired trip");
+        assert_eq!(trip.stops.len(), 2);
+
+        let backdated = now_unix() - hours_ago * 3600;
+        let mut conn = DbConnection::from_env().get_connection().unwrap();
+        for stop in &trip.stops {
+            conn.exec_drop(
+                "UPDATE Dispatches SET dispatched_at = :t WHERE id = :id",
+                params! { "t" => backdated, "id" => stop.id.to_string() },
+            )
+            .unwrap();
+        }
+        let trip = Trip::get_by_id(trip.id).unwrap().unwrap();
+        let hire = VehicleHire::get_by_id(trip.hire_id.expect("hire id"))
+            .unwrap()
+            .unwrap();
+        (trip, hire)
+    }
+
+    fn awaiting_alerts(dispatch_id: Uuid) -> Vec<Notification> {
+        Notification::list_by_dispatch(dispatch_id)
+            .expect("list")
+            .into_iter()
+            .filter(|n| n.event == NotificationEvent::VehicleAwaitedTooLong)
+            .collect()
+    }
+
+    #[actix_web::test]
+    async fn scan_and_alert_sends_one_awaiting_vehicle_alert_per_hired_trip() {
+        let _db = TestDb::create();
+        let (trip, hire) = hired_trip_hours_ago(6); // 6h > the 4h window
+
+        assert_eq!(scan_and_alert().await.expect("scan"), 1, "one per hire");
+
+        let alerts = awaiting_alerts(trip.stops[0].id);
+        assert_eq!(alerts.len(), 1, "one email to the one admin: {alerts:?}");
+        assert_eq!(alerts[0].recipient_kind, "org_admin");
+        assert_eq!(alerts[0].recipient, "owner@example.com");
+        let body = &alerts[0].body;
+        assert!(body.contains(&hire.id.to_string()[..8]), "{body}");
+        assert!(body.contains("Sharma Roadlines"), "{body}");
+        assert!(body.contains("6h"), "{body}");
+        for stop in &trip.stops {
+            assert!(body.contains(&stop.id.to_string()[..8]), "{body}");
+        }
+        assert!(body.contains("First") && body.contains("Second"), "{body}");
+        assert!(awaiting_alerts(trip.stops[1].id).is_empty());
+
+        assert_eq!(scan_and_alert().await.expect("second scan"), 0);
+        assert_eq!(awaiting_alerts(trip.stops[0].id).len(), 1);
+    }
+
+    #[actix_web::test]
+    async fn scan_and_alert_skips_a_hired_trip_once_its_truck_is_assigned() {
+        let _db = TestDb::create();
+        let (trip, mut hire) = hired_trip_hours_ago(6);
+        hire.assign(HireAssignment {
+            registration_number: "MH12 TRIP 1".into(),
+            capacity: 14,
+            unit: Unit::MetricTon,
+            driver_name: "Hired Driver".into(),
+            driver_phone: "+91 98000 00000".into(),
+            driver_license: None,
+            freight_amount: 12_000,
+            advance_paid: 0,
+        })
+        .expect("assign");
+
+        assert_eq!(scan_and_alert().await.expect("scan"), 0);
+        for stop in &trip.stops {
+            assert!(awaiting_alerts(stop.id).is_empty());
+        }
     }
 }

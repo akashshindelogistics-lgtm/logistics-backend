@@ -487,18 +487,32 @@ fn awaiting_vehicle_alert_goes_to_admins_only_once() {
         OrgRole::Admin,
     )
     .expect("admin");
-    let customer = customer_with(org.id, None, Some("meera@example.com"));
+    let hire_id = Uuid::new_v4();
     let dispatch_id = Uuid::new_v4();
+    let second_id = Uuid::new_v4();
+    let stops = vec![
+        (dispatch_id, "Meera".to_string()),
+        (second_id, "Ravi".to_string()),
+    ];
 
     let rows = in_tx(|tx| {
-        Notification::enqueue_vehicle_awaited_too_long(tx, org.id, dispatch_id, &customer, 6)
+        Notification::enqueue_vehicle_awaited_too_long(tx, org.id, hire_id, "Sharma", &stops, 6)
     })
     .expect("enqueue")
     .expect("first alert");
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].recipient_kind, "org_admin");
     assert_eq!(rows[0].recipient, "owner@example.com");
-    assert!(rows[0].body.contains("6h"), "{}", rows[0].body);
+    assert_eq!(
+        rows[0].dispatch_id, dispatch_id,
+        "attached to the first stop"
+    );
+    let body = &rows[0].body;
+    assert!(body.contains("6h"), "{body}");
+    assert!(body.contains(&hire_id.to_string()[..8]), "{body}");
+    assert!(body.contains("Sharma"), "{body}");
+    assert!(body.contains(&second_id.to_string()[..8]), "{body}");
+    assert!(body.contains("Meera") && body.contains("Ravi"), "{body}");
     assert_eq!(rows[0].sms_template(), None);
     let short_id = &dispatch_id.to_string()[..8];
     assert_eq!(
@@ -507,8 +521,8 @@ fn awaiting_vehicle_alert_goes_to_admins_only_once() {
     );
 
     let again = in_tx(|tx| {
-        Notification::enqueue_vehicle_awaited_too_long(tx, org.id, dispatch_id, &customer, 7)
+        Notification::enqueue_vehicle_awaited_too_long(tx, org.id, hire_id, "Sharma", &stops, 7)
     })
     .expect("enqueue again");
-    assert!(again.is_none());
+    assert!(again.is_none(), "deduped per hire");
 }
