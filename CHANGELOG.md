@@ -4,6 +4,32 @@ All notable changes to this project are documented here. From v0.1.1 on, this
 file is maintained automatically by [release-please](https://github.com/googleapis/release-please)
 from the conventional-commit history.
 
+## [1.1.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v1.0.0...v1.1.0) (2026-11-15)
+
+
+### Features
+
+* **agent:** delivery monitor and trip planner agents (shadow) ([#351](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/351)) ([4b6db41](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/4b6db41dc2ae53e7158af4574764c8915c056176))
+* **ai:** assistant/reindex as a background job with a progress count ([#353](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/353)) ([ca11c7f](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/ca11c7fd53c8da97f6425ac0be1834b0f6c42730))
+* **ai:** cited assistant answers via search_result blocks ([#349](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/349)) ([f3e3d15](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/f3e3d1567c66136ec880434eecfb652643072de1))
+* **auth:** email verification and Admin-user prompt for existing orgs ([#343](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/343)) ([11ef185](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/11ef18575fafdab84957711bcb6b7c4759fc5e89))
+* **billing:** partial invoice payments with payment mode ([#338](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/338)) ([d53d35f](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/d53d35f3545e92e2e6913875f29b8570c4352ce5))
+* **dispatch:** vision check of proof-of-delivery uploads ([#340](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/340)) ([a7c7de6](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/a7c7de61997eb4a89b66c494d43edde030a7bb50))
+* **godowns:** production plan endpoint for manufacturers ([#339](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/339)) ([9aac25f](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/9aac25f9e9cb6322d75822cad2c43b5eb039ac3f))
+* **hire:** delay alert for dispatches stuck awaiting a vehicle ([#346](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/346)) ([af63f42](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/af63f42d7f3bd46a0688e0a5b45993c957a8a2eb))
+* **import:** CSV import with dry run and templates ([#344](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/344)) ([72ee1a2](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/72ee1a2064df355e9360d17e86be0eda3e9c715e))
+* **notifications:** tracking link in customer SMS ([#357](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/357)) ([0a450b5](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/0a450b556be0c1e2d94211c280173f62ba927df9))
+* **onboarding:** load and remove sample data for an org ([#345](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/345)) ([9f4b60b](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/9f4b60ba5a1c0d4cbb78a02ba819c9731ee6a814))
+* **onboarding:** per-industry onboarding templates (building materials first) ([#335](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/335)) ([fcd883d](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/fcd883dc4b4f497c05579561f662ec6675b3b2f4))
+* **orgs:** onboarding checklist API + dismiss ([#342](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/342)) ([e30104b](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/e30104b472bb553fcc7fe4c013eaa4180aab504a))
+* **vehicle:** fuel/trip expense logging with cost per trip in reports ([#337](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/337)) ([becb384](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/becb3840d7b4cd0c6efca30a172be84d508d6e97))
+* **vehicles:** location history with retention and history endpoint ([#341](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/341)) ([a1dd9a9](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/a1dd9a960d76614ad48715e1082f5a492114a0c2))
+
+
+### Refactoring
+
+* **ai:** shared Anthropic client with per-feature effort ([#347](https://github.com/akashshindelogistics-lgtm/logistics-backend/issues/347)) ([2b1c34c](https://github.com/akashshindelogistics-lgtm/logistics-backend/commit/2b1c34c03b743516adbf74b08a3f39738c178d34))
+
 ## [1.0.0](https://github.com/akashshindelogistics-lgtm/logistics-backend/compare/v0.19.0...v1.0.0) (2026-11-13)
 
 
