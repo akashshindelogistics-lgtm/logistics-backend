@@ -289,6 +289,28 @@ pub fn complete(
     Ok(())
 }
 
+/// Renew the lease on `consumer`'s delivery of `event_id`, for a consumer whose
+/// work can outlast [`LEASE_SECS`]. Without it another worker would re-claim
+/// the delivery and run it a second time. Keyed by event, since a consumer
+/// doesn't see its delivery id; a delivery that is no longer `PROCESSING` is
+/// left alone.
+pub fn extend_lease(
+    conn: &mut PooledConn,
+    event_id: Uuid,
+    consumer: &str,
+) -> Result<(), Box<dyn Error>> {
+    conn.exec_drop(
+        "UPDATE EventDeliveries SET locked_until = :locked_until
+         WHERE event_id = :event_id AND consumer = :consumer AND status = 'PROCESSING'",
+        params! {
+            "locked_until" => now_unix() + LEASE_SECS,
+            "event_id" => event_id.to_string(),
+            "consumer" => consumer,
+        },
+    )?;
+    Ok(())
+}
+
 /// Delay before retrying after failed attempt number `attempt` (1-based).
 pub fn backoff_secs(attempt: u32) -> i64 {
     let doublings = attempt.saturating_sub(1).min(16);

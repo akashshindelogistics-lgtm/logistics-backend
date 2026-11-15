@@ -551,7 +551,8 @@ pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
 }
 
 /// [`reindex_org`], calling `on_progress` with the running chunk count after
-/// each source kind, so a background job can report how far it got.
+/// every chunk, so a background job can report how far it got and keep its
+/// lease alive however long one source kind takes. The callback must be cheap.
 pub fn reindex_org_with_progress(
     org_id: Uuid,
     on_progress: &mut dyn FnMut(usize),
@@ -561,13 +562,14 @@ pub fn reindex_org_with_progress(
     for customer in Customer::list_by_org(org_id)? {
         reindex_customer_best_effort(&customer);
         count += 1;
+        on_progress(count);
     }
-    on_progress(count);
 
     let godowns = Godown::list_by_org(org_id)?;
     for godown in &godowns {
         reindex_godown_best_effort(godown);
         count += 1;
+        on_progress(count);
         for stock in &godown.stock {
             upsert_best_effort(
                 org_id,
@@ -576,15 +578,15 @@ pub fn reindex_org_with_progress(
                 stock_snapshot_text(godown, stock),
             );
             count += 1;
+            on_progress(count);
         }
     }
-    on_progress(count);
 
     for vehicle in Vehicle::list_by_org(org_id)? {
         reindex_vehicle_best_effort(&vehicle, org_id);
         count += 1;
+        on_progress(count);
     }
-    on_progress(count);
 
     for notification in Notification::list_by_org(org_id, u32::MAX)? {
         upsert_best_effort(
@@ -594,8 +596,8 @@ pub fn reindex_org_with_progress(
             notification_chunk_text(&notification),
         );
         count += 1;
+        on_progress(count);
     }
-    on_progress(count);
 
     for document in VehicleDocument::list_by_org(org_id)? {
         upsert_best_effort(
@@ -605,8 +607,8 @@ pub fn reindex_org_with_progress(
             vehicle_document_chunk_text(&document),
         );
         count += 1;
+        on_progress(count);
     }
-    on_progress(count);
 
     for dispatch in DispatchOrder::list_by_org(org_id)? {
         if let Ok(Some(customer)) = Customer::get_by_id(dispatch.customer_id) {
@@ -617,9 +619,9 @@ pub fn reindex_org_with_progress(
                 dispatch_narrative_text(&dispatch, &customer),
             );
             count += 1;
+            on_progress(count);
         }
     }
-    on_progress(count);
 
     Ok(count)
 }
