@@ -200,7 +200,9 @@ async fn test_sample_data_remove_refuses_when_real_dispatch_uses_sample_vehicle(
     assert_eq!(test::call_service(&app, req).await.status().as_u16(), 201);
 
     // A real customer's dispatch goes out on the sample vehicle.
-    let real = Customer::create_customer(org.id, "Real Customer", "Somewhere").unwrap();
+    let mut real = Customer::create_customer(org.id, "Real Customer", "Somewhere").unwrap();
+    real.update_location(18.52, 73.86, Some("Somewhere"))
+        .expect("location");
     Organization::get_by_id(org.id)
         .unwrap()
         .unwrap()
