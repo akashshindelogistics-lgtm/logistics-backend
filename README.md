@@ -295,6 +295,7 @@ All routes are served under the `/api` prefix.
 | GET/DELETE | `/api/vehicles`, `/api/vehicles/{reg}` | List vehicles / remove one |
 | PUT | `/api/vehicles/{reg}` | Update a vehicle's capacity, unit and (optionally) `vehicle_type` |
 | PUT | `/api/vehicles/{reg}/location` | Update a vehicle's location (org login) |
+| GET | `/api/vehicles/{reg}/location-history` | Positions the vehicle reported between `?from=` and `?to=` (unix seconds, default the last 24 h), oldest first, at most 5000. Kept for `LOCATION_HISTORY_RETENTION_DAYS` (default 30) |
 | POST | `/api/track/{tracker_key}` | GPS device push: record `{latitude, longitude}` for the vehicle that key belongs to — no login |
 | POST | `/api/vehicles/{reg}/tracker-key/rotate` | Issue a fresh tracker key, invalidating the old one |
 | PUT | `/api/vehicles/{reg}/driver` | Assign (or clear) the vehicle's driver |
