@@ -93,6 +93,11 @@ fn secret_matches(given: Option<&str>) -> bool {
     path = "/api/public/msg91/delivery-reports",
     tag = "Notifications",
     params(("secret" = String, Query, description = "Must equal MSG91_WEBHOOK_SECRET")),
+    request_body(
+        content = String,
+        description = "MSG91 report(s) as JSON, or form-encoded `data=<json>`; flat `{requestId, status}` or nested `{requestId, report: [{status, desc}]}`, up to 256 KB",
+        content_type = "application/json"
+    ),
     responses(
         (status = 200, description = "Reports stored", body = EmptyResponse),
         (status = 400, description = "Body is neither JSON nor a form data=<json> field", body = EmptyResponse),
