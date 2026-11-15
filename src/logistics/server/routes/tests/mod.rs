@@ -41,6 +41,7 @@ mod customers;
 mod dispatches;
 mod driver_app;
 mod drivers;
+mod events_stream;
 mod godowns;
 mod gst;
 mod health;

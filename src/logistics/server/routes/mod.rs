@@ -59,6 +59,7 @@ mod customers;
 mod dispatches;
 mod driver_app;
 mod drivers;
+mod events_stream;
 mod godowns;
 mod health;
 mod hires;
@@ -88,6 +89,7 @@ pub use customers::*;
 pub use dispatches::*;
 pub use driver_app::*;
 pub use drivers::*;
+pub use events_stream::*;
 pub use godowns::*;
 pub use health::*;
 pub use hires::*;
@@ -243,6 +245,7 @@ impl Modify for SecurityAddon {
         export_org_csv,
         import_template,
         import_org_csv,
+        stream_events,
         list_dispatch_notifications,
         list_org_notifications,
         get_agent_settings,
@@ -351,6 +354,7 @@ impl Modify for SecurityAddon {
         (name = "Dispatch", description = "Stock dispatch"),
         (name = "Billing", description = "Freight invoices and customer payment status"),
         (name = "Reports", description = "Operational reporting: fleet utilization, delivery performance, inventory, dispatch volume"),
+        (name = "Events", description = "Live server-sent event stream for dashboards"),
         (name = "Notifications", description = "Customer and driver notifications recorded for each dispatch"),
         (name = "Trips", description = "Multi-stop trips: one vehicle serving several customer orders in sequence"),
         (name = "Uploads", description = "File storage for uploaded images, e.g. proof-of-delivery photos and signatures"),
@@ -503,6 +507,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(export_org_csv)
             .service(import_template)
             .service(import_org_csv)
+            .service(stream_events)
             .service(list_dispatch_notifications)
             .service(list_org_notifications)
             .service(get_agent_settings)
