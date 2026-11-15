@@ -50,7 +50,9 @@ Tools: `list_inbound_messages`, `list_stock_items`, `propose_dispatch`,
 
 Every message ends with one outcome, so it's read once: `propose_dispatch`, or
 `flag_message` with `ALERT` (an alert for a person; the message becomes `ALERTED`)
-or `IGNORE` (`IGNORED`). Approving a proposal makes it `PROCESSED`, rejecting it
+or `IGNORE` (`IGNORED`). `IGNORE` runs without a person, so it's refused for a
+matched customer's message: that one always ends as a proposal or an alert a
+person sees, and another message's text can't make the agent drop it. Approving a proposal makes it `PROCESSED`, rejecting it
 `REJECTED`. A message with a pending proposal isn't listed again either.
 
 - **Always waits for a person**, even in `AUTONOMOUS`: `propose_dispatch` is

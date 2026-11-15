@@ -88,7 +88,7 @@ fn flag_message_schema() -> Value {
             "outcome": {
                 "type": "string",
                 "enum": ["ALERT", "IGNORE"],
-                "description": "ALERT when a person should look at it; IGNORE when it needs nothing, such as a thank-you",
+                "description": "ALERT when a person should look at it; IGNORE when it needs nothing, such as a stranger's spam; never for a matched customer's message",
             },
             "reason": {"type": "string", "description": "What it is and, for an alert, what a person should do"},
         }),
@@ -136,7 +136,7 @@ pub fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "flag_message",
-            description: "Close an inbound message you won't propose a dispatch for: ALERT raises it for a person (unknown sender, a question or complaint, unclear items, anything unusual), IGNORE drops it when it needs nothing. Use one of these or propose_dispatch for every message.",
+            description: "Close an inbound message you won't propose a dispatch for: ALERT raises it for a person (unknown sender, a question or complaint, unclear items, anything unusual), IGNORE drops it when it needs nothing (only for a sender who isn't a matched customer). Use one of these or propose_dispatch for every message.",
             risk: Risk::Internal,
             schema: flag_message_schema,
         },
@@ -269,10 +269,7 @@ pub fn validate(org_id: Uuid, name: &str, input: &Value) -> Result<String, Strin
             validate_proposal(org_id, input).map(|p| format!("order:{}", p.message.id))
         }
         // Same key as a proposal: a message gets one outcome.
-        "flag_message" => {
-            flag_outcome(input)?;
-            open_message(org_id, input).map(|m| format!("order:{}", m.id))
-        }
+        "flag_message" => flagged_message(org_id, input).map(|(_, m)| format!("order:{}", m.id)),
         other => Err(format!("{other} isn't an action")),
     }
 }
@@ -284,6 +281,24 @@ fn flag_outcome(input: &Value) -> Result<&'static str, String> {
         "IGNORE" => Ok(inbound::IGNORED),
         _ => Err("outcome must be ALERT or IGNORE".to_string()),
     }
+}
+
+/// The status a `flag_message` call sets and the message it closes. A matched
+/// customer's message can't be ignored: `IGNORE` runs with no person in the
+/// loop, so it would drop a real order silently. It needs a proposal or an alert.
+fn flagged_message(
+    org_id: Uuid,
+    input: &Value,
+) -> Result<(&'static str, inbound::InboundMessage), String> {
+    let status = flag_outcome(input)?;
+    let message = open_message(org_id, input)?;
+    if status == inbound::IGNORED && message.customer_id.is_some() {
+        return Err(
+            "This message is from a matched customer, so it can't be ignored. Use propose_dispatch, or flag_message with ALERT so a person sees it."
+                .to_string(),
+        );
+    }
+    Ok((status, message))
 }
 
 /// The input's `message_id`, if it's this org's and nobody has dealt with it.
@@ -467,8 +482,7 @@ pub fn execute(org_id: Uuid, name: &str, input: &Value) -> Result<String, String
         // The alert is the recorded action itself.
         "raise_alert" => Ok("Alert raised".to_string()),
         "flag_message" => {
-            let status = flag_outcome(input)?;
-            let message = open_message(org_id, input)?;
+            let (status, message) = flagged_message(org_id, input)?;
             inbound::mark_handled(message.id, status)?;
             Ok(format!("Message marked {status}"))
         }

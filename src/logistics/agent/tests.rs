@@ -872,12 +872,13 @@ async fn an_alerted_message_is_closed_so_the_next_tick_makes_no_intake_run() {
 }
 
 #[actix_web::test]
-async fn an_ignored_message_is_closed_too() {
+async fn an_ignored_message_from_a_stranger_is_closed_too() {
     let _db = TestDb::create();
     let (org, _c) = stocked_org("Ignore Intake Org");
     store::set_mode(org.id, AutonomyMode::Supervised).unwrap();
     let message =
-        inbound::receive(org.id, Channel::Email, "buyer@acme.test", None, "Thanks!").unwrap();
+        inbound::receive(org.id, Channel::Email, "spam@x.test", None, "Win a prize!").unwrap();
+    assert!(message.customer_id.is_none());
     let (config, _r) = fake_model(vec![flag(message.id, "IGNORE"), finished("Done.")]).await;
 
     runtime::run_order_intake(org.id, "manual", &config)
@@ -899,6 +900,35 @@ async fn an_ignored_message_is_closed_too() {
             .unwrap()
             .contains("already handled")
     );
+}
+
+#[actix_web::test]
+async fn a_matched_customers_message_cant_be_ignored() {
+    let _db = TestDb::create();
+    let (org, _c) = stocked_org("Ignore Customer Intake Org");
+    store::set_mode(org.id, AutonomyMode::Autonomous).unwrap();
+    let message =
+        inbound::receive(org.id, Channel::Email, "buyer@acme.test", None, "40 cement").unwrap();
+    assert!(message.customer_id.is_some());
+    let (config, requests) = fake_model(vec![flag(message.id, "IGNORE"), finished("Done.")]).await;
+
+    runtime::run_order_intake(org.id, "manual", &config)
+        .await
+        .unwrap();
+
+    let result = last_tool_result(&requests);
+    assert_eq!(result["is_error"], true);
+    assert!(
+        result["content"]
+            .as_str()
+            .unwrap()
+            .contains("can't be ignored")
+    );
+    assert_eq!(
+        inbound::get(message.id).unwrap().unwrap().status,
+        "RECEIVED"
+    );
+    assert!(store::list_actions(org.id, None, 10).unwrap().is_empty());
 }
 
 #[actix_web::test]
