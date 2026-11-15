@@ -79,6 +79,16 @@ impl Agent {
         }
     }
 
+    /// How many tokens a day this agent's own runs may use for one org. The
+    /// dispatch desk keeps the whole limit, so the shadow-capped agents can never
+    /// use up what it needs; each of them gets a small share on top.
+    pub(crate) fn daily_token_budget(self, limit: i64) -> i64 {
+        match self {
+            Agent::DispatchDesk => limit,
+            Agent::DeliveryMonitor | Agent::TripPlanner => limit / SHADOW_AGENT_BUDGET_DIVISOR,
+        }
+    }
+
     fn effective_mode(self, org_id: Uuid) -> Result<AutonomyMode, String> {
         Ok(store::get_mode(org_id)?.capped_at(self.mode_cap()))
     }
@@ -89,6 +99,8 @@ const MAX_TURNS: usize = 12;
 const MAX_ACTIONS_PER_RUN: usize = 20;
 const STALE_RUN_SECONDS: i64 = 30 * 60;
 const DEFAULT_DAILY_TOKEN_LIMIT: i64 = 500_000;
+/// Each shadow-capped agent may use a tenth of the daily limit.
+const SHADOW_AGENT_BUDGET_DIVISOR: i64 = 10;
 
 const DISPATCH_DESK_PROMPT: &str = "\
 You run the dispatch desk for a logistics company. Review the open work and act on it.
@@ -193,7 +205,8 @@ pub async fn run_agent(
     if store::has_active_run(org_id, store::now_unix() - STALE_RUN_SECONDS).map_err(failed)? {
         return Err(RunError::AlreadyRunning);
     }
-    if store::tokens_used_last_day(org_id).map_err(failed)? >= daily_token_limit() {
+    let used = store::tokens_used_last_day(org_id, agent.name()).map_err(failed)?;
+    if used >= agent.daily_token_budget(daily_token_limit()) {
         return Err(RunError::OverDailyLimit);
     }
     let run_id = store::start_run(org_id, agent.name(), trigger_source).map_err(failed)?;

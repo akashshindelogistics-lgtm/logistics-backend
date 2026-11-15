@@ -512,6 +512,34 @@ async fn the_daily_token_limit_stops_more_runs() {
     assert!(requests.lock().unwrap().is_empty());
 }
 
+#[test]
+fn the_dispatch_desk_keeps_the_whole_daily_limit_and_shadow_agents_get_a_share() {
+    assert_eq!(Agent::DispatchDesk.daily_token_budget(500_000), 500_000);
+    assert_eq!(Agent::DeliveryMonitor.daily_token_budget(500_000), 50_000);
+    assert_eq!(Agent::TripPlanner.daily_token_budget(500_000), 50_000);
+}
+
+#[actix_web::test]
+async fn shadow_agents_cant_use_up_the_dispatch_desks_daily_limit() {
+    let _db = TestDb::create();
+    let org = org("Shared Budget Org");
+    store::set_mode(org.id, AutonomyMode::Shadow).unwrap();
+    for agent in [Agent::DeliveryMonitor, Agent::TripPlanner] {
+        let used = store::start_run(org.id, agent.name(), "schedule").unwrap();
+        store::finish_run(used, "COMPLETED", None, 300_000, 0).unwrap();
+    }
+    let (config, _r) = fake_model(vec![finished("Done.")]).await;
+
+    let run = runtime::run_dispatch_desk(org.id, "schedule", &config)
+        .await
+        .expect("the dispatch desk has its own budget");
+    assert_eq!(run.status, "COMPLETED");
+    let err = runtime::run_agent(Agent::DeliveryMonitor, org.id, "schedule", &config)
+        .await
+        .expect_err("over its share");
+    assert!(matches!(err, RunError::OverDailyLimit));
+}
+
 #[actix_web::test]
 async fn read_tools_send_the_model_no_customer_details() {
     let _db = TestDb::create();

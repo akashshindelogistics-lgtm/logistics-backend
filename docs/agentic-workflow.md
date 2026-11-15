@@ -59,7 +59,7 @@ enforced outside the model:
 | Domain rules | Same `transition_to` as the dashboard | Illegal moves fail for agents too |
 | Hard rules in tools | `tools::validate` | An expired vehicle document blocks confirming, whatever the model says |
 | Recheck on approval | `tools::execute` | An approval that has gone stale fails instead of applying |
-| Limits | `runtime.rs` | 12 turns and 20 actions per run, a daily token limit per org |
+| Limits | `runtime.rs` | 12 turns and 20 actions per run, a daily token limit per org and agent |
 | Kill switch | Mode `OFF` | A running agent stops at its next turn |
 | Audit trail | `AgentRuns`, `AgentActions` | Every request, its reason and who decided |
 
@@ -187,7 +187,9 @@ riskiest, since it's the first time outsiders' text directly drives agents.
 - **Tables:** `AgentSettings`, `AgentRuns`, `AgentActions`, removed with the org.
 - **Settings:** `AGENTS_ENABLED=true` starts the timer, and the org's mode must
   also be on. `AGENT_INTERVAL_MINUTES` (60), `AGENT_MODEL` (`claude-opus-5-5`),
-  `AGENT_EFFORT` (`medium`), `AGENT_DAILY_TOKEN_LIMIT` (500000).
+  `AGENT_EFFORT` (`medium`), `AGENT_DAILY_TOKEN_LIMIT` (500000). The dispatch desk
+  gets the whole limit; the delivery monitor and trip planner each get a tenth of
+  it, counted separately, so they can't stop the dispatch desk.
 - **`AGENT_MODEL_URL`:** for tests only. Points agents at a stand-in model, and the
   real API key is never sent to it. The dashboard's end-to-end tests use this.
 - **Request:** uses the API's server-side refusal fallback, so a safety classifier
