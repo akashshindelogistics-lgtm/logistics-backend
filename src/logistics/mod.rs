@@ -14,6 +14,7 @@ pub mod gst;
 pub mod http;
 pub mod import;
 pub mod notification;
+pub mod onboarding;
 pub mod orgs;
 pub mod reports;
 pub mod server;
