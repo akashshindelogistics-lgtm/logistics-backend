@@ -11,6 +11,7 @@
 use crate::logistics::billing::invoice::Invoice;
 use crate::logistics::dispatch::dispatch::{DispatchOrder, DispatchStatus, VehicleSource};
 use crate::logistics::godown::godown::Godown;
+use crate::logistics::vehicle::expense::{ExpenseType, VehicleExpense};
 use crate::logistics::vehicle::vehicle::Vehicle;
 use crate::logistics::vendor::hire::{HireStatus, VehicleHire};
 use serde::{Deserialize, Serialize};
@@ -175,6 +176,42 @@ pub struct HiredTransport {
     pub hire_margins: Vec<HireMargin>,
 }
 
+/// What one trip cost to run, from the expenses logged against it, set against
+/// the freight invoiced on its dispatches.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct TripCost {
+    /// A `Trips` id, or the dispatch id for a standalone dispatch.
+    pub trip_id: Uuid,
+    pub registration_number: String,
+    pub fuel: i64,
+    pub toll: i64,
+    pub driver_advance: i64,
+    pub other: i64,
+    /// Σ of the four above.
+    pub total_cost: i64,
+    /// Σ invoice amount over the trip's non-cancelled dispatches.
+    pub invoiced: i64,
+    /// `invoiced - total_cost`. Understates until every dispatch is invoiced.
+    pub margin: i64,
+}
+
+/// Trip running costs (fuel, tolls, driver advances, other) from logged
+/// vehicle expenses. See `docs/vehicle-expenses.md`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct TripCosts {
+    /// Σ every logged expense, tagged to a trip or not.
+    pub expense_total: i64,
+    /// The part of `expense_total` not tagged to any trip.
+    pub untagged_total: i64,
+    /// Trips with at least one expense logged against them.
+    pub trips_with_expenses: i64,
+    /// `Σ trip total_cost / trips_with_expenses`, one decimal. `None` when no
+    /// trip has expenses.
+    pub avg_cost_per_trip: Option<f64>,
+    /// One row per trip with expenses, most expensive first.
+    pub trips: Vec<TripCost>,
+}
+
 /// The whole report for one organisation.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OpsReport {
@@ -191,6 +228,9 @@ pub struct OpsReport {
     /// Own vs hired trucks, vendor spend and margin on hires.
     #[serde(default)]
     pub hired_transport: HiredTransport,
+    /// Fuel, toll and driver-advance cost per trip.
+    #[serde(default)]
+    pub trip_costs: TripCosts,
 }
 
 impl OpsReport {
@@ -200,6 +240,7 @@ impl OpsReport {
         let godowns = Godown::list_by_org(org_id)?;
         let hires = VehicleHire::list_by_org(org_id, None)?;
         let invoices = Invoice::list_by_org(org_id)?;
+        let expenses = VehicleExpense::list_by_org(org_id)?;
         let now = now_unix();
 
         Ok(Self {
@@ -212,7 +253,75 @@ impl OpsReport {
             godown_inventory: godowns.iter().map(godown_inventory).collect(),
             dispatch_volume: dispatch_volume(&dispatches, now),
             hired_transport: hired_transport(&dispatches, &hires, &invoices),
+            trip_costs: trip_costs(&dispatches, &invoices, &expenses),
         })
+    }
+}
+
+fn trip_costs(
+    dispatches: &[DispatchOrder],
+    invoices: &[Invoice],
+    expenses: &[VehicleExpense],
+) -> TripCosts {
+    let invoice_by_dispatch: HashMap<Uuid, i64> =
+        invoices.iter().map(|i| (i.dispatch_id, i.amount)).collect();
+    // A standalone dispatch is its own one-stop trip, keyed by its own id.
+    let mut invoiced_by_trip: HashMap<Uuid, i64> = HashMap::new();
+    for d in dispatches
+        .iter()
+        .filter(|d| d.status != DispatchStatus::Cancelled)
+    {
+        if let Some(amount) = invoice_by_dispatch.get(&d.id) {
+            *invoiced_by_trip
+                .entry(d.trip_id.unwrap_or(d.id))
+                .or_insert(0) += amount;
+        }
+    }
+
+    let mut by_trip: HashMap<Uuid, TripCost> = HashMap::new();
+    let mut untagged_total = 0;
+    for e in expenses {
+        let Some(trip_id) = e.trip_id else {
+            untagged_total += e.amount;
+            continue;
+        };
+        let t = by_trip.entry(trip_id).or_insert_with(|| TripCost {
+            trip_id,
+            registration_number: e.vehicle_registration.clone(),
+            fuel: 0,
+            toll: 0,
+            driver_advance: 0,
+            other: 0,
+            total_cost: 0,
+            invoiced: invoiced_by_trip.get(&trip_id).copied().unwrap_or(0),
+            margin: 0,
+        });
+        match e.expense_type {
+            ExpenseType::Fuel => t.fuel += e.amount,
+            ExpenseType::Toll => t.toll += e.amount,
+            ExpenseType::DriverAdvance => t.driver_advance += e.amount,
+            ExpenseType::Other => t.other += e.amount,
+        }
+        t.total_cost += e.amount;
+    }
+    let mut trips: Vec<TripCost> = by_trip.into_values().collect();
+    for t in &mut trips {
+        t.margin = t.invoiced - t.total_cost;
+    }
+    trips.sort_by(|a, b| {
+        b.total_cost
+            .cmp(&a.total_cost)
+            .then_with(|| a.trip_id.cmp(&b.trip_id))
+    });
+
+    let tagged_total: i64 = trips.iter().map(|t| t.total_cost).sum();
+    TripCosts {
+        expense_total: tagged_total + untagged_total,
+        untagged_total,
+        trips_with_expenses: trips.len() as i64,
+        avg_cost_per_trip: (!trips.is_empty())
+            .then(|| round1(tagged_total as f64 / trips.len() as f64)),
+        trips,
     }
 }
 

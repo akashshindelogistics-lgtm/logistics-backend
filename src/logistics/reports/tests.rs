@@ -418,3 +418,59 @@ fn hired_transport_is_empty_without_hires() {
     assert_eq!(h.hired_share_percent, Some(0.0));
     assert!(h.vendors.is_empty() && h.hire_margins.is_empty());
 }
+
+#[test]
+fn trip_costs_sum_expenses_per_trip_and_set_them_against_invoices() {
+    use crate::logistics::billing::invoice::Invoice;
+    use crate::logistics::vehicle::expense::{ExpenseType, VehicleExpense};
+
+    let _db = TestDb::create();
+    let fx = seed("Trip Cost Co", 1);
+    let d = fx
+        .org
+        .dispatch_stock_to_customer(&fx.customer, &[line(1)])
+        .expect("dispatch");
+    let reg = d.vehicle_registration_number.clone().unwrap();
+    Invoice::create(fx.org.id, d.id, fx.customer.id, 10_000, "2030-01-01").expect("invoice");
+
+    let add = |trip, ty, amount| {
+        VehicleExpense::create(
+            fx.org.id,
+            &reg,
+            trip,
+            ty,
+            amount,
+            "2026-01-01".into(),
+            None,
+            None,
+        )
+        .expect("expense")
+    };
+    add(Some(d.id), ExpenseType::Fuel, 4_000);
+    add(Some(d.id), ExpenseType::Fuel, 1_000);
+    add(Some(d.id), ExpenseType::Toll, 500);
+    add(Some(d.id), ExpenseType::DriverAdvance, 1_500);
+    add(None, ExpenseType::Other, 300);
+
+    let c = OpsReport::for_org(fx.org.id).expect("report").trip_costs;
+    assert_eq!((c.expense_total, c.untagged_total), (7_300, 300));
+    assert_eq!(c.trips_with_expenses, 1);
+    assert_eq!(c.avg_cost_per_trip, Some(7_000.0));
+    let t = &c.trips[0];
+    assert_eq!(t.trip_id, d.id);
+    assert_eq!(
+        (t.fuel, t.toll, t.driver_advance, t.other),
+        (5_000, 500, 1_500, 0)
+    );
+    assert_eq!((t.total_cost, t.invoiced, t.margin), (7_000, 10_000, 3_000));
+}
+
+#[test]
+fn trip_costs_are_empty_without_expenses() {
+    let _db = TestDb::create();
+    let fx = seed("No Expense Co", 1);
+    let c = OpsReport::for_org(fx.org.id).expect("report").trip_costs;
+    assert_eq!(c.expense_total, 0);
+    assert_eq!(c.avg_cost_per_trip, None);
+    assert!(c.trips.is_empty());
+}

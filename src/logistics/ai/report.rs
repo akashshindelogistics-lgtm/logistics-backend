@@ -148,6 +148,7 @@ mod tests {
                 },
             ],
             hired_transport: Default::default(),
+            trip_costs: Default::default(),
         }
     }
 
