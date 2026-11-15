@@ -144,6 +144,79 @@ async fn test_stream_pages_past_a_full_second_of_events() {
 }
 
 #[actix_web::test]
+async fn test_stream_sends_a_later_event_that_sorts_before_a_sent_one() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth) = setup_org(&app, "Stream Same Second Org").await;
+
+    let req = test::TestRequest::get()
+        .uri("/api/events/stream")
+        .insert_header(("Authorization", auth))
+        .to_request();
+    let mut body = test::call_service(&app, req).await.into_body();
+    assert!(
+        next_chunk(&mut body)
+            .await
+            .unwrap()
+            .starts_with(": connected")
+    );
+
+    let mut conn = crate::logistics::db::connection::DbConnection::from_env()
+        .get_connection()
+        .unwrap();
+    queue::ensure_tables(&mut conn).unwrap();
+    let publish = |conn: &mut mysql::PooledConn, status: &str| {
+        let mut tx = conn.start_transaction(mysql::TxOpts::default()).unwrap();
+        queue::publish(
+            &mut tx,
+            org.id,
+            EventType::DispatchStatusChanged,
+            serde_json::json!({ "status": status }),
+            None,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    };
+
+    publish(&mut conn, "FIRST_EVENT");
+    let mut text = String::new();
+    while !text.contains("FIRST_EVENT") {
+        text.push_str(&next_chunk(&mut body).await.expect("stream ended"));
+    }
+    let first_second: i64 = conn
+        .exec_first(
+            "SELECT created_at FROM Events WHERE org_id = :org",
+            params! { "org" => org.id.to_string() },
+        )
+        .unwrap()
+        .unwrap();
+
+    // Same second as the sent event, and an id that sorts below it.
+    publish(&mut conn, "SECOND_EVENT");
+    conn.exec_drop(
+        "UPDATE Events SET id = '00000000-0000-0000-0000-000000000000', created_at = :t
+         WHERE org_id = :org AND payload LIKE '%SECOND_EVENT%'",
+        params! { "t" => first_second, "org" => org.id.to_string() },
+    )
+    .unwrap();
+
+    let mut later = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        while !later.contains("SECOND_EVENT") {
+            later.push_str(&next_chunk(&mut body).await.expect("stream ended"));
+        }
+    })
+    .await
+    .expect("same-second event with a lower id was never sent");
+    assert!(
+        later.contains("id: 00000000-0000-0000-0000-000000000000"),
+        "{later}"
+    );
+    // The look-back re-reads the first event but does not send it again.
+    assert!(!later.contains("FIRST_EVENT"), "{later}");
+}
+
+#[actix_web::test]
 async fn test_stream_ends_when_token_expires() {
     let _db = TestDb::create();
     let app = test::init_service(App::new().configure(config_routes)).await;

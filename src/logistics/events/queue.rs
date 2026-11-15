@@ -205,6 +205,9 @@ pub(crate) fn publish_to(
 /// first in `(created_at, id)` order. `since` is unix seconds; pass an empty
 /// `after_id` to include every event at second `since`. Strictly after the
 /// cursor, so paging always advances even when many events share a second.
+/// Ids are random, so a later event can sort before the cursor in the same
+/// second: callers that poll repeatedly start each poll a little earlier and
+/// skip ids they have already handled.
 /// The live dashboard stream polls this; it needs no delivery rows.
 pub fn list_for_org_after(
     conn: &mut PooledConn,

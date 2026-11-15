@@ -66,9 +66,11 @@ client should refetch its data when it reconnects. The stream ends when the
 token's `exp` passes, so the client reconnects with a fresh token.
 
 It is not a queue consumer: it polls the org's `Events` rows every 2 seconds
-(a `: keepalive` comment goes out every ~14 idle seconds) with a keyset
-cursor on `(created_at, id)`, re-polling at once while pages come back full,
-so it needs no delivery rows and works whether or not workers are enabled. Every dispatch
+(a `: keepalive` comment goes out every ~14 idle seconds). Each poll starts
+5 seconds before the newest event it has read and pages with a keyset cursor
+on `(created_at, id)`, re-polling at once while pages come back full; ids
+already sent in that window are skipped. The overlap catches events that sort
+before one already sent in the same second or commit late, so it needs no delivery rows and works whether or not workers are enabled. Every dispatch
 status change publishes `dispatch.status_changed` (`dispatch_id`, `from`,
 `status`) in the same transaction, with no subscribers. The dashboard-side
 subscription belongs to logistics-frontend.
