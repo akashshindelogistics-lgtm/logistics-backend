@@ -2,6 +2,7 @@
 //! is blocking, so this work must stay away from the HTTP workers' threads.
 
 use super::queue::{self, Claimed, Event};
+use crate::logistics::ai::reindex_job::ReindexConsumer;
 use crate::logistics::db::connection::DbConnection;
 use crate::logistics::notification::consumer::NotificationConsumer;
 use crate::logistics::notification::delay_alerts;
@@ -40,11 +41,26 @@ pub trait Consumer {
 
     /// Called once when retries are exhausted.
     fn on_dead_letter(&self, _event: &Event) {}
+
+    /// Deliveries claimed per drain. All of a batch's leases start together,
+    /// so a consumer whose events take long should claim one at a time.
+    fn batch_size(&self) -> u32 {
+        BATCH_SIZE
+    }
 }
 
-/// Every consumer that runs in production.
+/// The consumers that run when `EVENT_WORKERS_ENABLED` is on. They send
+/// messages to real people.
 pub fn registered_consumers() -> Vec<Box<dyn Consumer>> {
     vec![Box::new(NotificationConsumer)]
+}
+
+/// Consumers that only touch this deployment's own database. They run on
+/// their own thread whatever `EVENT_WORKERS_ENABLED` says, so a slow one
+/// never holds up notifications, and work that used to run in the request
+/// (like `assistant/reindex`) still happens on deployments with workers off.
+pub fn local_only_consumers() -> Vec<Box<dyn Consumer>> {
+    vec![Box::new(ReindexConsumer)]
 }
 
 fn wake_signal() -> &'static Notify {
@@ -52,9 +68,19 @@ fn wake_signal() -> &'static Notify {
     SIGNAL.get_or_init(Notify::new)
 }
 
+fn local_wake_signal() -> &'static Notify {
+    static SIGNAL: OnceLock<Notify> = OnceLock::new();
+    SIGNAL.get_or_init(Notify::new)
+}
+
 /// Tell a worker there's new work. Call after commit, so it can see the rows.
 pub fn wake() {
     wake_signal().notify_one();
+}
+
+/// [`wake`] for the [`local_only_consumers`] thread.
+pub fn wake_local() {
+    local_wake_signal().notify_one();
 }
 
 /// Claim and process one batch per consumer, returning how many deliveries
@@ -68,7 +94,12 @@ pub async fn drain_once(
 
     let mut processed = 0;
     for consumer in consumers {
-        let claimed = queue::claim(&mut conn, consumer.name(), worker_token, BATCH_SIZE)?;
+        let claimed = queue::claim(
+            &mut conn,
+            consumer.name(),
+            worker_token,
+            consumer.batch_size(),
+        )?;
         processed += claimed.len();
         for delivery in &claimed {
             if let Err(err) = process(&mut conn, consumer.as_ref(), delivery, worker_token).await {
@@ -160,13 +191,12 @@ where
     }
 }
 
-async fn consume_forever() {
-    let consumers = registered_consumers();
+async fn consume_forever(consumers: Vec<Box<dyn Consumer>>, signal: &'static Notify) {
     let worker_token = Uuid::new_v4().to_string();
     loop {
         match drain_once(&consumers, &worker_token).await {
             Ok(0) => {
-                let _ = tokio::time::timeout(POLL_INTERVAL, wake_signal().notified()).await;
+                let _ = tokio::time::timeout(POLL_INTERVAL, signal.notified()).await;
             }
             Ok(_) => {}
             Err(err) => {
@@ -212,6 +242,7 @@ async fn prune_location_history_forever() {
 #[derive(Debug, PartialEq)]
 struct BackgroundPlan {
     location_history_pruner: bool,
+    local_consumer: bool,
     consumers: usize,
     delay_scanner: bool,
 }
@@ -220,6 +251,7 @@ fn background_plan(enabled: Option<&str>, worker_count: Option<&str>) -> Backgro
     let enabled = parse_enabled(enabled);
     BackgroundPlan {
         location_history_pruner: true,
+        local_consumer: true,
         consumers: if enabled {
             parse_worker_count(worker_count)
         } else {
@@ -229,9 +261,10 @@ fn background_plan(enabled: Option<&str>, worker_count: Option<&str>) -> Backgro
     }
 }
 
-/// Start location-history retention, and the consumers and the delay-alert
-/// scan if enabled. Those two are off by default: a dev server on the local
-/// database must not message real customers.
+/// Start location-history retention and the [`local_only_consumers`] thread,
+/// and the consumers and the delay-alert scan if enabled. Those two are off by
+/// default: a dev server on the local database must not message real
+/// customers.
 pub fn start_from_env() {
     let plan = background_plan(
         std::env::var("EVENT_WORKERS_ENABLED").ok().as_deref(),
@@ -243,6 +276,11 @@ pub fn start_from_env() {
             prune_location_history_forever,
         );
     }
+    if plan.local_consumer {
+        spawn_runtime_thread("local-event-worker".to_string(), || {
+            consume_forever(local_only_consumers(), local_wake_signal())
+        });
+    }
     if !plan.delay_scanner {
         println!("Event workers are off (set EVENT_WORKERS_ENABLED=true to enable them).");
         return;
@@ -250,7 +288,9 @@ pub fn start_from_env() {
     let count = plan.consumers;
     println!("Starting {count} event worker(s).");
     for i in 0..count {
-        spawn_runtime_thread(format!("event-worker-{i}"), consume_forever);
+        spawn_runtime_thread(format!("event-worker-{i}"), || {
+            consume_forever(registered_consumers(), wake_signal())
+        });
     }
     spawn_runtime_thread("event-scanner".to_string(), scan_forever);
 }
@@ -276,6 +316,7 @@ mod tests {
                 background_plan(off, Some("4")),
                 BackgroundPlan {
                     location_history_pruner: true,
+                    local_consumer: true,
                     consumers: 0,
                     delay_scanner: false,
                 },
@@ -286,6 +327,7 @@ mod tests {
             background_plan(Some("true"), Some("4")),
             BackgroundPlan {
                 location_history_pruner: true,
+                local_consumer: true,
                 consumers: 4,
                 delay_scanner: true,
             }
@@ -303,11 +345,26 @@ mod tests {
 
     #[test]
     fn production_consumers_have_unique_names() {
-        let consumers = registered_consumers();
+        let consumers: Vec<_> = registered_consumers()
+            .into_iter()
+            .chain(local_only_consumers())
+            .collect();
         let mut names: Vec<_> = consumers.iter().map(|c| c.name()).collect();
         let total = names.len();
         names.sort();
         names.dedup();
         assert_eq!(names.len(), total);
+    }
+
+    #[test]
+    fn reindex_runs_on_the_local_thread_one_job_at_a_time() {
+        let reindex = crate::logistics::ai::reindex_job::CONSUMER_NAME;
+        assert!(registered_consumers().iter().all(|c| c.name() != reindex));
+        let local = local_only_consumers();
+        let consumer = local
+            .iter()
+            .find(|c| c.name() == reindex)
+            .expect("reindex runs with workers off");
+        assert_eq!(consumer.batch_size(), 1);
     }
 }

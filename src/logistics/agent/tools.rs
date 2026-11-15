@@ -6,6 +6,7 @@ use crate::logistics::agent::store::{Risk, now_unix};
 use crate::logistics::dispatch::dispatch::{DispatchOrder, DispatchStatus};
 use crate::logistics::godown::godown::Godown;
 use crate::logistics::vehicle::document::{ComplianceStatus, VehicleDocument};
+use crate::logistics::vehicle::vehicle::Vehicle;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -42,6 +43,17 @@ fn dispatch_action_schema() -> Value {
     )
 }
 
+fn advance_schema() -> Value {
+    object_schema(
+        json!({
+            "dispatch_id": {"type": "string", "description": "The dispatch's id"},
+            "status": {"type": "string", "enum": ["LOADED", "IN_TRANSIT"], "description": "The status to move to"},
+            "reason": {"type": "string", "description": "The signal that shows this, for the person reviewing it"},
+        }),
+        &["dispatch_id", "status", "reason"],
+    )
+}
+
 fn alert_schema() -> Value {
     object_schema(
         json!({
@@ -74,6 +86,24 @@ pub fn catalog() -> Vec<ToolDef> {
             schema: no_arguments,
         },
         ToolDef {
+            name: "list_vehicle_locations",
+            description: "Where the vehicles on open dispatches last reported from: registration, latitude, longitude, minutes since the fix and its source. Vehicles with no fix are listed without a position.",
+            risk: Risk::Read,
+            schema: no_arguments,
+        },
+        ToolDef {
+            name: "list_available_vehicles",
+            description: "The org's vehicles: registration, capacity, unit, type, whether a driver is assigned, whether it is on an open dispatch, and whether a document has expired.",
+            risk: Risk::Read,
+            schema: no_arguments,
+        },
+        ToolDef {
+            name: "advance_dispatch",
+            description: "Move a dispatch forward to LOADED or IN_TRANSIT, from a signal such as the driver's report or the vehicle's position. Never DELIVERED or RETURNED: those need proof or a person.",
+            risk: Risk::Operational,
+            schema: advance_schema,
+        },
+        ToolDef {
             name: "confirm_dispatch",
             description: "Move a PENDING dispatch to CONFIRMED, meaning it will be fulfilled as booked. Refused when its vehicle has an expired document.",
             risk: Risk::Operational,
@@ -95,9 +125,10 @@ pub fn catalog() -> Vec<ToolDef> {
 }
 
 /// The tool definitions as the Messages API wants them.
-pub fn api_definitions() -> Vec<Value> {
+pub fn api_definitions(allowed: &[&str]) -> Vec<Value> {
     catalog()
         .iter()
+        .filter(|t| allowed.contains(&t.name))
         .map(|t| {
             json!({
                 "name": t.name,
@@ -141,6 +172,16 @@ fn expired_documents(org_id: Uuid, registration: &str) -> Result<Vec<VehicleDocu
         .collect())
 }
 
+/// Agents may only report that goods are loaded or on the road. Delivery needs
+/// proof and a return needs a person, so neither is offered.
+fn advance_target(input: &Value) -> Result<DispatchStatus, String> {
+    match string_arg(input, "status")? {
+        "LOADED" => Ok(DispatchStatus::Loaded),
+        "IN_TRANSIT" => Ok(DispatchStatus::InTransit),
+        _ => Err("status must be LOADED or IN_TRANSIT".to_string()),
+    }
+}
+
 /// Check a write is allowed right now, and return what identifies it for
 /// spotting repeats. Runs when an agent asks and again just before carrying it
 /// out, because an approval can come much later.
@@ -168,6 +209,17 @@ pub fn validate(org_id: Uuid, name: &str, input: &Value) -> Result<String, Strin
                 return Err(format!("Dispatch is {}, can't cancel it", dispatch.status));
             }
             Ok(format!("cancel:{}", dispatch.id))
+        }
+        "advance_dispatch" => {
+            let dispatch = owned_dispatch(org_id, input)?;
+            let next = advance_target(input)?;
+            if !dispatch.status.can_transition_to(next) {
+                return Err(format!(
+                    "Dispatch is {}, can't move it to {next}",
+                    dispatch.status
+                ));
+            }
+            Ok(format!("advance:{}:{next}", dispatch.id))
         }
         "raise_alert" => {
             let severity = string_arg(input, "severity")?;
@@ -202,10 +254,27 @@ pub fn execute(org_id: Uuid, name: &str, input: &Value) -> Result<String, String
                 .map_err(|e| e.to_string())?;
             Ok(format!("Dispatch {} is now {next}", dispatch.id))
         }
+        "advance_dispatch" => {
+            let mut dispatch = owned_dispatch(org_id, input)?;
+            let next = advance_target(input)?;
+            dispatch
+                .transition_to(next, None, None)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Dispatch {} is now {next}", dispatch.id))
+        }
         // The alert is the recorded action itself.
         "raise_alert" => Ok("Alert raised".to_string()),
         other => Err(format!("{other} isn't an action")),
     }
+}
+
+fn open_dispatch_vehicles(org_id: Uuid) -> Result<Vec<String>, String> {
+    Ok(DispatchOrder::list_by_org(org_id)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|d| !d.status.is_terminal())
+        .filter_map(|d| d.vehicle_registration_number)
+        .collect())
 }
 
 /// Answer a read tool. Holds no customer names or contact details: agents don't
@@ -239,6 +308,52 @@ pub fn read(org_id: Uuid, name: &str) -> Result<Value, String> {
             let dispatches: Vec<Value> =
                 rows.into_iter().take(MAX_LISTED).map(|(_, r)| r).collect();
             Ok(json!({"total": total, "dispatches": dispatches}))
+        }
+        "list_vehicle_locations" => {
+            let now = now_unix();
+            let on_road = open_dispatch_vehicles(org_id)?;
+            let vehicles: Vec<Value> = Vehicle::list_by_org(org_id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|v| on_road.contains(&v.registration_number))
+                .take(MAX_LISTED)
+                .map(|v| match &v.location {
+                    Some(l) => json!({
+                        "vehicle": v.registration_number,
+                        "latitude": l.latitude,
+                        "longitude": l.longitude,
+                        "minutes_since_fix": (now - l.timestamp) / 60,
+                        "source": v.last_location_source,
+                    }),
+                    None => json!({"vehicle": v.registration_number, "latitude": null}),
+                })
+                .collect();
+            Ok(json!({"vehicles": vehicles}))
+        }
+        "list_available_vehicles" => {
+            let busy = open_dispatch_vehicles(org_id)?;
+            let documents = VehicleDocument::list_by_org(org_id).map_err(|e| e.to_string())?;
+            let vehicles: Vec<Value> = Vehicle::list_by_org(org_id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .take(MAX_LISTED)
+                .map(|v| {
+                    let expired = documents.iter().any(|d| {
+                        d.vehicle_registration == v.registration_number
+                            && d.status == ComplianceStatus::Expired
+                    });
+                    json!({
+                        "vehicle": v.registration_number,
+                        "capacity": v.capacity,
+                        "unit": v.unit,
+                        "type": v.vehicle_type,
+                        "has_driver": v.assigned_driver_id.is_some(),
+                        "on_open_dispatch": busy.contains(&v.registration_number),
+                        "document_expired": expired,
+                    })
+                })
+                .collect();
+            Ok(json!({"vehicles": vehicles}))
         }
         "list_compliance_issues" => {
             let documents: Vec<Value> = VehicleDocument::list_by_org(org_id)

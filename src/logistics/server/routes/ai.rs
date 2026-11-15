@@ -4,6 +4,7 @@
 use super::common::*;
 use super::dispatches::load_owned_dispatch;
 use crate::logistics::ai::assistant::AssistantAnswer;
+use crate::logistics::ai::reindex_job::{self, ReindexJob};
 use crate::logistics::customer::customer::Customer;
 use actix_web::{HttpResponse, Responder, get, post, web};
 use serde::{Deserialize, Serialize};
@@ -23,17 +24,11 @@ pub struct AssistantAnswerResponse {
     pub data: Option<AssistantAnswer>,
 }
 
-/// How many chunks a `POST /api/orgs/{id}/assistant/reindex` call (re)built.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct AssistantReindexResult {
-    pub chunks_indexed: usize,
-}
-
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct AssistantReindexResponse {
     pub success: bool,
     pub message: String,
-    pub data: Option<AssistantReindexResult>,
+    pub data: Option<ReindexJob>,
 }
 
 #[utoipa::path(
@@ -147,10 +142,12 @@ pub async fn ask_assistant(
     }
 }
 
-/// Rebuild every assistant chunk for an org from scratch. Exists for orgs
-/// whose customers/godowns/vehicles/dispatches predate this feature and so
-/// never triggered a write-through index hook — see
-/// `crate::logistics::ai::chunk::reindex_org`. Safe to call repeatedly.
+/// Start a rebuild of every assistant chunk for an org and return at once.
+/// Exists for orgs whose customers/godowns/vehicles/dispatches predate this
+/// feature and so never triggered a write-through index hook. The rebuild runs
+/// as a background job (see `crate::logistics::ai::reindex_job`); poll
+/// `GET /orgs/{id}/assistant/reindex` for its `chunks_indexed` count. A job
+/// already queued or running is returned instead of starting another.
 #[utoipa::path(
     post,
     path = "/api/orgs/{id}/assistant/reindex",
@@ -158,7 +155,7 @@ pub async fn ask_assistant(
     security(("bearer_auth" = [])),
     params(("id" = Uuid, Path, description = "Organization UUID")),
     responses(
-        (status = 200, description = "Every chunk for the organization was rebuilt", body = AssistantReindexResponse),
+        (status = 202, description = "The reindex job was queued (or is already running)", body = AssistantReindexResponse),
         (status = 403, description = "Forbidden", body = EmptyResponse),
         (status = 401, description = "Unauthorized", body = EmptyResponse)
     )
@@ -174,15 +171,57 @@ pub async fn reindex_assistant(path: web::Path<Uuid>, auth: AuthenticatedOrg) ->
         });
     }
 
-    match crate::logistics::ai::chunk::reindex_org(org_id) {
-        Ok(chunks_indexed) => HttpResponse::Ok().json(ApiResponse {
+    match reindex_job::enqueue(org_id) {
+        Ok(job) => HttpResponse::Accepted().json(ApiResponse {
             success: true,
-            message: format!("Reindexed {chunks_indexed} chunk(s)"),
-            data: Some(AssistantReindexResult { chunks_indexed }),
+            message: "Reindex queued".to_string(),
+            data: Some(job),
         }),
         Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
             success: false,
-            message: format!("Failed to reindex: {}", err),
+            message: format!("Failed to queue reindex: {}", err),
+            data: None,
+        }),
+    }
+}
+
+/// The org's most recent reindex job and how many chunks it has written so
+/// far. `data` is null if the org never ran one.
+#[utoipa::path(
+    get,
+    path = "/api/orgs/{id}/assistant/reindex",
+    tag = "AI Assistant",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Organization UUID")),
+    responses(
+        (status = 200, description = "The latest reindex job, if any", body = AssistantReindexResponse),
+        (status = 403, description = "Forbidden", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[get("/orgs/{id}/assistant/reindex")]
+pub async fn get_assistant_reindex(
+    path: web::Path<Uuid>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
+    let org_id = path.into_inner();
+    if org_id != auth.org_id {
+        return HttpResponse::Forbidden().json(ApiResponse::<String> {
+            success: false,
+            message: "Access denied: you can only view your own organization".to_string(),
+            data: None,
+        });
+    }
+
+    match reindex_job::latest(org_id) {
+        Ok(job) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: "Latest reindex job".to_string(),
+            data: job,
+        }),
+        Err(err) => HttpResponse::InternalServerError().json(ApiResponse::<String> {
+            success: false,
+            message: format!("Failed to load reindex job: {}", err),
             data: None,
         }),
     }

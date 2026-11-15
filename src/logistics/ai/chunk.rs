@@ -547,17 +547,29 @@ pub fn delete_vehicle_chunk_best_effort(registration_number: &str) {
 /// data); a single row's indexing failure does not, per the usual
 /// best-effort contract.
 pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
+    reindex_org_with_progress(org_id, &mut |_| {})
+}
+
+/// [`reindex_org`], calling `on_progress` with the running chunk count after
+/// every chunk, so a background job can report how far it got and keep its
+/// lease alive however long one source kind takes. The callback must be cheap.
+pub fn reindex_org_with_progress(
+    org_id: Uuid,
+    on_progress: &mut dyn FnMut(usize),
+) -> Result<usize, Box<dyn Error>> {
     let mut count = 0usize;
 
     for customer in Customer::list_by_org(org_id)? {
         reindex_customer_best_effort(&customer);
         count += 1;
+        on_progress(count);
     }
 
     let godowns = Godown::list_by_org(org_id)?;
     for godown in &godowns {
         reindex_godown_best_effort(godown);
         count += 1;
+        on_progress(count);
         for stock in &godown.stock {
             upsert_best_effort(
                 org_id,
@@ -566,12 +578,14 @@ pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
                 stock_snapshot_text(godown, stock),
             );
             count += 1;
+            on_progress(count);
         }
     }
 
     for vehicle in Vehicle::list_by_org(org_id)? {
         reindex_vehicle_best_effort(&vehicle, org_id);
         count += 1;
+        on_progress(count);
     }
 
     for notification in Notification::list_by_org(org_id, u32::MAX)? {
@@ -582,6 +596,7 @@ pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
             notification_chunk_text(&notification),
         );
         count += 1;
+        on_progress(count);
     }
 
     for document in VehicleDocument::list_by_org(org_id)? {
@@ -592,6 +607,7 @@ pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
             vehicle_document_chunk_text(&document),
         );
         count += 1;
+        on_progress(count);
     }
 
     for dispatch in DispatchOrder::list_by_org(org_id)? {
@@ -603,6 +619,7 @@ pub fn reindex_org(org_id: Uuid) -> Result<usize, Box<dyn Error>> {
                 dispatch_narrative_text(&dispatch, &customer),
             );
             count += 1;
+            on_progress(count);
         }
     }
 

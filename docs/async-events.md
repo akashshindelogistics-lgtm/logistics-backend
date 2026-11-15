@@ -52,14 +52,14 @@ HTTP request                                  worker thread
 | AI notification copy, SMS and email | `notification` consumer | Slow external calls |
 | Delay alerts | Scanner publishes; consumer sends | One retrying send path |
 | AI search indexing | Request, best effort, after commit | A local DB write: a queue would add writes and allow stale overwrites |
-| `assistant/reindex` | Request | Returns a count the dashboard shows; going async needs a frontend change |
+| `assistant/reindex` | `assistant_reindexer` consumer, on its own thread | Walks every row of the org. `POST` returns a job at once (202); `GET` shows its `chunks_indexed` count. Runs with workers off too |
 | GPS pings | Request | One small update |
 
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `EVENT_WORKERS_ENABLED` | off | `true` starts the consumers and the delay-alert scan |
+| `EVENT_WORKERS_ENABLED` | off | `true` starts the consumers and the delay-alert scan. The local-only consumers (`assistant_reindexer`) run either way |
 | `EVENT_WORKER_COUNT` | `2` | Consumer threads, 1 to 16 |
 
 Workers are **off unless enabled** on purpose. A plain `cargo run` points at the
@@ -73,7 +73,11 @@ Events published while no worker runs are not lost: the next worker picks them u
 ## Adding a consumer
 
 1. Implement `events::worker::Consumer`. It must be safe to run twice.
-2. Add it to `events::worker::registered_consumers`.
+2. Add it to `events::worker::registered_consumers`, or to
+   `local_only_consumers` if it only writes this deployment's database (it then
+   runs with workers off; wake it with `wake_local()`). A consumer whose events
+   can outlast `LEASE_SECS` should claim one at a time (`batch_size`) and renew
+   its lease with `queue::extend_lease`.
 3. Add its name to `EventType::subscribers` for each event it wants.
 4. Publish inside the transaction that makes the change, and call
    `events::worker::wake()` after commit.
@@ -91,5 +95,8 @@ thread-local.
 3. Queue, worker and retention.
 4. Move notifications and delay alerts onto it.
 
-Later: `assistant/reindex` as a job (with a frontend PR), proof-of-delivery photo
+5. `assistant/reindex` as a job (`ai::reindex_job`, table `AssistantReindexJobs`). The
+   dashboard must poll `GET /api/orgs/{id}/assistant/reindex` (frontend PR pending).
+
+Later: proof-of-delivery photo
 checks and SMS tracking links as consumers, and an SSE consumer for live dashboards.

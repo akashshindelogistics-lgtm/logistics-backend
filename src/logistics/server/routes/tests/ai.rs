@@ -139,20 +139,54 @@ async fn test_reindex_assistant_returns_403_for_a_different_org() {
 }
 
 #[actix_web::test]
-async fn test_reindex_assistant_rebuilds_the_index_and_reports_the_count() {
+async fn test_reindex_assistant_queues_a_job_and_reports_progress() {
     let _db = TestDb::create();
     let app = test::init_service(App::new().configure(config_routes)).await;
     let (org, auth) = setup_org(&app, "Reindex Backfill Org").await;
     Customer::create_customer(org.id, "Legacy Customer", "1 Old Rd").expect("create customer");
 
-    let req = test::TestRequest::post()
-        .uri(&format!("/api/orgs/{}/assistant/reindex", org.id))
-        .insert_header(("Authorization", auth))
+    let uri = format!("/api/orgs/{}/assistant/reindex", org.id);
+    let req = test::TestRequest::get()
+        .uri(&uri)
+        .insert_header(("Authorization", auth.clone()))
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status().as_u16(), 200);
-    let body: ApiResponse<AssistantReindexResult> = test::read_body_json(resp).await;
-    assert!(body.data.unwrap().chunks_indexed >= 1);
+    let body: ApiResponse<ReindexJob> = test::read_body_json(resp).await;
+    assert!(body.data.is_none());
+
+    let req = test::TestRequest::post()
+        .uri(&uri)
+        .insert_header(("Authorization", auth.clone()))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status().as_u16(), 202);
+    let body: ApiResponse<ReindexJob> = test::read_body_json(resp).await;
+    let job = body.data.unwrap();
+    assert_eq!(job.status, "QUEUED");
+    assert_eq!(job.chunks_indexed, 0);
+
+    let req = test::TestRequest::get()
+        .uri(&uri)
+        .insert_header(("Authorization", auth))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    let body: ApiResponse<ReindexJob> = test::read_body_json(resp).await;
+    assert_eq!(body.data.unwrap().id, job.id);
+}
+
+#[actix_web::test]
+async fn test_get_assistant_reindex_returns_403_for_a_different_org() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, _auth) = setup_org(&app, "Reindex Status Owner Org").await;
+    let (_other, other_auth) = setup_org(&app, "Reindex Status Intruder Org").await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/api/orgs/{}/assistant/reindex", org.id))
+        .insert_header(("Authorization", other_auth))
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 403);
 }
 
 #[actix_web::test]

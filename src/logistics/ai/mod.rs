@@ -7,6 +7,7 @@ mod eval;
 pub mod notification_copy;
 pub mod pod_check;
 pub mod query;
+pub mod reindex_job;
 pub mod reorder;
 pub mod report;
 pub mod status;

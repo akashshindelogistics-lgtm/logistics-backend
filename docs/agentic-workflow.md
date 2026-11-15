@@ -59,7 +59,7 @@ enforced outside the model:
 | Domain rules | Same `transition_to` as the dashboard | Illegal moves fail for agents too |
 | Hard rules in tools | `tools::validate` | An expired vehicle document blocks confirming, whatever the model says |
 | Recheck on approval | `tools::execute` | An approval that has gone stale fails instead of applying |
-| Limits | `runtime.rs` | 12 turns and 20 actions per run, a daily token limit per org |
+| Limits | `runtime.rs` | 12 turns and 20 actions per run, a daily token limit per org and agent |
 | Kill switch | Mode `OFF` | A running agent stops at its next turn |
 | Audit trail | `AgentRuns`, `AgentActions` | Every request, its reason and who decided |
 
@@ -159,7 +159,14 @@ agent actions notify people exactly as dashboard actions do.
 ops analyst, data quality.
 
 **Phase 4: driver signals.** Status actions in the Android app, then the delivery
-monitor and trip planner.
+monitor and trip planner. Backend built: both agents run in `SHADOW` whatever the
+org's mode (a code cap in `Agent::mode_cap`, raised only once their record
+justifies it). The delivery monitor can request `advance_dispatch` to `LOADED` or
+`IN_TRANSIT` and read vehicle positions, never `DELIVERED` or `RETURNED`. The trip
+planner is read-only plus `raise_alert` suggestions. Still to do: the Android
+status actions (logistics-android), which give the monitor its driver signal.
+`POST /api/orgs/{id}/agents/run?agent=delivery_monitor|trip_planner` runs one now;
+the scheduler runs all three.
 
 **Phase 5: billing.** Raise on delivery and send reminders. Payment recording
 stays human.
@@ -180,7 +187,9 @@ riskiest, since it's the first time outsiders' text directly drives agents.
 - **Tables:** `AgentSettings`, `AgentRuns`, `AgentActions`, removed with the org.
 - **Settings:** `AGENTS_ENABLED=true` starts the timer, and the org's mode must
   also be on. `AGENT_INTERVAL_MINUTES` (60), `AGENT_MODEL` (`claude-opus-5-5`),
-  `AGENT_EFFORT` (`medium`), `AGENT_DAILY_TOKEN_LIMIT` (500000).
+  `AGENT_EFFORT` (`medium`), `AGENT_DAILY_TOKEN_LIMIT` (500000). The dispatch desk
+  gets the whole limit; the delivery monitor and trip planner each get a tenth of
+  it, counted separately, so they can't stop the dispatch desk.
 - **`AGENT_MODEL_URL`:** for tests only. Points agents at a stand-in model, and the
   real API key is never sent to it. The dashboard's end-to-end tests use this.
 - **Request:** uses the API's server-side refusal fallback, so a safety classifier
