@@ -380,11 +380,13 @@ pub fn list_runs(org_id: Uuid, limit: u32) -> Result<Vec<AgentRun>, String> {
 /// The status of an action already taken or awaiting a decision for this key,
 /// so an agent doesn't ask again on every run. A rejection counts: being told
 /// no once is enough. Shadow rows only count in shadow mode, so turning on
-/// real autonomy starts clean.
+/// real autonomy starts clean. With a `window` (seconds), a decided action
+/// only counts for that long after it was decided; see [`first_blocking`].
 pub fn existing_action(
     org_id: Uuid,
     dedupe_key: &str,
     mode: AutonomyMode,
+    window: Option<i64>,
 ) -> Result<Option<ActionStatus>, String> {
     let mut conn = connect()?;
     let shadow_clause = if mode == AutonomyMode::Shadow {
@@ -392,17 +394,49 @@ pub fn existing_action(
     } else {
         "AND status <> 'SHADOWED'"
     };
-    let status: Option<String> = conn
-        .exec_first(
+    let rows: Vec<(String, i64, Option<i64>)> = conn
+        .exec(
             format!(
-                "SELECT status FROM AgentActions
+                "SELECT status, created_at, decided_at FROM AgentActions
                  WHERE org_id = :org_id AND dedupe_key = :dedupe_key AND status <> 'FAILED' {shadow_clause}
-                 ORDER BY seq DESC LIMIT 1"
+                 ORDER BY seq DESC LIMIT 50"
             ),
             params! { "org_id" => org_id.to_string(), "dedupe_key" => dedupe_key },
         )
         .map_err(|e| e.to_string())?;
-    Ok(status.map(|s| ActionStatus::from_db(&s)))
+    let rows: Vec<(ActionStatus, i64)> = rows
+        .into_iter()
+        .map(|(status, created_at, decided_at)| {
+            (
+                ActionStatus::from_db(&status),
+                decided_at.unwrap_or(created_at),
+            )
+        })
+        .collect();
+    Ok(first_blocking(&rows, now_unix(), window))
+}
+
+/// Which earlier action, newest first as `(status, when it was decided or
+/// recorded)`, stops a new one. Without a window, any of them does. With one,
+/// an action still waiting for a person (or being carried out) always does,
+/// and any other only if it happened less than `window` seconds before `now`:
+/// a rolling window, so it doesn't reset at a calendar boundary.
+pub fn first_blocking(
+    rows: &[(ActionStatus, i64)],
+    now: i64,
+    window: Option<i64>,
+) -> Option<ActionStatus> {
+    rows.iter()
+        .find(|(status, at)| match window {
+            None => true,
+            Some(window) => {
+                matches!(
+                    status,
+                    ActionStatus::PendingApproval | ActionStatus::Executing
+                ) || now - at < window
+            }
+        })
+        .map(|(status, _)| *status)
 }
 
 pub struct NewAction<'a> {

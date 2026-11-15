@@ -5,7 +5,10 @@
 use super::model::ModelConfig;
 use super::runtime::{self, DecisionError, RunError};
 use super::store::{self, ActionStatus, AutonomyMode, Disposition, Risk};
+use crate::logistics::billing::invoice::Invoice;
+use crate::logistics::customer::customer::Customer;
 use crate::logistics::dispatch::dispatch::{DispatchOrder, DispatchStatus, DispatchStatusEvent};
+use crate::logistics::notification::notification::{Notification, NotificationEvent};
 use crate::logistics::orgs::orgs::Organization;
 use crate::logistics::test_support::TestDb;
 use crate::logistics::vehicle::document::{ComplianceDocType, VehicleDocument};
@@ -97,6 +100,10 @@ fn pending_dispatch(org_id: Uuid) -> DispatchOrder {
 }
 
 fn pending_dispatch_on(org_id: Uuid, vehicle: Option<&str>) -> DispatchOrder {
+    dispatch_with(org_id, vehicle, DispatchStatus::Pending)
+}
+
+fn dispatch_with(org_id: Uuid, vehicle: Option<&str>, status: DispatchStatus) -> DispatchOrder {
     let mut dispatch = DispatchOrder {
         id: Uuid::new_v4(),
         org_id,
@@ -105,10 +112,10 @@ fn pending_dispatch_on(org_id: Uuid, vehicle: Option<&str>) -> DispatchOrder {
         vehicle_source: Default::default(),
         hire_id: None,
         line_items: Vec::new(),
-        status: DispatchStatus::Pending,
+        status,
         dispatched_at: store::now_unix(),
         status_history: vec![DispatchStatusEvent {
-            status: DispatchStatus::Pending,
+            status,
             changed_at: store::now_unix(),
         }],
         proof_of_delivery: None,
@@ -179,7 +186,7 @@ fn an_unrecognised_stored_mode_is_off() {
 #[test]
 fn no_tool_can_delete_or_touch_money_users_or_credentials() {
     for tool in super::tools::catalog() {
-        for forbidden in ["delete", "pay", "user", "credential", "token", "invoice"] {
+        for forbidden in ["delete", "pay", "user", "credential", "token", "record"] {
             assert!(!tool.name.contains(forbidden), "{}", tool.name);
         }
     }
@@ -187,9 +194,11 @@ fn no_tool_can_delete_or_touch_money_users_or_credentials() {
 
 #[test]
 fn every_tool_definition_is_strict() {
-    for def in super::tools::api_definitions() {
-        assert_eq!(def["strict"], true);
-        assert_eq!(def["input_schema"]["additionalProperties"], false);
+    for agent in [runtime::DISPATCH_DESK, runtime::BILLING] {
+        for def in super::tools::api_definitions(agent) {
+            assert_eq!(def["strict"], true);
+            assert_eq!(def["input_schema"]["additionalProperties"], false);
+        }
     }
 }
 
@@ -549,4 +558,275 @@ async fn live_agent_run() {
     }
     assert_eq!(run.status, "COMPLETED", "{:?}", run.summary);
     assert_eq!(status_of(dispatch.id), DispatchStatus::Pending);
+}
+
+fn delivered_dispatch(org_id: Uuid) -> DispatchOrder {
+    dispatch_with(org_id, None, DispatchStatus::Delivered)
+}
+
+fn raise_invoice(id: Uuid) -> Value {
+    tool_call(
+        "raise_invoice",
+        json!({"dispatch_id": id.to_string(), "amount": 12000, "due_on": "2099-01-31", "reason": "Agreed rate"}),
+    )
+}
+
+#[actix_web::test]
+async fn billing_in_shadow_only_records_the_invoice_it_would_raise() {
+    let _db = TestDb::create();
+    let org = org("Billing Shadow Org");
+    store::set_mode(org.id, AutonomyMode::Shadow).unwrap();
+    let dispatch = delivered_dispatch(org.id);
+    let (config, _r) = fake_model(vec![raise_invoice(dispatch.id), finished("Done.")]).await;
+
+    let run = runtime::run_billing(org.id, "manual", &config)
+        .await
+        .unwrap();
+    assert_eq!(run.agent, runtime::BILLING);
+    let actions = store::list_actions(org.id, Some(ActionStatus::Shadowed), 10).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].tool, "raise_invoice");
+    assert_eq!(actions[0].agent, runtime::BILLING);
+    assert!(Invoice::get_by_dispatch(dispatch.id).unwrap().is_none());
+}
+
+#[test]
+fn the_billing_agent_is_capped_at_shadow_whatever_the_org_mode() {
+    use AutonomyMode::*;
+    for (mode, billing) in [
+        (Off, Off),
+        (Shadow, Shadow),
+        (Supervised, Shadow),
+        (Autonomous, Shadow),
+    ] {
+        assert_eq!(runtime::effective_mode(runtime::BILLING, mode), billing);
+        assert_eq!(runtime::effective_mode(runtime::DISPATCH_DESK, mode), mode);
+    }
+}
+
+#[actix_web::test]
+async fn billing_only_records_an_invoice_even_when_the_org_is_autonomous() {
+    let _db = TestDb::create();
+    let org = org("Billing Invoice Org");
+    store::set_mode(org.id, AutonomyMode::Autonomous).unwrap();
+    let dispatch = delivered_dispatch(org.id);
+    let (config, _r) = fake_model(vec![raise_invoice(dispatch.id), finished("Done.")]).await;
+
+    runtime::run_billing(org.id, "manual", &config)
+        .await
+        .unwrap();
+    assert!(Invoice::get_by_dispatch(dispatch.id).unwrap().is_none());
+    let actions = store::list_actions(org.id, None, 10).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].status, ActionStatus::Shadowed);
+}
+
+#[actix_web::test]
+async fn an_approved_invoice_is_raised_with_the_proposed_amount() {
+    let _db = TestDb::create();
+    let org = org("Billing Approve Org");
+    let dispatch = delivered_dispatch(org.id);
+    let input = raise_invoice(dispatch.id)["content"][0]["input"].to_string();
+    let id = store::record_action(store::NewAction {
+        run_id: Uuid::new_v4(),
+        org_id: org.id,
+        agent: runtime::BILLING,
+        tool: "raise_invoice",
+        input: &input,
+        reason: "Agreed rate",
+        risk: Risk::Sensitive,
+        status: ActionStatus::PendingApproval,
+        result: None,
+        dedupe_key: &format!("invoice:{}", dispatch.id),
+    })
+    .unwrap();
+
+    let approved = runtime::approve_action(org.id, id, None).unwrap();
+    assert_eq!(approved.status, ActionStatus::Executed);
+    let invoice = Invoice::get_by_dispatch(dispatch.id).unwrap().unwrap();
+    assert_eq!(invoice.amount, 12000);
+    assert_eq!(invoice.due_on, "2099-01-31");
+}
+
+#[actix_web::test]
+async fn an_undelivered_dispatch_is_not_invoiced() {
+    let _db = TestDb::create();
+    let org = org("Billing Undelivered Org");
+    store::set_mode(org.id, AutonomyMode::Supervised).unwrap();
+    let dispatch = pending_dispatch(org.id);
+    let (config, requests) = fake_model(vec![raise_invoice(dispatch.id), finished("Done.")]).await;
+
+    runtime::run_billing(org.id, "manual", &config)
+        .await
+        .unwrap();
+    let result = last_tool_result(&requests);
+    assert_eq!(result["is_error"], true);
+    assert!(
+        result["content"]
+            .as_str()
+            .unwrap()
+            .contains("only a delivered dispatch")
+    );
+    assert!(store::list_actions(org.id, None, 10).unwrap().is_empty());
+}
+
+#[actix_web::test]
+async fn a_reminder_goes_out_for_an_overdue_invoice_only() {
+    let _db = TestDb::create();
+    let org = org("Billing Reminder Org");
+    store::set_mode(org.id, AutonomyMode::Autonomous).unwrap();
+    let customer = Customer::create_customer(org.id, "Asha Traders", "2 Mill Rd").unwrap();
+    let overdue = delivered_dispatch(org.id);
+    let late = Invoice::create(org.id, overdue.id, customer.id, 5000, "2020-01-31").unwrap();
+    let fresh_dispatch = delivered_dispatch(org.id);
+    let fresh = Invoice::create(org.id, fresh_dispatch.id, customer.id, 700, "2099-01-31").unwrap();
+    let remind = |id: Uuid| {
+        tool_call(
+            "send_reminder",
+            json!({"invoice_id": id.to_string(), "reason": "Past due"}),
+        )
+    };
+
+    let (config, requests) = fake_model(vec![remind(fresh.id), finished("Done.")]).await;
+    runtime::run_billing(org.id, "manual", &config)
+        .await
+        .unwrap();
+    assert_eq!(last_tool_result(&requests)["is_error"], true);
+    assert!(store::list_actions(org.id, None, 10).unwrap().is_empty());
+
+    // The org is autonomous, but the billing agent is still in shadow: the
+    // reminder is only recorded, and nobody is emailed.
+    let (config, _r) = fake_model(vec![remind(late.id), finished("Done.")]).await;
+    runtime::run_billing(org.id, "manual", &config)
+        .await
+        .unwrap();
+    let actions = store::list_actions(org.id, None, 10).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].status, ActionStatus::Shadowed);
+    let is_reminder = |n: &Notification| n.event == NotificationEvent::InvoiceReminder;
+    assert!(
+        !Notification::list_by_org(org.id, 10)
+            .unwrap()
+            .iter()
+            .any(is_reminder)
+    );
+
+    // Asking again within the week is refused.
+    let (config, requests) = fake_model(vec![remind(late.id), finished("Done.")]).await;
+    runtime::run_billing(org.id, "manual", &config)
+        .await
+        .unwrap();
+    assert!(
+        last_tool_result(&requests)["content"]
+            .as_str()
+            .unwrap()
+            .contains("Already handled")
+    );
+    assert_eq!(store::list_actions(org.id, None, 10).unwrap().len(), 1);
+
+    // Carried out (as on approval), the reminder is queued.
+    let input = json!({"invoice_id": late.id.to_string(), "reason": "Past due"});
+    super::tools::execute(org.id, "send_reminder", &input).unwrap();
+    assert!(
+        Notification::list_by_org(org.id, 10)
+            .unwrap()
+            .iter()
+            .any(is_reminder)
+    );
+}
+
+#[test]
+fn a_reminder_blocks_another_for_a_rolling_week_across_the_calendar_boundary() {
+    use ActionStatus::*;
+    const HOUR: i64 = 3_600;
+    const WEEK: i64 = 7 * 24 * HOUR;
+    let window = super::tools::repeat_window("send_reminder");
+    assert_eq!(window, Some(WEEK));
+    // A fixed weekly bucket rolls over here; an hour before it is "last week".
+    let boundary = 2_900 * WEEK;
+    let blocking = |status: ActionStatus, at: i64, now: i64| {
+        store::first_blocking(&[(status, at)], now, window)
+    };
+
+    // Sent an hour before the boundary: still blocks an hour after it.
+    assert_eq!(
+        blocking(Executed, boundary - HOUR, boundary),
+        Some(Executed)
+    );
+    assert_eq!(
+        blocking(Shadowed, boundary - HOUR, boundary),
+        Some(Shadowed)
+    );
+    assert_eq!(
+        blocking(Rejected, boundary - HOUR, boundary),
+        Some(Rejected)
+    );
+    assert_eq!(
+        blocking(Executed, boundary - HOUR, boundary - HOUR + WEEK - 1),
+        Some(Executed)
+    );
+    // A full week later, another is allowed.
+    assert_eq!(
+        blocking(Executed, boundary - HOUR, boundary - HOUR + WEEK),
+        None
+    );
+    // One still waiting for a person blocks however old it is, so approving
+    // a backlog can't send two.
+    assert_eq!(
+        blocking(PendingApproval, boundary - 3 * WEEK, boundary),
+        Some(PendingApproval)
+    );
+    assert_eq!(
+        blocking(Executing, boundary - 3 * WEEK, boundary),
+        Some(Executing)
+    );
+    // Any earlier blocking action counts, not only the newest.
+    let rows = [
+        (Executed, boundary - 2 * WEEK),
+        (PendingApproval, boundary - 3 * WEEK),
+    ];
+    assert_eq!(
+        store::first_blocking(&rows, boundary, window),
+        Some(PendingApproval)
+    );
+    // Other actions have no window: any earlier one blocks for good.
+    assert_eq!(super::tools::repeat_window("raise_invoice"), None);
+    assert_eq!(
+        store::first_blocking(&[(Executed, 0)], boundary, None),
+        Some(Executed)
+    );
+}
+
+#[actix_web::test]
+async fn the_billing_agent_cannot_use_the_dispatch_desk_tools() {
+    let _db = TestDb::create();
+    let org = org("Billing Scope Org");
+    store::set_mode(org.id, AutonomyMode::Autonomous).unwrap();
+    let dispatch = pending_dispatch(org.id);
+    let (config, requests) = fake_model(vec![confirm(dispatch.id), finished("Done.")]).await;
+
+    runtime::run_billing(org.id, "manual", &config)
+        .await
+        .unwrap();
+    assert!(
+        last_tool_result(&requests)["content"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown tool")
+    );
+    assert_eq!(status_of(dispatch.id), DispatchStatus::Pending);
+}
+
+#[test]
+fn each_agent_gets_only_its_own_tools() {
+    let names = |agent| -> Vec<&'static str> {
+        super::tools::catalog_for(agent)
+            .iter()
+            .map(|t| t.name)
+            .collect()
+    };
+    assert!(!names(runtime::DISPATCH_DESK).contains(&"raise_invoice"));
+    assert!(!names(runtime::BILLING).contains(&"confirm_dispatch"));
+    assert!(names(runtime::BILLING).contains(&"raise_alert"));
+    assert!(names("nobody").is_empty());
 }

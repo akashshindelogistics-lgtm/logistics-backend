@@ -98,7 +98,7 @@ are this backend's own database and domain code.
 | **Fleet and compliance** | Document and maintenance tracking | Reminders, take a non-compliant vehicle out of planning | Booking paid work | Vehicle availability flag |
 | **Warehouse** | Stock levels, transfers, reorder | Suggest reorders, propose transfers | Stock adjustments, purchases | Purchase order concept |
 | **Vendor and hire** | Hiring market trucks | Contact vendors, assign an offered truck within budget | Payments, above-budget hires | Vendor messaging, rate cards |
-| **Billing** | Invoices and collections | Raise on delivery, send reminders | Amounts, recording payment | Payment gateway to confirm payment |
+| **Billing** (built, Phase 5) | Invoices and collections | Raise on delivery, send reminders | Amounts, recording payment | Payment gateway to confirm payment |
 | **Customer comms** | Notifications, questions | Status answers | Complaints, refunds | Inbound channel |
 | **Driver assistant** | Driver questions | Answer about their own trips | Nothing: read-only | Android app work ([RAG Phase 5](rag-integration.md)) |
 | **Ops analyst** | Reports, digest | Daily summary to the owner | Nothing: read-only | Scheduled delivery |
@@ -161,8 +161,8 @@ ops analyst, data quality.
 **Phase 4: driver signals.** Status actions in the Android app, then the delivery
 monitor and trip planner.
 
-**Phase 5: billing.** Raise on delivery and send reminders. Payment recording
-stays human.
+**Phase 5: billing.** Built, off by default: raise on delivery and send reminders.
+Payment recording stays human. See [Billing agent](#billing-agent-phase-5).
 
 **Phase 6: inbound channels.** Email or WhatsApp in, then order intake, customer
 comms, vendor and hire. This is the biggest reduction in human work, and it's the
@@ -197,6 +197,28 @@ riskiest, since it's the first time outsiders' text directly drives agents.
 | `GET /api/orgs/{id}/agents/actions?status=` | Any member | Recent actions, such as `PENDING_APPROVAL` |
 | `POST /api/agent-actions/{id}/approve` | Admin, Dispatcher | Recheck, then carry out |
 | `POST /api/agent-actions/{id}/reject` | Admin, Dispatcher | Refuse. The agent won't ask again |
+
+### Billing agent (Phase 5)
+
+A second agent, `billing`, shares the loop, gate and audit trail with the dispatch
+desk but has its own prompt and tools. The scheduler runs both for each org whose
+mode isn't `OFF`. Until it has its own mode setting, the billing agent stays in
+`SHADOW` whatever the org's mode (`OFF` still stops it), so moving the dispatch
+desk up never lets billing act without its shadow period; `POST /api/orgs/{id}/agents/run?agent=billing` runs it now
+(`dispatch_desk` is the default).
+
+| Tool | Risk | Does |
+| --- | --- | --- |
+| `list_billing_work` | Read | Delivered dispatches with no invoice, and overdue invoices. No customer details |
+| `raise_invoice` | Sensitive | Raises the invoice and emails the customer. Once billing leaves `SHADOW`, always waits for a person, even in `AUTONOMOUS`, since it sets an amount |
+| `send_reminder` | Operational | Emails an overdue invoice's customer. At most one in any rolling 7 days per invoice, and none while one waits for approval |
+| `raise_alert` | Internal | As for the dispatch desk |
+
+There is no tool to record a payment or edit an invoice. In `SHADOW`, both are only
+recorded as proposals in the Agent Inbox.
+
+Limit: the system holds no rates, so the model can only propose an amount it can
+infer; otherwise it's told to raise an alert. Rate cards (see Trip planner) would fix this.
 
 ### Known limits
 
