@@ -1543,6 +1543,11 @@ mod tests {
     fn test_full_happy_path_lifecycle() {
         let _db = TestDb::create();
         let mut order = sample_order(Pending);
+        // A real org: delivering publishes `dispatch.delivered`, and `Events`
+        // has a foreign key to `Orgs`.
+        order.org_id = Organization::create_organization("Lifecycle Co", "1 Rd")
+            .expect("org")
+            .id;
         order.save().expect("save");
 
         for next in [Confirmed, Loaded, InTransit, Delivered] {
