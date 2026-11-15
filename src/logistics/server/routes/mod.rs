@@ -58,6 +58,7 @@ mod drivers;
 mod godowns;
 mod health;
 mod hires;
+mod imports;
 mod maintenance;
 mod notifications;
 mod orgs;
@@ -84,6 +85,7 @@ pub use drivers::*;
 pub use godowns::*;
 pub use health::*;
 pub use hires::*;
+pub use imports::*;
 pub use maintenance::*;
 pub use notifications::*;
 pub use orgs::*;
@@ -222,6 +224,8 @@ impl Modify for SecurityAddon {
         get_ops_report,
         get_ops_report_summary,
         export_org_csv,
+        import_template,
+        import_org_csv,
         list_dispatch_notifications,
         list_org_notifications,
         get_agent_settings,
@@ -284,7 +288,7 @@ impl Modify for SecurityAddon {
             DispatchOrderResponse, DispatchOrderListResponse,
             PublicTracking, PublicVehiclePosition, PublicTrackingResponse,
             InvoiceResponse, InvoiceListResponse, CustomerBillingResponse,
-            OpsReportResponse, UserResponse, UserListResponse, NotificationListResponse,
+            OpsReportResponse, ImportReportResponse, UserResponse, UserListResponse, NotificationListResponse,
             TripResponse, TripListResponse, CreateTripPayload, TripStopPayload,
             UploadedFileResponse, UploadedFileRef,
             AssistantAskPayload, AssistantAnswer, AssistantSource, AssistantAnswerResponse,
@@ -304,6 +308,8 @@ impl Modify for SecurityAddon {
             crate::logistics::chat::runtime::ChatThread,
             crate::logistics::agent::store::AgentRun,
             crate::logistics::agent::store::AgentAction,
+            crate::logistics::import::csv_import::ImportReport,
+            crate::logistics::import::csv_import::RowError,
             LocationResponse, LocationHistoryResponse, LocationHistoryPoint, OrgSummaryListResponse, EmptyResponse,
         )
     ),
@@ -320,6 +326,7 @@ impl Modify for SecurityAddon {
         (name = "Vehicle maintenance", description = "Preventive maintenance scheduling by due date and/or odometer mileage, with alerts"),
         (name = "Godowns", description = "Warehouse (godown) and stock management"),
         (name = "Customers", description = "Customer management"),
+        (name = "Import", description = "Bulk CSV import of vehicles, drivers, customers and stock, with dry run and templates"),
         (name = "Dispatch", description = "Stock dispatch"),
         (name = "Billing", description = "Freight invoices and customer payment status"),
         (name = "Reports", description = "Operational reporting: fleet utilization, delivery performance, inventory, dispatch volume"),
@@ -464,6 +471,8 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(get_ops_report)
             .service(get_ops_report_summary)
             .service(export_org_csv)
+            .service(import_template)
+            .service(import_org_csv)
             .service(list_dispatch_notifications)
             .service(list_org_notifications)
             .service(get_agent_settings)
