@@ -53,6 +53,22 @@ VM (see `docs/file-uploads.md`), so an in-process loop needs no new
 infrastructure. There is no user-facing route for it; nothing calls it
 except that loop and the tests below.
 
+## Awaiting-vehicle alert
+
+The same scan also loads every `AWAITING_VEHICLE` dispatch
+(`DispatchOrder::list_awaiting_vehicle`) and keeps those older than
+`AWAITING_VEHICLE_ALERT_HOURS` (4h, `is_awaiting_vehicle_too_long`), then
+groups them by `hire_id`: a hired multi-stop trip has one dispatch per stop
+but only one truck to wait for, so it gets one alert, not one per stop. For
+each hire none of whose waiting dispatches has a `VEHICLE_AWAITED_TOO_LONG`
+notification yet, it queues an email to every active ADMIN of the org (never
+the customer) naming the hire, its vendor and every waiting stop, attached to
+the first stop's dispatch, and publishes `dispatch.awaiting_vehicle_delayed`
+with dedupe key `hire.awaiting_vehicle_delayed:{hire_id}` (once per hire).
+The alert stops mattering once a truck is assigned or the dispatches are
+cancelled, because they leave `AWAITING_VEHICLE`. See
+[vehicle-vendors.md](vehicle-vendors.md).
+
 ## Frontend
 
 No new API call. `frontend/src/lib/dispatchLifecycle.ts`'s `isRunningLate()`
@@ -88,6 +104,9 @@ visual cue; the customer-facing alert itself is the backend's SMS/email.
 - Rust integration (`delay_alerts.rs`): a real, backdated `IN_TRANSIT`
   dispatch gets exactly one alert; calling the scan again never double-sends;
   a dispatch still within its window, or no longer `IN_TRANSIT`, is skipped.
+  A backdated two-stop hired trip gets exactly one awaiting-vehicle alert
+  (per hire, not per stop) and none on a repeat scan; once the hire is
+  assigned a truck, the scan sends nothing.
 - Rust (`ai/notification_copy.rs`): the new prompt builder includes the
   customer name, order reference and hours-late figure; the generator's
   missing-API-key fallback path.

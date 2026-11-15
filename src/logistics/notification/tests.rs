@@ -473,3 +473,56 @@ async fn invoice_raised_skips_a_customer_with_only_a_phone() {
 
     assert_eq!(rows[0].status, NotificationStatus::Skipped);
 }
+
+#[test]
+fn awaiting_vehicle_alert_goes_to_admins_only_once() {
+    use crate::logistics::user::user::{OrgRole, OrgUser};
+    let _db = TestDb::create();
+    let org = org();
+    OrgUser::create(
+        org.id,
+        "Owner",
+        "owner@example.com",
+        "password1",
+        OrgRole::Admin,
+    )
+    .expect("admin");
+    let hire_id = Uuid::new_v4();
+    let dispatch_id = Uuid::new_v4();
+    let second_id = Uuid::new_v4();
+    let stops = vec![
+        (dispatch_id, "Meera".to_string()),
+        (second_id, "Ravi".to_string()),
+    ];
+
+    let rows = in_tx(|tx| {
+        Notification::enqueue_vehicle_awaited_too_long(tx, org.id, hire_id, "Sharma", &stops, 6)
+    })
+    .expect("enqueue")
+    .expect("first alert");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].recipient_kind, "org_admin");
+    assert_eq!(rows[0].recipient, "owner@example.com");
+    assert_eq!(
+        rows[0].dispatch_id, dispatch_id,
+        "attached to the first stop"
+    );
+    let body = &rows[0].body;
+    assert!(body.contains("6h"), "{body}");
+    assert!(body.contains(&hire_id.to_string()[..8]), "{body}");
+    assert!(body.contains("Sharma"), "{body}");
+    assert!(body.contains(&second_id.to_string()[..8]), "{body}");
+    assert!(body.contains("Meera") && body.contains("Ravi"), "{body}");
+    assert_eq!(rows[0].sms_template(), None);
+    let short_id = &dispatch_id.to_string()[..8];
+    assert_eq!(
+        rows[0].email_subject(),
+        format!("Dispatch {short_id} still has no truck")
+    );
+
+    let again = in_tx(|tx| {
+        Notification::enqueue_vehicle_awaited_too_long(tx, org.id, hire_id, "Sharma", &stops, 7)
+    })
+    .expect("enqueue again");
+    assert!(again.is_none(), "deduped per hire");
+}
