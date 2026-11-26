@@ -289,9 +289,21 @@ impl Organization {
         let godowns = Godown::list_by_org(self.id)?;
         let mut remaining = Self::stock_snapshot(&godowns);
         let (_, required_volume) = self.plan_stock_draw(&godowns, &mut remaining, line_items)?;
-        let eligible = self.eligible_vehicles(&mut conn, required_volume, customer)?;
+        self.usable_vehicles(&mut conn, required_volume, customer)
+    }
+
+    /// [`Self::eligible_vehicles`], or the error a dispatch would give: none
+    /// qualifies, or the customer has no location to deliver to. Preview,
+    /// auto-select and a chosen vehicle all go through this, so they agree.
+    fn usable_vehicles(
+        &self,
+        conn: &mut mysql::PooledConn,
+        required_volume: i64,
+        customer: &Customer,
+    ) -> Result<Vec<EligibleVehicle>, Box<dyn Error>> {
+        let eligible = self.eligible_vehicles(conn, required_volume, customer)?;
         if eligible.is_empty() {
-            return Err(self.no_vehicle_error(&mut conn, required_volume)?);
+            return Err(self.no_vehicle_error(conn, required_volume)?);
         }
         if customer.location.is_none() {
             return Err("Customer location is not set for dispatch".into());
@@ -352,6 +364,9 @@ impl Organization {
         // All or nothing: a crash can't leave stock drawn down without a
         // dispatch, or a dispatch without its notifications.
         let mut tx = conn.start_transaction(TxOpts::default())?;
+        if let Some(reg) = vehicle_reg.as_deref() {
+            self.claim_vehicle(&mut tx, reg)?;
+        }
         let mut drawn = Vec::new();
         let order_line_items = Self::draw_down_plans(&mut tx, plans, &mut drawn)?;
 
@@ -835,14 +850,7 @@ impl Organization {
         required_volume: i64,
         customer: &Customer,
     ) -> Result<String, Box<dyn Error>> {
-        let eligible = self.eligible_vehicles(conn, required_volume, customer)?;
-        if eligible.is_empty() {
-            return Err(self.no_vehicle_error(conn, required_volume)?);
-        }
-        if customer.location.is_none() {
-            return Err("Customer location is not set for dispatch".into());
-        }
-        eligible
+        self.usable_vehicles(conn, required_volume, customer)?
             .into_iter()
             .next()
             .map(|v| v.registration_number)
@@ -948,6 +956,9 @@ impl Organization {
         required_volume: i64,
         customer: &Customer,
     ) -> Result<String, Box<dyn Error>> {
+        if customer.location.is_none() {
+            return Err("Customer location is not set for dispatch".into());
+        }
         // Registration numbers are matched the way MySQL's default collation
         // does in the lookup below (case-insensitive), and the dispatch uses
         // the canonical number stored on the vehicle.
@@ -978,6 +989,35 @@ impl Organization {
             Some(_) => format!("Vehicle '{reg}' is already on an active dispatch"),
         }
         .into())
+    }
+
+    /// Lock `reg`'s row for this transaction and re-check that it has no open
+    /// own-fleet dispatch. The eligibility check ran before the transaction,
+    /// so two dispatches picking the same vehicle could otherwise both pass it;
+    /// the second now waits for the first to commit and is then refused.
+    fn claim_vehicle(
+        &self,
+        tx: &mut mysql::Transaction<'_>,
+        reg: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let _: Option<String> = tx.exec_first(
+            "SELECT registration_number FROM Vehicle
+             WHERE org_id = :org_id AND registration_number = :reg FOR UPDATE",
+            params! { "org_id" => self.id.to_string(), "reg" => reg },
+        )?;
+        // A locking read sees the latest committed rows, not the snapshot.
+        let open: Option<i64> = tx.exec_first(
+            "SELECT 1 FROM Dispatches
+             WHERE vehicle_registration_number = :reg
+               AND vehicle_source = 'OWN'
+               AND status NOT IN ('DELIVERED', 'RETURNED', 'CANCELLED')
+             LIMIT 1 FOR UPDATE",
+            params! { "reg" => reg },
+        )?;
+        match open {
+            Some(_) => Err(format!("Vehicle '{reg}' is already on an active dispatch").into()),
+            None => Ok(()),
+        }
     }
 
     pub fn list_all() -> Result<Vec<Self>, Box<dyn Error>> {

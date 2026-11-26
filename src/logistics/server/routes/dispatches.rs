@@ -31,8 +31,9 @@ pub struct DispatchRequestPayload {
     pub vendor_id: Option<Uuid>,
     /// Own fleet only: dispatch on this vehicle instead of the nearest free
     /// one. It must belong to the org, have an active assigned driver, enough
-    /// capacity and no open dispatch, else `400`. Omit to auto-select. Not
-    /// allowed with `HIRED`.
+    /// capacity and no open dispatch, and the customer must have a location,
+    /// else `400`. Matched ignoring case and surrounding spaces. Omit it, or
+    /// send it blank, to auto-select. Not allowed with `HIRED`.
     #[serde(default)]
     pub vehicle_registration_number: Option<String>,
 }
@@ -146,6 +147,26 @@ pub async fn list_dispatches(auth: AuthenticatedOrg) -> impl Responder {
     }
 }
 
+/// The org with its real location, which vehicle distances are measured
+/// from when a vehicle has no GPS fix.
+fn load_org(org_id: Uuid) -> Result<Organization, HttpResponse> {
+    match Organization::get_by_id(org_id) {
+        Ok(Some(org)) => Ok(org),
+        Ok(None) => Err(HttpResponse::NotFound().json(ApiResponse::<String> {
+            success: false,
+            message: "Organization not found".to_string(),
+            data: None,
+        })),
+        Err(err) => Err(
+            HttpResponse::InternalServerError().json(ApiResponse::<String> {
+                success: false,
+                message: format!("Failed to fetch organization: {}", err),
+                data: None,
+            }),
+        ),
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/api/orgs/{id}/dispatch",
@@ -177,15 +198,6 @@ pub async fn dispatch_stock(
             data: None,
         });
     }
-    let org = Organization {
-        id: org_id,
-        name: String::new(),
-        address: String::new(),
-        vehicles: Vec::new(),
-        godowns: Vec::new(),
-        location: None,
-        gstin: None,
-    };
 
     let customer = match Customer::get_by_id(payload.customer_id) {
         Ok(Some(c)) if c.org_id == auth.org_id => c,
@@ -221,9 +233,13 @@ pub async fn dispatch_stock(
         })
         .collect();
 
-    if payload.vehicle_source == VehicleSource::Hired
-        && payload.vehicle_registration_number.is_some()
-    {
+    // A form that leaves the picker empty sends "": that means auto-select.
+    let chosen_vehicle = payload
+        .vehicle_registration_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|reg| !reg.is_empty());
+    if payload.vehicle_source == VehicleSource::Hired && chosen_vehicle.is_some() {
         return HttpResponse::BadRequest().json(ApiResponse::<String> {
             success: false,
             message: "vehicle_registration_number cannot be set when vehicle_source is HIRED"
@@ -232,17 +248,16 @@ pub async fn dispatch_stock(
         });
     }
 
+    let org = match load_org(org_id) {
+        Ok(org) => org,
+        Err(resp) => return resp,
+    };
+
     let result = match (payload.vehicle_source, payload.vendor_id) {
-        (VehicleSource::Own, _) if payload.vehicle_registration_number.is_some() => org
-            .dispatch_stock_on_vehicle(
-                &customer,
-                &line_items,
-                payload
-                    .vehicle_registration_number
-                    .as_deref()
-                    .unwrap_or_default(),
-            ),
-        (VehicleSource::Own, _) => org.dispatch_stock_to_customer(&customer, &line_items),
+        (VehicleSource::Own, _) => match chosen_vehicle {
+            Some(reg) => org.dispatch_stock_on_vehicle(&customer, &line_items, reg),
+            None => org.dispatch_stock_to_customer(&customer, &line_items),
+        },
         (VehicleSource::Hired, Some(vendor_id)) => {
             org.dispatch_stock_on_hired_vehicle(&customer, &line_items, vendor_id)
         }
@@ -334,27 +349,20 @@ pub async fn preview_dispatch_vehicle(
             requested_quantity: li.requested_quantity,
         })
         .collect();
-    let org = Organization {
-        id: org_id,
-        name: String::new(),
-        address: String::new(),
-        vehicles: Vec::new(),
-        godowns: Vec::new(),
-        location: None,
-        gstin: None,
+    let org = match load_org(org_id) {
+        Ok(org) => org,
+        Err(resp) => return resp,
     };
     match org.preview_vehicles(&customer, &line_items) {
-        Ok(eligible) => match eligible.first().cloned() {
-            Some(suggested) => HttpResponse::Ok().json(ApiResponse {
-                success: true,
-                message: "Vehicle preview".to_string(),
-                data: Some(VehiclePreview {
-                    suggested,
-                    eligible,
-                }),
+        // preview_vehicles errors rather than return an empty list.
+        Ok(eligible) => HttpResponse::Ok().json(ApiResponse {
+            success: true,
+            message: "Vehicle preview".to_string(),
+            data: Some(VehiclePreview {
+                suggested: eligible[0].clone(),
+                eligible,
             }),
-            None => bad("No vehicle available".to_string()),
-        },
+        }),
         Err(err) => bad(format!("Preview failed: {}", err)),
     }
 }
