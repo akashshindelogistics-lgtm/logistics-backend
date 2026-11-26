@@ -38,6 +38,7 @@ fn hired_dispatch_payload(customer_id: Uuid, vendor_id: Option<Uuid>) -> Dispatc
             requested_quantity: 5,
         }],
         vehicle_source: VehicleSource::Hired,
+        vehicle_registration_number: None,
         vendor_id,
     }
 }

@@ -22,7 +22,12 @@ PENDING -> CONFIRMED -> LOADED -> IN_TRANSIT -> DELIVERED
   assigned driver**, its `capacity` covers the shipment's volume
   (`volume_in_size × quantity`), and it is **not already on a non-terminal
   trip**. If nothing qualifies, dispatch is rejected before a `PENDING`
-  order is created. A trip reaching `DELIVERED` / `RETURNED` / `CANCELLED`
+  order is created. The caller may instead name a vehicle
+  (`vehicle_registration_number`, matched ignoring case and spaces; blank means
+  auto-select); it must meet the same rules, customer location included, or
+  the request is a `400`. The vehicle row is locked while the dispatch is
+  saved, so two dispatches can't both take the same vehicle. `POST /api/orgs/{id}/dispatch/vehicle-preview` lists the
+  eligible vehicles, nearest first, without reserving anything. A trip reaching `DELIVERED` / `RETURNED` / `CANCELLED`
   releases its vehicle back into the pool.
 - `CONFIRMED` — ops has confirmed the order will be fulfilled as booked.
 - `LOADED` — stock has been physically loaded onto the assigned vehicle.

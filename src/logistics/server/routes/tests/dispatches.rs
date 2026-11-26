@@ -80,6 +80,7 @@ async fn test_dispatch_rejects_customer_from_another_org() {
         .set_json(&DispatchRequestPayload {
             vehicle_source: VehicleSource::Own,
             vendor_id: None,
+            vehicle_registration_number: None,
             customer_id: foreign_customer.id,
             line_items: vec![DispatchLineItemPayload {
                 stock_description: "Anything".to_string(),
@@ -106,6 +107,7 @@ async fn test_dispatch_stock_no_stock_returns_error() {
     let payload = DispatchRequestPayload {
         vehicle_source: VehicleSource::Own,
         vendor_id: None,
+        vehicle_registration_number: None,
         customer_id,
         line_items: vec![DispatchLineItemPayload {
             stock_description: "Nonexistent Stock Description".to_string(),
@@ -217,6 +219,7 @@ async fn test_dispatch_stock_carries_multiple_line_items() {
         .set_json(&DispatchRequestPayload {
             vehicle_source: VehicleSource::Own,
             vendor_id: None,
+            vehicle_registration_number: None,
             customer_id: first.customer_id,
             line_items: vec![
                 DispatchLineItemPayload {
@@ -249,6 +252,7 @@ async fn test_dispatch_stock_carries_multiple_line_items() {
         .set_json(&DispatchRequestPayload {
             vehicle_source: VehicleSource::Own,
             vendor_id: None,
+            vehicle_registration_number: None,
             customer_id: first.customer_id,
             line_items: vec![
                 DispatchLineItemPayload {
@@ -691,6 +695,7 @@ async fn test_dispatch_stock_returns_403_for_different_org() {
     let payload = DispatchRequestPayload {
         vehicle_source: VehicleSource::Own,
         vendor_id: None,
+        vehicle_registration_number: None,
         customer_id: Uuid::new_v4(),
         line_items: vec![DispatchLineItemPayload {
             stock_description: "Stolen Stock".to_string(),
@@ -806,6 +811,7 @@ async fn test_dispatcher_can_dispatch_but_warehouse_staff_cannot() {
         vehicle_source: VehicleSource::Own,
 
         vendor_id: None,
+        vehicle_registration_number: None,
         customer_id,
         line_items: vec![DispatchLineItemPayload {
             stock_description: "Dispatch Test Goods".to_string(),
@@ -910,6 +916,7 @@ async fn test_dispatch_rejected_when_no_vehicle_has_an_active_driver() {
         .set_json(&DispatchRequestPayload {
             vehicle_source: VehicleSource::Own,
             vendor_id: None,
+            vehicle_registration_number: None,
             customer_id: customer.id,
             line_items: vec![DispatchLineItemPayload {
                 stock_description: "Widgets".to_string(),
@@ -1008,4 +1015,547 @@ async fn test_any_role_can_print_a_challan() {
 
     let resp = get_challan(&app, dispatch.id, Some(&staff)).await;
     assert_eq!(resp.status().as_u16(), 200);
+}
+
+/// An org with a located customer, 100 units of 1-volume goods and one
+/// vehicle per `(reg, capacity, has_driver)`. Returns `(org, auth, customer_id)`.
+async fn setup_fleet(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse,
+        Error = actix_web::Error,
+    >,
+    org_name: &str,
+    vehicles: &[(&str, i64, bool)],
+) -> (Organization, String, Uuid) {
+    let (org, auth) = setup_org(app, org_name).await;
+    for (i, (reg, capacity, has_driver)) in vehicles.iter().enumerate() {
+        let req = test::TestRequest::post()
+            .uri(&format!("/api/orgs/{}/vehicles", org.id))
+            .insert_header(("Authorization", auth.clone()))
+            .set_json(&CreateVehiclePayload {
+                registration_number: reg.to_string(),
+                capacity: *capacity,
+                unit: "MetricTon".to_string(),
+                vehicle_type: None,
+            })
+            .to_request();
+        assert_eq!(test::call_service(app, req).await.status().as_u16(), 201);
+        if !has_driver {
+            continue;
+        }
+        let req = test::TestRequest::post()
+            .uri(&format!("/api/orgs/{}/drivers", org.id))
+            .insert_header(("Authorization", auth.clone()))
+            .set_json(&CreateDriverPayload {
+                name: format!("Driver {i}"),
+                license_number: format!("{org_name}-LIC-{i}"),
+                phone: "+91 90000 00000".to_string(),
+            })
+            .to_request();
+        let body: ApiResponse<Driver> =
+            test::read_body_json(test::call_service(app, req).await).await;
+        let req = test::TestRequest::put()
+            .uri(&format!("/api/vehicles/{reg}/driver"))
+            .insert_header(("Authorization", auth.clone()))
+            .set_json(&AssignDriverPayload {
+                driver_id: Some(body.data.unwrap().id),
+            })
+            .to_request();
+        assert_eq!(test::call_service(app, req).await.status().as_u16(), 200);
+    }
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/orgs/{}/godowns", org.id))
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(&CreateGodownPayload {
+            name: "Fleet Godown".to_string(),
+            address: "1 Godown Road".to_string(),
+            max_capacity: None,
+        })
+        .to_request();
+    let body: ApiResponse<Godown> = test::read_body_json(test::call_service(app, req).await).await;
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/godowns/{}/stock", body.data.unwrap().id))
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(&CreateStockPayload {
+            volume_in_size: 1,
+            quantity: 100,
+            description: "Fleet Goods".to_string(),
+            category: "General".to_string(),
+            reorder_threshold: None,
+        })
+        .to_request();
+    assert!(test::call_service(app, req).await.status().is_success());
+    let customer = located_customer_at(app, org.id, &auth, "Fleet Customer", 19.07, 72.87).await;
+    (org, auth, customer)
+}
+
+fn fleet_dispatch(
+    customer_id: Uuid,
+    quantity: i64,
+    vehicle: Option<&str>,
+) -> DispatchRequestPayload {
+    DispatchRequestPayload {
+        customer_id,
+        line_items: vec![DispatchLineItemPayload {
+            stock_description: "Fleet Goods".to_string(),
+            requested_quantity: quantity,
+        }],
+        vehicle_source: VehicleSource::Own,
+        vendor_id: None,
+        vehicle_registration_number: vehicle.map(str::to_string),
+    }
+}
+
+async fn post_fleet_dispatch(
+    app: &impl actix_web::dev::Service<
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse,
+        Error = actix_web::Error,
+    >,
+    org_id: Uuid,
+    auth: &str,
+    payload: &DispatchRequestPayload,
+) -> (u16, ApiResponse<DispatchOrder>) {
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/orgs/{org_id}/dispatch"))
+        .insert_header(("Authorization", auth.to_string()))
+        .set_json(payload)
+        .to_request();
+    let resp = test::call_service(app, req).await;
+    let status = resp.status().as_u16();
+    (status, test::read_body_json(resp).await)
+}
+
+#[actix_web::test]
+async fn test_dispatch_with_chosen_vehicle_uses_it() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(
+        &app,
+        "Override Ok",
+        &[("OV-A", 1000, true), ("OV-B", 1000, true)],
+    )
+    .await;
+    for reg in ["OV-A", "OV-B"] {
+        // Each run must see the other vehicle free, so only one dispatch per
+        // vehicle: pick the second one after the first is taken.
+        let (status, body) =
+            post_fleet_dispatch(&app, org.id, &auth, &fleet_dispatch(customer, 1, Some(reg))).await;
+        assert_eq!(status, 200, "{}", body.message);
+        assert_eq!(
+            body.data.unwrap().vehicle_registration_number.as_deref(),
+            Some(reg)
+        );
+    }
+}
+
+#[actix_web::test]
+async fn test_dispatch_chosen_vehicle_matches_case_and_whitespace_insensitively() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) =
+        setup_fleet(&app, "Override Case", &[("MH12AB1234", 1000, true)]).await;
+    let (status, body) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(customer, 1, Some("  mh12ab1234 ")),
+    )
+    .await;
+    assert_eq!(status, 200, "{}", body.message);
+    assert_eq!(
+        body.data.unwrap().vehicle_registration_number.as_deref(),
+        Some("MH12AB1234")
+    );
+}
+
+#[actix_web::test]
+async fn test_dispatch_without_vehicle_still_auto_selects() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(
+        &app,
+        "Override Auto",
+        &[("AU-A", 1000, true), ("AU-B", 1000, true)],
+    )
+    .await;
+    let (status, body) =
+        post_fleet_dispatch(&app, org.id, &auth, &fleet_dispatch(customer, 1, None)).await;
+    assert_eq!(status, 200, "{}", body.message);
+    let reg = body.data.unwrap().vehicle_registration_number.unwrap();
+    assert!(reg == "AU-A" || reg == "AU-B", "{reg}");
+}
+
+#[actix_web::test]
+async fn test_dispatch_rejects_chosen_vehicle_of_another_org() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(&app, "Override Mine", &[("MY-A", 1000, true)]).await;
+    setup_fleet(&app, "Override Theirs", &[("THEIR-A", 1000, true)]).await;
+    let (status, body) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(customer, 1, Some("THEIR-A")),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(
+        body.message.contains("not found in this organization"),
+        "{}",
+        body.message
+    );
+}
+
+#[actix_web::test]
+async fn test_dispatch_rejects_busy_chosen_vehicle() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(
+        &app,
+        "Override Busy",
+        &[("BU-A", 1000, true), ("BU-B", 1000, true)],
+    )
+    .await;
+    let (status, _) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(customer, 1, Some("BU-A")),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, body) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(customer, 1, Some("BU-A")),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(
+        body.message.contains("already on an active dispatch"),
+        "{}",
+        body.message
+    );
+}
+
+#[actix_web::test]
+async fn test_dispatch_rejects_over_capacity_chosen_vehicle() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(
+        &app,
+        "Override Small",
+        &[("SM-A", 5, true), ("SM-B", 1000, true)],
+    )
+    .await;
+    let (status, body) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(customer, 10, Some("SM-A")),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(body.message.contains("too small"), "{}", body.message);
+}
+
+#[actix_web::test]
+async fn test_dispatch_rejects_chosen_vehicle_without_driver() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(
+        &app,
+        "Override NoDrv",
+        &[("ND-A", 1000, false), ("ND-B", 1000, true)],
+    )
+    .await;
+    let (status, body) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(customer, 1, Some("ND-A")),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(
+        body.message.contains("no active assigned driver"),
+        "{}",
+        body.message
+    );
+}
+
+#[actix_web::test]
+async fn test_vehicle_preview_lists_only_eligible_vehicles() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(
+        &app,
+        "Preview Fleet",
+        &[
+            ("PV-A", 1000, true),
+            ("PV-B", 1000, true),
+            ("PV-SMALL", 5, true),
+            ("PV-NODRV", 1000, false),
+        ],
+    )
+    .await;
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/orgs/{}/dispatch/vehicle-preview", org.id))
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(&VehiclePreviewPayload {
+            customer_id: customer,
+            line_items: vec![DispatchLineItemPayload {
+                stock_description: "Fleet Goods".to_string(),
+                requested_quantity: 10,
+            }],
+        })
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: ApiResponse<VehiclePreview> = test::read_body_json(resp).await;
+    let preview = body.data.unwrap();
+    let mut regs: Vec<_> = preview
+        .eligible
+        .iter()
+        .map(|v| v.registration_number.clone())
+        .collect();
+    assert_eq!(preview.suggested.registration_number, regs[0]);
+    regs.sort();
+    assert_eq!(regs, ["PV-A", "PV-B"]);
+
+    // Previewing reserves nothing: stock and vehicles are untouched.
+    let (status, _) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(customer, 10, Some(&preview.suggested.registration_number)),
+    )
+    .await;
+    assert_eq!(status, 200);
+}
+
+#[actix_web::test]
+async fn test_vehicle_preview_without_eligible_vehicle_is_400() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(&app, "Preview None", &[("PN-A", 5, true)]).await;
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/orgs/{}/dispatch/vehicle-preview", org.id))
+        .insert_header(("Authorization", auth))
+        .set_json(&VehiclePreviewPayload {
+            customer_id: customer,
+            line_items: vec![DispatchLineItemPayload {
+                stock_description: "Fleet Goods".to_string(),
+                requested_quantity: 10,
+            }],
+        })
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 400);
+}
+
+#[actix_web::test]
+async fn test_dispatch_rejects_chosen_vehicle_when_customer_has_no_location() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, _) = setup_fleet(&app, "Override NoLoc", &[("NL-A", 1000, true)]).await;
+    let unlocated = create_customer_via_api(&app, org.id, &auth, "Nowhere").await;
+    let (status, body) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(unlocated.id, 1, Some("NL-A")),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(
+        body.message.contains("location is not set"),
+        "{}",
+        body.message
+    );
+}
+
+#[actix_web::test]
+async fn test_dispatch_with_blank_vehicle_auto_selects() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(&app, "Override Blank", &[("BL-A", 1000, true)]).await;
+    let (status, body) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(customer, 1, Some("  ")),
+    )
+    .await;
+    assert_eq!(status, 200, "{}", body.message);
+    assert_eq!(
+        body.data.unwrap().vehicle_registration_number.as_deref(),
+        Some("BL-A")
+    );
+}
+
+#[actix_web::test]
+async fn test_vehicle_preview_measures_a_vehicle_without_a_fix_from_the_org() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    // The customer from setup_fleet is in Mumbai (19.07, 72.87).
+    let (org, auth, customer) = setup_fleet(
+        &app,
+        "Preview OrgLoc",
+        &[("OL-NOFIX", 1000, true), ("OL-DELHI", 1000, true)],
+    )
+    .await;
+    let put_location = |uri: String, latitude: f64, longitude: f64| {
+        test::TestRequest::put()
+            .uri(&uri)
+            .insert_header(("Authorization", auth.clone()))
+            .set_json(&LocationPayload {
+                latitude,
+                longitude,
+                address: None,
+            })
+            .to_request()
+    };
+    let req = put_location(format!("/api/orgs/{}/location", org.id), 19.07, 72.87);
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+    let req = put_location("/api/vehicles/OL-DELHI/location".to_string(), 28.61, 77.21);
+    assert_eq!(test::call_service(&app, req).await.status().as_u16(), 200);
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/orgs/{}/dispatch/vehicle-preview", org.id))
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(&VehiclePreviewPayload {
+            customer_id: customer,
+            line_items: vec![DispatchLineItemPayload {
+                stock_description: "Fleet Goods".to_string(),
+                requested_quantity: 1,
+            }],
+        })
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let preview = test::read_body_json::<ApiResponse<VehiclePreview>, _>(resp)
+        .await
+        .data
+        .unwrap();
+    // Parked at the org, next to the customer, not at 0°N 0°E.
+    assert_eq!(preview.suggested.registration_number, "OL-NOFIX");
+    assert!(
+        preview.suggested.distance_km < 1.0,
+        "{}",
+        preview.suggested.distance_km
+    );
+}
+
+#[actix_web::test]
+async fn test_two_simultaneous_dispatches_on_one_vehicle_only_one_succeeds() {
+    use crate::logistics::db::connection::set_test_db_override;
+    use crate::logistics::dispatch::dispatch::DispatchLineItemInput;
+    use std::sync::{Arc, Barrier};
+
+    let db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, _, customer) = setup_fleet(&app, "Override Race", &[("RC-A", 1000, true)]).await;
+    let org = Organization::get_by_id(org.id).unwrap().unwrap();
+    let customer = Customer::get_by_id(customer).unwrap().unwrap();
+    let line_items = vec![DispatchLineItemInput {
+        stock_description: "Fleet Goods".to_string(),
+        requested_quantity: 1,
+    }];
+
+    let barrier = Arc::new(Barrier::new(2));
+    let results: Vec<bool> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let (org, customer, line_items) = (&org, &customer, &line_items);
+                let name = db.name().to_string();
+                s.spawn(move || {
+                    set_test_db_override(Some(name));
+                    barrier.wait();
+                    let ok = org
+                        .dispatch_stock_on_vehicle(customer, line_items, "RC-A")
+                        .is_ok();
+                    set_test_db_override(None);
+                    ok
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(results.iter().filter(|ok| **ok).count(), 1, "{results:?}");
+}
+
+/// An own-fleet dispatch and a hired one drawing from the same godown at the
+/// same time must both go through. The own-fleet claim used to lock every
+/// `Dispatches` row before drawing stock, while the hired path draws stock
+/// and then inserts, so the two could deadlock (MySQL error 1213).
+#[actix_web::test]
+async fn test_simultaneous_own_fleet_and_hired_dispatches_both_succeed() {
+    use crate::logistics::db::connection::set_test_db_override;
+    use crate::logistics::dispatch::dispatch::DispatchLineItemInput;
+    use std::sync::{Arc, Barrier};
+
+    const ROUNDS: usize = 4;
+    let db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(
+        &app,
+        "Mixed Race",
+        &[
+            ("MX-A", 1000, true),
+            ("MX-B", 1000, true),
+            ("MX-C", 1000, true),
+            ("MX-D", 1000, true),
+        ],
+    )
+    .await;
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/orgs/{}/vendors", org.id))
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(vendor_payload("Mixed Race Vendor"))
+        .to_request();
+    let vendor: ApiResponse<VehicleVendor> =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let vendor_id = vendor.data.expect("vendor").id;
+    let org = Organization::get_by_id(org.id).unwrap().unwrap();
+    let customer = Customer::get_by_id(customer).unwrap().unwrap();
+    let line_items = vec![DispatchLineItemInput {
+        stock_description: "Fleet Goods".to_string(),
+        requested_quantity: 1,
+    }];
+
+    // Each round puts one more own vehicle on the road, so there are as many
+    // vehicles as rounds.
+    for round in 0..ROUNDS {
+        let barrier = Arc::new(Barrier::new(2));
+        let results: Vec<Result<(), String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = [false, true]
+                .into_iter()
+                .map(|hired| {
+                    let barrier = barrier.clone();
+                    let (org, customer, line_items) = (&org, &customer, &line_items);
+                    let name = db.name().to_string();
+                    s.spawn(move || {
+                        set_test_db_override(Some(name));
+                        barrier.wait();
+                        let result = if hired {
+                            org.dispatch_stock_on_hired_vehicle(customer, line_items, vendor_id)
+                        } else {
+                            org.dispatch_stock_to_customer(customer, line_items)
+                        };
+                        set_test_db_override(None);
+                        result.map(|_| ()).map_err(|e| e.to_string())
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(
+            results.iter().all(Result::is_ok),
+            "round {round}: {results:?}"
+        );
+    }
 }
