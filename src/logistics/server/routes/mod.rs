@@ -28,7 +28,7 @@ use crate::logistics::notification::notification::{
     Notification, NotificationChannel, NotificationEvent, NotificationStatus,
 };
 use crate::logistics::orgs::onboarding::{OnboardingStatus, OnboardingStep};
-use crate::logistics::orgs::orgs::Organization;
+use crate::logistics::orgs::orgs::{EligibleVehicle, Organization};
 use crate::logistics::orgs::sample_data::SampleDataSummary;
 use crate::logistics::reports::{
     CategoryUnits, DeliveryPerformance, DispatchVolumePoint, GodownInventory, HireMargin,
@@ -215,6 +215,7 @@ impl Modify for SecurityAddon {
         delete_customer,
         list_dispatches,
         dispatch_stock,
+        preview_dispatch_vehicle,
         update_dispatch_status,
         dispatch_challan_pdf,
         update_dispatch_eway_bill,
@@ -274,7 +275,7 @@ impl Modify for SecurityAddon {
             CreateOrgPayload, UpdateOrgPayload, LocationPayload,
             CreateVehiclePayload, UpdateVehiclePayload, TrackLocationPayload, CreateStockPayload, UpdateStockPayload,
             CreateGodownPayload, UpdateGodownPayload,
-            CreateCustomerPayload, DispatchRequestPayload, DispatchLineItemPayload,
+            CreateCustomerPayload, DispatchRequestPayload, VehiclePreviewPayload, VehiclePreview, VehiclePreviewResponse, EligibleVehicle, DispatchLineItemPayload,
             CreateDriverPayload, UpdateDriverPayload, AssignDriverPayload,
             CreateVendorPayload, UpdateVendorPayload, VehicleVendor,
             VehicleHire, HireStatus, AssignHirePayload, HireListQuery, VehicleSource,
@@ -477,6 +478,7 @@ pub fn config_api_routes(cfg: &mut web::ServiceConfig) {
             .service(delete_customer)
             .service(list_dispatches)
             .service(dispatch_stock)
+            .service(preview_dispatch_vehicle)
             .service(update_dispatch_status)
             .service(dispatch_challan_pdf)
             .service(update_dispatch_eway_bill)

@@ -331,7 +331,8 @@ All routes are served under the `/api` prefix.
 | PUT/DELETE | `/api/stock-categories/{name}/hsn` | Set or remove the HSN code for a stock category |
 | GET/POST/DELETE | `/api/orgs/{id}/sample-data` | Whether demo data is loaded; load it (Admin); remove exactly it (Admin). See [`docs/onboarding.md`](docs/onboarding.md) |
 | PUT | `/api/dispatches/{id}/eway-bill` | Set or clear a dispatch's e-way bill number (locked once `DELIVERED`) |
-| POST | `/api/orgs/{id}/dispatch` | Dispatch stock from an org to one of its customers (`vehicle_source: HIRED` + `vendor_id` to hire the truck) |
+| POST | `/api/orgs/{id}/dispatch` | Dispatch stock from an org to one of its customers (`vehicle_source: HIRED` + `vendor_id` to hire the truck; optional `vehicle_registration_number` to pick the own-fleet vehicle instead of the nearest free one, `400` if it isn't eligible) |
+| POST | `/api/orgs/{id}/dispatch/vehicle-preview` | The vehicle a dispatch would auto-select plus the other eligible ones, nearest first (Admin/Dispatcher) |
 | POST/GET | `/api/orgs/{id}/trips` | Plan a multi-stop trip (one vehicle, several customers; can also be hired) / list the org's trips, including standalone dispatches as one-stop trips |
 | GET | `/api/trips/{id}` | One trip and its ordered stops; also takes a standalone dispatch's id for its one-stop trip |
 | GET | `/api/dispatches` | List dispatch orders |
