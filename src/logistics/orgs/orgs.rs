@@ -948,8 +948,15 @@ impl Organization {
         required_volume: i64,
         customer: &Customer,
     ) -> Result<String, Box<dyn Error>> {
+        // Registration numbers are matched the way MySQL's default collation
+        // does in the lookup below (case-insensitive), and the dispatch uses
+        // the canonical number stored on the vehicle.
+        let reg = reg.trim();
         let eligible = self.eligible_vehicles(conn, required_volume, customer)?;
-        if let Some(v) = eligible.iter().find(|v| v.registration_number == reg) {
+        if let Some(v) = eligible
+            .iter()
+            .find(|v| v.registration_number.eq_ignore_ascii_case(reg))
+        {
             return Ok(v.registration_number.clone());
         }
         let row: Option<(String, Option<bool>, i64)> = conn.exec_first(

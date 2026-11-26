@@ -1151,6 +1151,26 @@ async fn test_dispatch_with_chosen_vehicle_uses_it() {
 }
 
 #[actix_web::test]
+async fn test_dispatch_chosen_vehicle_matches_case_and_whitespace_insensitively() {
+    let _db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) =
+        setup_fleet(&app, "Override Case", &[("MH12AB1234", 1000, true)]).await;
+    let (status, body) = post_fleet_dispatch(
+        &app,
+        org.id,
+        &auth,
+        &fleet_dispatch(customer, 1, Some("  mh12ab1234 ")),
+    )
+    .await;
+    assert_eq!(status, 200, "{}", body.message);
+    assert_eq!(
+        body.data.unwrap().vehicle_registration_number.as_deref(),
+        Some("MH12AB1234")
+    );
+}
+
+#[actix_web::test]
 async fn test_dispatch_without_vehicle_still_auto_selects() {
     let _db = TestDb::create();
     let app = test::init_service(App::new().configure(config_routes)).await;
