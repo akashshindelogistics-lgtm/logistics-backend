@@ -706,6 +706,13 @@ async fn ready_to_dispatch(caller: &Caller, org_id: Uuid) -> Value {
         Some(json!({"volume_in_size": 1, "quantity": 100, "description": "Cement", "category": "General"})),
     )
     .await;
+    api(
+        caller,
+        "POST",
+        &format!("/api/godowns/{}/stock", godown["data"]["id"].as_str().unwrap()),
+        Some(json!({"volume_in_size": 1, "quantity": 100, "description": "Bricks", "category": "General"})),
+    )
+    .await;
     let (_, customer) = api(
         caller,
         "POST",
@@ -846,6 +853,129 @@ async fn a_dispatch_can_be_raised_tracked_and_moved_on_from_chat() {
     assert_eq!(card.status, ProposalStatus::Failed);
     let (_, list) = api(&caller, "GET", "/api/dispatches", None).await;
     assert_eq!(list["data"][0]["status"], "CONFIRMED");
+}
+
+/// A second own-fleet vehicle with an active driver.
+async fn add_second_vehicle(caller: &Caller, org_id: Uuid, reg: &str) {
+    api(
+        caller,
+        "POST",
+        &format!("/api/orgs/{org_id}/vehicles"),
+        Some(json!({"registration_number": reg, "capacity": 100000, "unit": "MetricTon"})),
+    )
+    .await;
+    let (_, driver) = api(
+        caller,
+        "POST",
+        &format!("/api/orgs/{org_id}/drivers"),
+        Some(json!({"name": "Sunil", "license_number": "LIC2", "phone": "+91 90000 00001"})),
+    )
+    .await;
+    api(
+        caller,
+        "PUT",
+        &format!("/api/vehicles/{reg}/driver"),
+        Some(json!({"driver_id": driver["data"]["id"]})),
+    )
+    .await;
+}
+
+fn named_vehicle_dispatch(tool_id: &str, customer: &Value, reg: &str) -> Value {
+    call(
+        tool_id,
+        json!({
+            "operation_id": "dispatch_stock",
+            "body": {
+                "customer_id": customer["id"],
+                "vehicle_registration_number": reg,
+                "line_items": [
+                    {"stock_description": "Cement", "requested_quantity": 5},
+                    {"stock_description": "Bricks", "requested_quantity": 2},
+                ],
+            },
+            "reason": "two items on a named vehicle",
+        }),
+    )
+}
+
+#[actix_web::test]
+async fn a_dispatch_card_can_name_its_vehicle() {
+    let _db = TestDb::create();
+    let org = org("Named Vehicle Co");
+    let caller = admin(&org);
+    let customer = ready_to_dispatch(&caller, org.id).await;
+    add_second_vehicle(&caller, org.id, "MH14ZZ9999").await;
+
+    let (id, _) = start(
+        &caller,
+        "send cement to Asha Traders by MH14ZZ9999",
+        vec![
+            named_vehicle_dispatch("toolu_named", &customer, "MH14ZZ9999"),
+            finished("Please confirm the dispatch."),
+        ],
+    )
+    .await;
+    let card = only_proposal(id);
+    assert!(card.fields.iter().any(|f| f.value.contains("MH14ZZ9999")));
+    let config = config_for(vec![finished("Raised.")]).await;
+    runtime::confirm(&caller, &card, Some(&config))
+        .await
+        .unwrap();
+    let raised = only_proposal(id);
+    assert_eq!(
+        raised.status,
+        ProposalStatus::Executed,
+        "{:?}",
+        raised.result_message
+    );
+    let data = raised.result_data.unwrap();
+    assert_eq!(data["vehicle_registration_number"], "MH14ZZ9999");
+    assert_eq!(data["line_items"].as_array().unwrap().len(), 2);
+}
+
+#[actix_web::test]
+async fn a_named_vehicle_that_is_busy_fails_instead_of_using_another_truck() {
+    let _db = TestDb::create();
+    let org = org("Busy Vehicle Co");
+    let caller = admin(&org);
+    let customer = ready_to_dispatch(&caller, org.id).await;
+    add_second_vehicle(&caller, org.id, "MH14ZZ9999").await;
+    // Put MH14ZZ9999 on an active trip.
+    let (status, _) = api(
+        &caller,
+        "POST",
+        &format!("/api/orgs/{}/dispatch", org.id),
+        Some(json!({
+            "customer_id": customer["id"],
+            "vehicle_registration_number": "MH14ZZ9999",
+            "line_items": [{"stock_description": "Cement", "requested_quantity": 1}],
+        })),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let (id, _) = start(
+        &caller,
+        "send cement by MH14ZZ9999",
+        vec![
+            named_vehicle_dispatch("toolu_busy", &customer, "MH14ZZ9999"),
+            finished("Please confirm."),
+        ],
+    )
+    .await;
+    let card = only_proposal(id);
+    let config = config_for(vec![finished("That truck is busy.")]).await;
+    runtime::confirm(&caller, &card, Some(&config))
+        .await
+        .unwrap();
+    let card = only_proposal(id);
+    assert_eq!(card.status, ProposalStatus::Failed);
+    let (_, list) = api(&caller, "GET", "/api/dispatches", None).await;
+    assert_eq!(
+        list["data"].as_array().unwrap().len(),
+        1,
+        "no second dispatch"
+    );
 }
 
 #[actix_web::test]

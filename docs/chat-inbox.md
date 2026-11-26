@@ -118,11 +118,18 @@ Tables: `ChatConversations`, `ChatMessages`, `ChatProposals`, removed with the o
   document and maintenance writes aren't role-gated on the server. Chat applies the same
   rules as the dashboard, so warehouse staff can add a customer from either.
 
+## Naming the vehicle
+
+A dispatch card can name its own-fleet vehicle: `dispatch_stock` takes an optional
+`vehicle_registration_number` (the catalog is built from the OpenAPI spec). If that
+vehicle isn't eligible (busy, no active driver, too small) the confirmed card fails
+with the API's `400` message; chat never falls back to another truck.
+
 ## Tests
 
 `chat/tests.rs` runs the real loop, handlers and database against a scripted fake of
 the API: writes change nothing until confirmed; confirming twice runs once; cancelling;
 excluded operations; role and org limits at confirm time; the card shows the real
 record; credentials stay hidden; a dispatch raised, tracked, moved on and refused an
-illegal move; history replayed unedited; the model failing without losing work.
+illegal move; a dispatch naming its vehicle, and a busy named vehicle failing rather than switching trucks; history replayed unedited; the model failing without losing work.
 `routes/tests/chat.rs` covers privacy over HTTP.
