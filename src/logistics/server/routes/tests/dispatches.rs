@@ -1487,3 +1487,75 @@ async fn test_two_simultaneous_dispatches_on_one_vehicle_only_one_succeeds() {
     });
     assert_eq!(results.iter().filter(|ok| **ok).count(), 1, "{results:?}");
 }
+
+/// An own-fleet dispatch and a hired one drawing from the same godown at the
+/// same time must both go through. The own-fleet claim used to lock every
+/// `Dispatches` row before drawing stock, while the hired path draws stock
+/// and then inserts, so the two could deadlock (MySQL error 1213).
+#[actix_web::test]
+async fn test_simultaneous_own_fleet_and_hired_dispatches_both_succeed() {
+    use crate::logistics::db::connection::set_test_db_override;
+    use crate::logistics::dispatch::dispatch::DispatchLineItemInput;
+    use std::sync::{Arc, Barrier};
+
+    const ROUNDS: usize = 4;
+    let db = TestDb::create();
+    let app = test::init_service(App::new().configure(config_routes)).await;
+    let (org, auth, customer) = setup_fleet(
+        &app,
+        "Mixed Race",
+        &[
+            ("MX-A", 1000, true),
+            ("MX-B", 1000, true),
+            ("MX-C", 1000, true),
+            ("MX-D", 1000, true),
+        ],
+    )
+    .await;
+    let req = test::TestRequest::post()
+        .uri(&format!("/api/orgs/{}/vendors", org.id))
+        .insert_header(("Authorization", auth.clone()))
+        .set_json(vendor_payload("Mixed Race Vendor"))
+        .to_request();
+    let vendor: ApiResponse<VehicleVendor> =
+        test::read_body_json(test::call_service(&app, req).await).await;
+    let vendor_id = vendor.data.expect("vendor").id;
+    let org = Organization::get_by_id(org.id).unwrap().unwrap();
+    let customer = Customer::get_by_id(customer).unwrap().unwrap();
+    let line_items = vec![DispatchLineItemInput {
+        stock_description: "Fleet Goods".to_string(),
+        requested_quantity: 1,
+    }];
+
+    // Each round puts one more own vehicle on the road, so there are as many
+    // vehicles as rounds.
+    for round in 0..ROUNDS {
+        let barrier = Arc::new(Barrier::new(2));
+        let results: Vec<Result<(), String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = [false, true]
+                .into_iter()
+                .map(|hired| {
+                    let barrier = barrier.clone();
+                    let (org, customer, line_items) = (&org, &customer, &line_items);
+                    let name = db.name().to_string();
+                    s.spawn(move || {
+                        set_test_db_override(Some(name));
+                        barrier.wait();
+                        let result = if hired {
+                            org.dispatch_stock_on_hired_vehicle(customer, line_items, vendor_id)
+                        } else {
+                            org.dispatch_stock_to_customer(customer, line_items)
+                        };
+                        set_test_db_override(None);
+                        result.map(|_| ()).map_err(|e| e.to_string())
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(
+            results.iter().all(Result::is_ok),
+            "round {round}: {results:?}"
+        );
+    }
+}

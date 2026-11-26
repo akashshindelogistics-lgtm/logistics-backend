@@ -362,8 +362,14 @@ impl Organization {
             .and_then(|reg| Notification::driver_phone_for_vehicle(reg, self.id));
 
         // All or nothing: a crash can't leave stock drawn down without a
-        // dispatch, or a dispatch without its notifications.
-        let mut tx = conn.start_transaction(TxOpts::default())?;
+        // dispatch, or a dispatch without its notifications. READ COMMITTED so
+        // `claim_vehicle`'s re-check sees dispatches committed while it waited
+        // for the vehicle lock without a locking read, which at REPEATABLE
+        // READ would gap-lock all of `Dispatches` (no index on the vehicle)
+        // and deadlock with hired and multi-stop dispatches.
+        let mut tx = conn.start_transaction(
+            TxOpts::default().set_isolation_level(Some(IsolationLevel::ReadCommitted)),
+        )?;
         if let Some(reg) = vehicle_reg.as_deref() {
             self.claim_vehicle(&mut tx, reg)?;
         }
@@ -995,6 +1001,9 @@ impl Organization {
     /// own-fleet dispatch. The eligibility check ran before the transaction,
     /// so two dispatches picking the same vehicle could otherwise both pass it;
     /// the second now waits for the first to commit and is then refused.
+    ///
+    /// `tx` must be READ COMMITTED: the `Dispatches` re-check is a plain read,
+    /// and only the Vehicle row lock serializes claims.
     fn claim_vehicle(
         &self,
         tx: &mut mysql::Transaction<'_>,
@@ -1005,13 +1014,14 @@ impl Organization {
              WHERE org_id = :org_id AND registration_number = :reg FOR UPDATE",
             params! { "org_id" => self.id.to_string(), "reg" => reg },
         )?;
-        // A locking read sees the latest committed rows, not the snapshot.
+        // At READ COMMITTED a plain read sees what a competing claimer
+        // committed before releasing the Vehicle lock, and locks nothing.
         let open: Option<i64> = tx.exec_first(
             "SELECT 1 FROM Dispatches
              WHERE vehicle_registration_number = :reg
                AND vehicle_source = 'OWN'
                AND status NOT IN ('DELIVERED', 'RETURNED', 'CANCELLED')
-             LIMIT 1 FOR UPDATE",
+             LIMIT 1",
             params! { "reg" => reg },
         )?;
         match open {
