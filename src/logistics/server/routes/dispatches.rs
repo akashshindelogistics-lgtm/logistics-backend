@@ -8,7 +8,7 @@ use crate::logistics::dispatch::challan::Challan;
 use crate::logistics::dispatch::dispatch::{
     DispatchLineItemInput, DispatchOrder, DispatchStatus, ProofOfDeliveryInput, VehicleSource,
 };
-use crate::logistics::orgs::orgs::Organization;
+use crate::logistics::orgs::orgs::{EligibleVehicle, Organization};
 use crate::logistics::upload::upload::UploadedFile;
 use actix_web::{HttpResponse, Responder, get, post, put, web};
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,33 @@ pub struct DispatchRequestPayload {
     /// Required when `vehicle_source` is `HIRED`: an active vendor of this org.
     #[serde(default)]
     pub vendor_id: Option<Uuid>,
+    /// Own fleet only: dispatch on this vehicle instead of the nearest free
+    /// one. It must belong to the org, have an active assigned driver, enough
+    /// capacity and no open dispatch, else `400`. Omit to auto-select. Not
+    /// allowed with `HIRED`.
+    #[serde(default)]
+    pub vehicle_registration_number: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct VehiclePreviewPayload {
+    pub customer_id: Uuid,
+    pub line_items: Vec<DispatchLineItemPayload>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct VehiclePreview {
+    /// The vehicle a dispatch without an override would use (the nearest).
+    pub suggested: EligibleVehicle,
+    /// Every eligible vehicle, nearest first (includes the suggested one).
+    pub eligible: Vec<EligibleVehicle>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct VehiclePreviewResponse {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<VehiclePreview>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -194,7 +221,27 @@ pub async fn dispatch_stock(
         })
         .collect();
 
+    if payload.vehicle_source == VehicleSource::Hired
+        && payload.vehicle_registration_number.is_some()
+    {
+        return HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message: "vehicle_registration_number cannot be set when vehicle_source is HIRED"
+                .to_string(),
+            data: None,
+        });
+    }
+
     let result = match (payload.vehicle_source, payload.vendor_id) {
+        (VehicleSource::Own, _) if payload.vehicle_registration_number.is_some() => org
+            .dispatch_stock_on_vehicle(
+                &customer,
+                &line_items,
+                payload
+                    .vehicle_registration_number
+                    .as_deref()
+                    .unwrap_or_default(),
+            ),
         (VehicleSource::Own, _) => org.dispatch_stock_to_customer(&customer, &line_items),
         (VehicleSource::Hired, Some(vendor_id)) => {
             org.dispatch_stock_on_hired_vehicle(&customer, &line_items, vendor_id)
@@ -226,6 +273,89 @@ pub async fn dispatch_stock(
             message: format!("Dispatch failed: {}", err),
             data: None,
         }),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/orgs/{id}/dispatch/vehicle-preview",
+    tag = "Dispatch",
+    security(("bearer_auth" = [])),
+    params(("id" = Uuid, Path, description = "Organization UUID")),
+    request_body = VehiclePreviewPayload,
+    responses(
+        (status = 200, description = "Suggested vehicle and the other eligible ones, nearest first", body = VehiclePreviewResponse),
+        (status = 400, description = "No vehicle qualifies, or the customer or stock is unusable", body = EmptyResponse),
+        (status = 403, description = "Forbidden", body = EmptyResponse),
+        (status = 401, description = "Unauthorized", body = EmptyResponse)
+    )
+)]
+#[post("/orgs/{id}/dispatch/vehicle-preview")]
+pub async fn preview_dispatch_vehicle(
+    path: web::Path<Uuid>,
+    payload: web::Json<VehiclePreviewPayload>,
+    auth: AuthenticatedOrg,
+) -> impl Responder {
+    if let Err(resp) = auth.require_role(&DISPATCH_ROLES) {
+        return resp;
+    }
+    let org_id = path.into_inner();
+    if org_id != auth.org_id {
+        return HttpResponse::Forbidden().json(ApiResponse::<String> {
+            success: false,
+            message: "Access denied: you can only dispatch from your own organization".to_string(),
+            data: None,
+        });
+    }
+    let bad = |message: String| {
+        HttpResponse::BadRequest().json(ApiResponse::<String> {
+            success: false,
+            message,
+            data: None,
+        })
+    };
+    let customer = match Customer::get_by_id(payload.customer_id) {
+        Ok(Some(c)) if c.org_id == auth.org_id => c,
+        Ok(Some(_)) => return bad("Customer belongs to a different organization".to_string()),
+        Ok(None) => return bad("Customer not found".to_string()),
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(ApiResponse::<String> {
+                success: false,
+                message: format!("Failed to fetch customer: {}", err),
+                data: None,
+            });
+        }
+    };
+    let line_items: Vec<DispatchLineItemInput> = payload
+        .line_items
+        .iter()
+        .map(|li| DispatchLineItemInput {
+            stock_description: li.stock_description.clone(),
+            requested_quantity: li.requested_quantity,
+        })
+        .collect();
+    let org = Organization {
+        id: org_id,
+        name: String::new(),
+        address: String::new(),
+        vehicles: Vec::new(),
+        godowns: Vec::new(),
+        location: None,
+        gstin: None,
+    };
+    match org.preview_vehicles(&customer, &line_items) {
+        Ok(eligible) => match eligible.first().cloned() {
+            Some(suggested) => HttpResponse::Ok().json(ApiResponse {
+                success: true,
+                message: "Vehicle preview".to_string(),
+                data: Some(VehiclePreview {
+                    suggested,
+                    eligible,
+                }),
+            }),
+            None => bad("No vehicle available".to_string()),
+        },
+        Err(err) => bad(format!("Preview failed: {}", err)),
     }
 }
 

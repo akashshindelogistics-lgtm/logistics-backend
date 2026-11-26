@@ -39,6 +39,15 @@ struct LineItemPlan {
     holdings: Vec<(Uuid, i64)>,
 }
 
+/// A vehicle that could carry a given shipment.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct EligibleVehicle {
+    pub registration_number: String,
+    /// Straight-line distance from the vehicle (or the org, if it has no
+    /// location fix) to the customer.
+    pub distance_km: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Organization {
     pub id: Uuid,
@@ -246,7 +255,48 @@ impl Organization {
         customer: &Customer,
         line_items: &[DispatchLineItemInput],
     ) -> Result<DispatchOrder, Box<dyn Error>> {
-        self.dispatch_single(customer, line_items, None)
+        self.dispatch_single(customer, line_items, None, None)
+    }
+
+    /// Like [`Self::dispatch_stock_to_customer`], but on the vehicle the
+    /// caller picked instead of the nearest free one. The vehicle must be
+    /// eligible (see [`Self::eligible_vehicles`]); otherwise the error says
+    /// why it is not.
+    pub fn dispatch_stock_on_vehicle(
+        &self,
+        customer: &Customer,
+        line_items: &[DispatchLineItemInput],
+        vehicle_registration_number: &str,
+    ) -> Result<DispatchOrder, Box<dyn Error>> {
+        self.dispatch_single(
+            customer,
+            line_items,
+            None,
+            Some(vehicle_registration_number),
+        )
+    }
+
+    /// The vehicles that could carry this shipment, nearest to `customer`
+    /// first, so the first is the one a dispatch would auto-select. Does not
+    /// draw stock or create anything. Errors when stock or the customer's
+    /// location is unusable, or no vehicle qualifies.
+    pub fn preview_vehicles(
+        &self,
+        customer: &Customer,
+        line_items: &[DispatchLineItemInput],
+    ) -> Result<Vec<EligibleVehicle>, Box<dyn Error>> {
+        let mut conn = DbConnection::from_env().get_connection()?;
+        let godowns = Godown::list_by_org(self.id)?;
+        let mut remaining = Self::stock_snapshot(&godowns);
+        let (_, required_volume) = self.plan_stock_draw(&godowns, &mut remaining, line_items)?;
+        let eligible = self.eligible_vehicles(&mut conn, required_volume, customer)?;
+        if eligible.is_empty() {
+            return Err(self.no_vehicle_error(&mut conn, required_volume)?);
+        }
+        if customer.location.is_none() {
+            return Err("Customer location is not set for dispatch".into());
+        }
+        Ok(eligible)
     }
 
     /// Dispatch on a truck hired from `vendor_id` instead of an own vehicle.
@@ -263,7 +313,7 @@ impl Organization {
         line_items: &[DispatchLineItemInput],
         vendor_id: Uuid,
     ) -> Result<DispatchOrder, Box<dyn Error>> {
-        self.dispatch_single(customer, line_items, Some(vendor_id))
+        self.dispatch_single(customer, line_items, Some(vendor_id), None)
     }
 
     fn dispatch_single(
@@ -271,6 +321,7 @@ impl Organization {
         customer: &Customer,
         line_items: &[DispatchLineItemInput],
         hire_vendor: Option<Uuid>,
+        chosen_vehicle: Option<&str>,
     ) -> Result<DispatchOrder, Box<dyn Error>> {
         let mut conn = DbConnection::from_env().get_connection()?;
         let godowns = Godown::list_by_org(self.id)?;
@@ -283,7 +334,12 @@ impl Organization {
                 self.check_hire_vendor(vendor_id)?;
                 None
             }
-            None => Some(self.select_free_vehicle(&mut conn, required_volume, customer)?),
+            None => Some(match chosen_vehicle {
+                Some(reg) => {
+                    self.check_chosen_vehicle(&mut conn, reg, required_volume, customer)?
+                }
+                None => self.select_free_vehicle(&mut conn, required_volume, customer)?,
+            }),
         };
 
         // Table creation commits implicitly, so it has to come before the
@@ -771,15 +827,38 @@ impl Organization {
         Ok(items)
     }
 
-    /// Pick the vehicle to carry a shipment of `required_volume`: one of this
-    /// org's vehicles with an active assigned driver, spare capacity, and no
-    /// trip already in progress — the closest such vehicle to `customer`.
+    /// Pick the vehicle to carry a shipment of `required_volume`: the closest
+    /// of [`Self::eligible_vehicles`] to `customer`.
     fn select_free_vehicle(
         &self,
         conn: &mut mysql::PooledConn,
         required_volume: i64,
         customer: &Customer,
     ) -> Result<String, Box<dyn Error>> {
+        let eligible = self.eligible_vehicles(conn, required_volume, customer)?;
+        if eligible.is_empty() {
+            return Err(self.no_vehicle_error(conn, required_volume)?);
+        }
+        if customer.location.is_none() {
+            return Err("Customer location is not set for dispatch".into());
+        }
+        eligible
+            .into_iter()
+            .next()
+            .map(|v| v.registration_number)
+            .ok_or_else(|| "Failed to select vehicle for dispatch".into())
+    }
+
+    /// This org's vehicles with an active assigned driver, spare capacity for
+    /// `required_volume`, and no trip already in progress, nearest to
+    /// `customer` first. A vehicle with no fix is placed at the org's
+    /// location. Distances are 0 when the customer has no location.
+    fn eligible_vehicles(
+        &self,
+        conn: &mut mysql::PooledConn,
+        required_volume: i64,
+        customer: &Customer,
+    ) -> Result<Vec<EligibleVehicle>, Box<dyn Error>> {
         Driver::ensure_table(conn)?;
         crate::logistics::dispatch::dispatch::ensure_tables(conn)?;
 
@@ -802,60 +881,96 @@ impl Organization {
             |(reg, lat, lng)| (reg, lat, lng),
         )?;
 
-        if vehicle_rows.is_empty() {
-            let any_vehicle: Option<i64> = conn.exec_first(
-                "SELECT 1 FROM Vehicle WHERE org_id = :org_id LIMIT 1",
-                params! { "org_id" => self.id.to_string() },
-            )?;
-            let with_active_driver: Option<i64> = conn.exec_first(
-                "SELECT 1 FROM Vehicle v
-                 JOIN Drivers d ON d.id = v.assigned_driver_id AND d.is_active = TRUE
-                 WHERE v.org_id = :org_id LIMIT 1",
-                params! { "org_id" => self.id.to_string() },
-            )?;
-            return Err(if any_vehicle.is_none() {
-                "No vehicles registered under this organization for dispatch; \
-                 hire a truck from a vendor instead"
-                    .into()
-            } else if with_active_driver.is_none() {
-                "No vehicle with an active assigned driver is available for dispatch; \
-                 assign one via PUT /api/vehicles/{reg}/driver"
-                    .into()
-            } else {
-                format!(
-                    "No vehicle is free and large enough for this shipment \
-                     (needs capacity >= {required_volume}); every eligible vehicle is \
-                     either below capacity or already on an active trip. \
-                     You can hire a truck from a vendor instead"
-                )
-                .into()
-            });
-        }
-
-        let (cust_lat, cust_lng) = match &customer.location {
-            Some(loc) => (loc.latitude, loc.longitude),
-            None => return Err("Customer location is not set for dispatch".into()),
-        };
         let (org_lat, org_lng) = match &self.location {
             Some(loc) => (loc.latitude, loc.longitude),
             None => (0.0, 0.0),
         };
+        let mut eligible: Vec<EligibleVehicle> = vehicle_rows
+            .into_iter()
+            .map(|(reg, v_lat, v_lng)| EligibleVehicle {
+                registration_number: reg,
+                distance_km: match &customer.location {
+                    Some(loc) => haversine_distance_km(
+                        v_lat.unwrap_or(org_lat),
+                        v_lng.unwrap_or(org_lng),
+                        loc.latitude,
+                        loc.longitude,
+                    ),
+                    None => 0.0,
+                },
+            })
+            .collect();
+        eligible.sort_by(|a, b| a.distance_km.total_cmp(&b.distance_km));
+        Ok(eligible)
+    }
 
-        let mut nearest: Option<String> = None;
-        let mut min_distance = f64::MAX;
-        for (reg, v_lat, v_lng) in vehicle_rows {
-            let dist = haversine_distance_km(
-                v_lat.unwrap_or(org_lat),
-                v_lng.unwrap_or(org_lng),
-                cust_lat,
-                cust_lng,
-            );
-            if dist < min_distance {
-                min_distance = dist;
-                nearest = Some(reg);
-            }
+    /// Why no vehicle qualifies for `required_volume`.
+    fn no_vehicle_error(
+        &self,
+        conn: &mut mysql::PooledConn,
+        required_volume: i64,
+    ) -> Result<Box<dyn Error>, Box<dyn Error>> {
+        let any_vehicle: Option<i64> = conn.exec_first(
+            "SELECT 1 FROM Vehicle WHERE org_id = :org_id LIMIT 1",
+            params! { "org_id" => self.id.to_string() },
+        )?;
+        let with_active_driver: Option<i64> = conn.exec_first(
+            "SELECT 1 FROM Vehicle v
+             JOIN Drivers d ON d.id = v.assigned_driver_id AND d.is_active = TRUE
+             WHERE v.org_id = :org_id LIMIT 1",
+            params! { "org_id" => self.id.to_string() },
+        )?;
+        Ok(if any_vehicle.is_none() {
+            "No vehicles registered under this organization for dispatch; \
+             hire a truck from a vendor instead"
+                .into()
+        } else if with_active_driver.is_none() {
+            "No vehicle with an active assigned driver is available for dispatch; \
+             assign one via PUT /api/vehicles/{reg}/driver"
+                .into()
+        } else {
+            format!(
+                "No vehicle is free and large enough for this shipment \
+                 (needs capacity >= {required_volume}); every eligible vehicle is \
+                 either below capacity or already on an active trip. \
+                 You can hire a truck from a vendor instead"
+            )
+            .into()
+        })
+    }
+
+    /// Accept a caller-chosen vehicle only if it is one of the eligible ones,
+    /// otherwise say which rule it breaks.
+    fn check_chosen_vehicle(
+        &self,
+        conn: &mut mysql::PooledConn,
+        reg: &str,
+        required_volume: i64,
+        customer: &Customer,
+    ) -> Result<String, Box<dyn Error>> {
+        let eligible = self.eligible_vehicles(conn, required_volume, customer)?;
+        if let Some(v) = eligible.iter().find(|v| v.registration_number == reg) {
+            return Ok(v.registration_number.clone());
         }
-        nearest.ok_or_else(|| "Failed to select vehicle for dispatch".into())
+        let row: Option<(String, Option<bool>, i64)> = conn.exec_first(
+            "SELECT v.registration_number, d.is_active, v.capacity
+             FROM Vehicle v
+             LEFT JOIN Drivers d ON d.id = v.assigned_driver_id
+             WHERE v.org_id = :org_id AND v.registration_number = :reg",
+            params! { "org_id" => self.id.to_string(), "reg" => reg },
+        )?;
+        Err(match row {
+            None => format!("Vehicle '{reg}' not found in this organization"),
+            Some((_, driver_active, _)) if driver_active != Some(true) => {
+                format!("Vehicle '{reg}' has no active assigned driver")
+            }
+            Some((_, _, capacity)) if capacity < required_volume => format!(
+                "Vehicle '{reg}' is too small for this shipment \
+                 (capacity {capacity}, needs >= {required_volume})"
+            ),
+            Some(_) => format!("Vehicle '{reg}' is already on an active dispatch"),
+        }
+        .into())
     }
 
     pub fn list_all() -> Result<Vec<Self>, Box<dyn Error>> {

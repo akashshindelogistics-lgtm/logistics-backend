@@ -185,6 +185,7 @@ async fn setup_dispatch(
         .set_json(&DispatchRequestPayload {
             vehicle_source: VehicleSource::Own,
             vendor_id: None,
+            vehicle_registration_number: None,
             customer_id: customer.id,
             line_items: vec![DispatchLineItemPayload {
                 stock_description: "Dispatch Test Goods".to_string(),
